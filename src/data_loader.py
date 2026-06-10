@@ -95,4 +95,5 @@ class DelayDataset(Dataset):
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
         # 不再设置 data.switching_pin
+        data.switching_pin = row['switching_pin']
         return data

@@ -15,7 +15,13 @@ import numpy as np
 from src.utils import set_seed, split_by_circuit, save_scaler, create_dir
 from src.data_loader import DelayDataset
 from src.model import DelayGNN
-
+PIN_WEIGHTS = {
+    'a': 1.3,
+    'b': 1.0,
+    'c': 1.0,
+    'd': 1.3,
+    'e': 1.0,
+}
 def log_mse_loss(pred_log, target):
     """pred_log: 模型输出的 log10(delay) , target: 真实 delay"""
     target_log = torch.log10(target + 1e-12)
@@ -28,7 +34,18 @@ def train_one_epoch(model, loader, optimizer, device):
         data = data.to(device)
         optimizer.zero_grad()
         out = model(data.x, data.edge_index, data.batch)
-        loss = log_mse_loss(out, data.y)
+        # 基础 loss
+        target_log = torch.log10(data.y + 1e-12)
+        base_loss = F.mse_loss(out, target_log)
+        # 获取每个样本的权重
+        weights = torch.tensor([PIN_WEIGHTS[pin] for pin in data.switching_pin], device=device)
+        # 加权 loss：对每个样本的 MSE 加权平均
+        # 注意：out 和 target_log 都是 batch 中的每个样本
+        # 需要逐元素计算平方差后加权平均
+        squared_diff = (out - target_log) ** 2
+        weighted_loss = (squared_diff * weights).mean()
+        # 或使用加权 MSE
+        loss = weighted_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -54,6 +71,7 @@ def evaluate(model, loader, device):
     return total_loss / len(loader), np.mean(rel_error), preds, targets
 
 def main():
+
     set_seed(RANDOM_SEED)
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
