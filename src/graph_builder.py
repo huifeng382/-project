@@ -103,4 +103,58 @@ def build_static_graph(circuit_id, netlist_str):
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     node_type_enc = torch.tensor(node_type_enc, dtype=torch.float)
 
-    return node_names, node_type_enc, edge_index
+
+    # ... 原有解析代码，得到 nodes, edges，以及 node_names 列表 ...
+    # edges 为 [(from, to), ...]
+
+    # 1. 计算扇出数（出度）
+    out_degree = {n: 0 for n in node_names}
+    for u, v in edges:
+        out_degree[u] = out_degree.get(u, 0) + 1
+
+    # 2. 计算逻辑深度（从输入引脚出发的最长路径长度）
+    # 先找出所有输入引脚节点
+    input_pins = ['a','b','c','d','e']
+    depth = {n: 0 for n in node_names}
+    # 构建邻接表
+    adj = {n: [] for n in node_names}
+    for u, v in edges:
+        adj[u].append(v)
+    # 拓扑排序（因为图是 DAG）
+    from collections import deque
+    indeg = {n: 0 for n in node_names}
+    for u, v in edges:
+        indeg[v] += 1
+    q = deque([n for n in node_names if indeg[n] == 0])
+    order = []
+    while q:
+        u = q.popleft()
+        order.append(u)
+        for v in adj[u]:
+            indeg[v] -= 1
+            if indeg[v] == 0:
+                q.append(v)
+    # 在拓扑序上计算最长路径（从输入引脚开始）
+    # 输入引脚的深度为 0，其他节点的深度 = max(前驱节点深度) + 1
+    for u in order:
+        if u in input_pins:
+            depth[u] = 0
+        else:
+            max_prev = 0
+            for v_pred, v_succ in edges:   # 找到所有指向 u 的前驱
+                if v_succ == u:
+                    max_prev = max(max_prev, depth[v_pred])
+            depth[u] = max_prev + 1
+
+    # 3. 扩展节点特征：原来 node_type_enc 是 one‑hot，现在增加两列（扇出、深度）
+    # node_type_enc 形状为 [num_nodes, num_gate_types]
+    num_nodes = len(node_names)
+    # 将扇出和深度标准化（可选），这里先直接作为 float
+    fanout_features = torch.tensor([[out_degree[n]] for n in node_names], dtype=torch.float)
+    depth_features = torch.tensor([[depth[n]] for n in node_names], dtype=torch.float)
+    # 新的静态特征矩阵 = [one‑hot, fanout, depth]
+    node_static = torch.cat([node_type_enc, fanout_features, depth_features], dim=1)
+    # 注意：node_static 现在维度为 num_nodes × (num_gate_types + 2)
+
+    # 返回时，将原来的 node_type_enc 替换为 node_static
+    return node_names, node_static, edge_index

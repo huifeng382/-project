@@ -42,8 +42,8 @@ class DelayDataset(Dataset):
     def _prepare_static_graphs(self):
         for cid in self.dynamic_df['circuit_id'].unique():
             netlist = self.static_df.loc[cid, 'gate_level_netlist']
-            node_names, node_type_enc, edge_index = build_static_graph(cid, netlist)
-            self.graph_cache[cid] = (node_names, node_type_enc, edge_index)   # 存储 node_type_enc
+            node_names, node_static, edge_index = build_static_graph(cid, netlist)
+            self.graph_cache[cid] = (node_names, node_static, edge_index)   # 存储 node_type_enc
     def _get_static(self, cid):
         return self.graph_cache[cid]
 
@@ -79,13 +79,13 @@ class DelayDataset(Dataset):
             idx = int(idx)
         row = self.dynamic_df.iloc[idx]
         cid = row['circuit_id']
-        node_names, node_type_enc, edge_index = self._get_static(cid)
+        node_names, node_static, edge_index = self._get_static(cid)
         dyn_feats = self._get_dynamic_features(row)
 
         num_nodes = len(node_names)
-        node_feat_dim = node_type_enc.shape[1] + 6
+        node_feat_dim = node_static.shape[1] + 6
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
-        x[:, :node_type_enc.shape[1]] = node_type_enc
+        x[:, :node_static.shape[1]] = node_static
 
         for i, n in enumerate(node_names):
             if n in dyn_feats:
