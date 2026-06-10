@@ -42,8 +42,8 @@ class DelayDataset(Dataset):
     def _prepare_static_graphs(self):
         for cid in self.dynamic_df['circuit_id'].unique():
             netlist = self.static_df.loc[cid, 'gate_level_netlist']
-            node_names, node_static, edge_index = build_static_graph(cid, netlist)
-            self.graph_cache[cid] = (node_names, node_static, edge_index)   # 存储 node_type_enc
+            node_names, node_static, edge_index = build_static_graph(cid, netlist)   # 接收 node_static
+            self.graph_cache[cid] = (node_names, node_static, edge_index)
     def _get_static(self, cid):
         return self.graph_cache[cid]
 
