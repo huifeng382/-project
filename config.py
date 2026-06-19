@@ -13,11 +13,18 @@ OUTPUT_DIR = "outputs"
 HIDDEN_DIM = 64
 NUM_LAYERS = 2
 DROPOUT = 0.3
-LEARNING_RATE = 5e-5 
+LEARNING_RATE = 1e-4 
 WEIGHT_DECAY = 1e-5
-BATCH_SIZE = 8
+BATCH_SIZE = 64
 EPOCHS = 800
 PATIENCE = 80
 
 # 其他
 RANDOM_SEED = 42
+
+# 学习率调度器配置
+LR_SCHEDULER = 'ReduceLROnPlateau'   # 可选: 'ReduceLROnPlateau', 'StepLR', 'CosineAnnealingLR'
+LR_FACTOR = 0.5                      # 每次降低的倍数
+LR_PATIENCE = 50                     # 验证损失连续多少epoch不下降时降低学习率
+LR_MIN = 1e-6                        # 学习率下限
+LR_COOLDOWN = 0                      # 降低后等待几个epoch再重新检测

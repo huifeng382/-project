@@ -114,15 +114,18 @@ def main():
     for _, row in train_dynamic.iterrows():
         for pin in pins:
             all_cont_features.append([row[f'slew_{pin}'], row[f'arrival_{pin}'], row[f'load_{pin}']])
-    scaler = StandardScaler()
+    scaler = StandardScaler(with_std=False)
     scaler.fit(all_cont_features)
     print("=" * 50)
     print("Scaler check:")
-    print(f"  Mean shape: {scaler.mean_.shape}")
-    print(f"  Scale (std) shape: {scaler.scale_.shape}")
-    print(f"  Scale values: {scaler.scale_}")
-    if (scaler.scale_ == 0).any():
-        print("  WARNING: Some features have zero variance! Consider using StandardScaler(with_std=False)")
+    print(f"  Mean shape: {scaler.mean_.shape if scaler.mean_ is not None else 'None'}")
+    if scaler.scale_ is not None:
+        print(f"  Scale (std) shape: {scaler.scale_.shape}")
+        print(f"  Scale values: {scaler.scale_}")
+        if (scaler.scale_ == 0).any():
+            print("  WARNING: Some features have zero variance!")
+    else:
+        print("  Scale (std): None (using with_std=False)")
     print("=" * 50)
     save_scaler(scaler, os.path.join(OUTPUT_DIR, 'scaler.pkl'))
 
@@ -185,14 +188,38 @@ def main():
     model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
+    # ---------- 新增调度器 ----------
+    scheduler = None
+    if LR_SCHEDULER == 'ReduceLROnPlateau':
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=LR_FACTOR,
+            patience=LR_PATIENCE, min_lr=LR_MIN, cooldown=LR_COOLDOWN
+        )
+    elif LR_SCHEDULER == 'StepLR':
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
+    elif LR_SCHEDULER == 'CosineAnnealingLR':
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+    # --------------------------------
+    
     best_val_loss = float('inf')
     patience_counter = 0
     print("Start training...")
     for epoch in range(EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
-        print(f"Epoch {epoch+1:03d} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Rel Err: {val_rel_err:.2f}%")
-
+        
+        # 打印学习率
+        current_lr = optimizer.param_groups[0]['lr']
+        print(f"Epoch {epoch+1:03d} | LR: {current_lr:.2e} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Rel Err: {val_rel_err:.2f}%")
+        
+        # 调度器更新
+        if scheduler is not None:
+            if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+        
+        # 早停和保存逻辑
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))

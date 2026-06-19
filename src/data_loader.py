@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import torch
+import json
 from torch_geometric.data import Data, Dataset
 from src.graph_builder import build_static_graph, GATE_TYPES
 from src.utils import load_scaler
@@ -13,10 +14,71 @@ class DelayDataset(Dataset):
         if isinstance(dynamic_parquets, str):
             dynamic_parquets = [dynamic_parquets]
 
+        # ------------------- 列名规范化函数 -------------------
+        def normalize_static(df):
+            # 电路 ID
+            if 'circuit_id' not in df.columns:
+                if 'candidate' in df.columns:
+                    df = df.rename(columns={'candidate': 'circuit_id'})
+                elif 'candidate_id' in df.columns:
+                    df = df.rename(columns={'candidate_id': 'circuit_id'})
+                else:
+                    raise KeyError(f"Static data missing id column. Columns: {df.columns.tolist()}")
+            df['circuit_id'] = df['circuit_id'].astype(str)
+
+            # 网表列
+            if 'gate_level_netlist' not in df.columns:
+                if 'gate_level_netlist_std' in df.columns:
+                    df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
+                else:
+                    raise KeyError(f"Static data missing netlist column. Columns: {df.columns.tolist()}")
+
+            # 解析 pin_loads_json
+            if 'pin_loads_json' in df.columns:
+                def parse_loads(loads_str):
+                    try:
+                        return json.loads(loads_str)
+                    except:
+                        return {}
+                df['pin_loads_dict'] = df['pin_loads_json'].apply(parse_loads)
+            else:
+                df['pin_loads_dict'] = [{}] * len(df)
+
+            # 输出负载
+            if 'output_load' not in df.columns and 'output_load_f' in df.columns:
+                df = df.rename(columns={'output_load_f': 'output_load'})
+            return df
+
+        def normalize_dynamic(df):
+            # 电路 ID
+            if 'circuit_id' not in df.columns:
+                if 'candidate' in df.columns:
+                    df = df.rename(columns={'candidate': 'circuit_id'})
+                elif 'candidate_id' in df.columns:
+                    df = df.rename(columns={'candidate_id': 'circuit_id'})
+                else:
+                    raise KeyError(f"Dynamic data missing id column. Columns: {df.columns.tolist()}")
+            df['circuit_id'] = df['circuit_id'].astype(str)
+
+            # 延迟列名统一为 DELAY
+            if 'DELAY' not in df.columns:
+                for col in ['delay', 'delay_s', 'Delay', 'delays']:
+                    if col in df.columns:
+                        df = df.rename(columns={col: 'DELAY'})
+                        break
+
+            # 确保 vector 列存在且格式正确
+            if 'vector' in df.columns:
+                df['vector'] = df['vector'].astype(str).str.zfill(5)
+
+            return df
+        # -----------------------------------------------------
+
         # 读取并合并静态数据
         static_dfs = []
         for p in static_parquets:
             df = pd.read_parquet(p)
+            df = normalize_static(df)
             static_dfs.append(df)
         self.static_df = pd.concat(static_dfs).drop_duplicates('circuit_id').set_index('circuit_id')
 
@@ -24,6 +86,7 @@ class DelayDataset(Dataset):
         dynamic_dfs = []
         for p in dynamic_parquets:
             df = pd.read_parquet(p)
+            df = normalize_dynamic(df)
             dynamic_dfs.append(df)
         self.dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
@@ -31,8 +94,12 @@ class DelayDataset(Dataset):
         if circuit_ids is not None:
             self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
 
-        # 确保 vector 列格式正确
-        self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
+        # 确保 vector 列格式正确（再次保证）
+        if 'vector' in self.dynamic_df.columns:
+            self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
+
+        # 固定引脚列表（所有电路都是 a,b,c,d,e）
+        self.pins = ['a', 'b', 'c', 'd', 'e']
 
         self.scaler = scaler
         self.cache_dir = cache_dir
@@ -42,24 +109,48 @@ class DelayDataset(Dataset):
     def _prepare_static_graphs(self):
         for cid in self.dynamic_df['circuit_id'].unique():
             netlist = self.static_df.loc[cid, 'gate_level_netlist']
-            node_names, node_static, edge_index = build_static_graph(cid, netlist)   # 接收 node_static
+            node_names, node_static, edge_index = build_static_graph(cid, netlist)
             self.graph_cache[cid] = (node_names, node_static, edge_index)
+
     def _get_static(self, cid):
         return self.graph_cache[cid]
 
-    def _get_dynamic_features(self, row):
-        pins = ['a', 'b', 'c', 'd', 'e']
+    def _get_dynamic_features(self, row, pin_loads_dict):
+        pins = self.pins
         vector = row['vector']
+        # 确保 vector 长度为5，如果不足则补前导零
+        if len(vector) < len(pins):
+            vector = vector.zfill(len(pins))
         logic = {pin: int(vector[i]) for i, pin in enumerate(pins)}
         switching = row['switching_pin']
         dyn_feats = {}
         for pin in pins:
+            # 负载：优先从动态数据读取 load_{pin}，否则从静态字典
+            load_col = f'load_{pin}'
+            if load_col in row.index and pd.notna(row[load_col]):
+                load_val = row[load_col]
+            else:
+                load_val = pin_loads_dict.get(pin, 0.0)
+
+            # 获取 slew 和 arrival
+            slew_col = f'slew_{pin}'
+            arrival_col = f'arrival_{pin}'
+            if slew_col in row.index and pd.notna(row[slew_col]):
+                slew_val = row[slew_col]
+            else:
+                # 尝试使用全局列（batch02 可能没有 e 的独立列）
+                slew_val = row.get('slew_s', 0.0)
+            if arrival_col in row.index and pd.notna(row[arrival_col]):
+                arrival_val = row[arrival_col]
+            else:
+                arrival_val = row.get('arrival_time_s', 0.0)
+
             feat = [
                 float(logic[pin]),
                 1.0 if pin == switching else 0.0,
-                row[f'slew_{pin}'],
-                row[f'arrival_{pin}'],
-                row[f'load_{pin}'],
+                slew_val,
+                arrival_val,
+                load_val,
                 0.0  # output_load placeholder
             ]
             if self.scaler is not None:
@@ -80,7 +171,8 @@ class DelayDataset(Dataset):
         row = self.dynamic_df.iloc[idx]
         cid = row['circuit_id']
         node_names, node_static, edge_index = self._get_static(cid)
-        dyn_feats = self._get_dynamic_features(row)
+        pin_loads_dict = self.static_df.loc[cid, 'pin_loads_dict']
+        dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
         node_feat_dim = node_static.shape[1] + 6
@@ -94,6 +186,5 @@ class DelayDataset(Dataset):
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
-        # 不再设置 data.switching_pin
         data.switching_pin = row['switching_pin']
         return data

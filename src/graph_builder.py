@@ -5,15 +5,32 @@ import re
 
 # 定义门类型映射（根据实际网表中出现的门类型扩充）
 GATE_TYPES = [
-    'SC_AND', 'SC_AND_v1', 'SC_JOIN_BRIDGE_WIRE_WIRE_WIRE_WIRE_WIRE_BRIDGE_WIRE_WIRE_WIRE_WIRE_WIRE',
+    # 原有 batch01 的门类型
+    'SC_AND', 'SC_AND_v1',
+    'SC_JOIN_BRIDGE_WIRE_WIRE_WIRE_WIRE_WIRE_BRIDGE_WIRE_WIRE_WIRE_WIRE_WIRE',
     'SC_JOIN_BRIDGE_WIRE_WIRE_WIRE_WIRE_BRIDGE_WIRE_WIRE_WIRE_WIRE',
     'SC_JOIN_BRIDGE_WIRE_WIRE_WIRE_BRIDGE_WIRE_WIRE_WIRE',
-    'SC_INV_WIRE', 'INPUT_PIN', 'OUTPUT_PIN'
+    'SC_INV_WIRE', 'INPUT_PIN', 'OUTPUT_PIN',
+    'SC_JOIN_BRIDGE__BRIDGE', 
+    # batch02 新增的门类型
+    'AND2x2_ASAP7_75t_R',
+    'AND3x2_ASAP7_75t_R',
+    'BUFx1_ASAP7_75t_R',
+    'INVx1_ASAP7_75t_R',
+    'NAND3x1_ASAP7_75t_R',
+    'NAND5x1_ASAP7_75t_R',
+    'NOR2x1_ASAP7_75t_R',
+    'NOR3x1_ASAP7_75t_R',
+    'NOR4x1_ASAP7_75t_R',
+    'NOR5x1_ASAP7_75t_R',
+    'OR2x2_ASAP7_75t_R',
+    'OR3x2_ASAP7_75t_R',
+    'TIEHIx1_ASAP7_75t_R',
+    'TIELOx1_ASAP7_75t_R'
 ]
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
 def parse_netlist(netlist_str):
-    """解析网表，返回 nodes 字典和 edges 列表。"""
     lines = netlist_str.strip().split('\n')
     gates = {}
     wire_to_driver = {}
@@ -23,8 +40,16 @@ def parse_netlist(netlist_str):
             continue
         tokens = line.split()
         inst = tokens[0]
-        gtype = tokens[-1]
-        io = tokens[1:-1]
+        # 正确提取门类型：找到第一个以 'SC_' 开头的 token
+        gtype = None
+        for token in tokens:
+            if token.startswith('SC_'):
+                gtype = token
+                break
+        if gtype is None:
+            continue  # 跳过无法识别的行
+        # 移除 inst 和 gtype，剩下的就是输入输出 token
+        io = [t for t in tokens if t != inst and t != gtype]
         if 'AND' in gtype or 'INV_WIRE' in gtype:
             output = io[-1]
             inputs = io[:-1]
@@ -35,7 +60,7 @@ def parse_netlist(netlist_str):
             continue
         gates[inst] = {'type': gtype, 'inputs': inputs, 'output': output}
         wire_to_driver[output] = inst
-
+        
     nodes = {}
     for inst, info in gates.items():
         nodes[inst] = {'type': info['type'], 'is_input': False, 'is_output': False}
@@ -78,7 +103,7 @@ def build_static_graph(circuit_id, netlist_str):
             edge_index.append([node_names.index(u), node_names.index(v)])
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     
-    # 节点 one-hot 编码
+    # 节点 one-hot 编码（使用固定 GATE_TYPES）
     node_type_enc = []
     for n in node_names:
         gt = nodes[n]['type']
