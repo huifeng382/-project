@@ -1,7 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
+import torch.utils.data
 from config import *
 import glob
 import pandas as pd
@@ -26,6 +26,31 @@ def log_mse_loss(pred_log, target):
     """pred_log: 模型输出的 log10(delay) , target: 真实 delay"""
     target_log = torch.log10(target + 1e-12)
     return F.mse_loss(pred_log, target_log)
+
+def get_train_residuals(model, dataset, device):
+    """用当前模型计算训练集每个样本的残差（log10域）"""
+    model.eval()
+    loader = DataLoader(dataset, batch_size=512, shuffle=False)  # 大batch加速
+    residuals = []
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            pred_log = model(data.x, data.edge_index, data.batch)
+            target_log = torch.log10(data.y + 1e-12)
+            res = torch.abs(pred_log - target_log).cpu().numpy()
+            residuals.extend(res)
+    return np.array(residuals)
+
+def clean_outliers_by_residual(dataset, model, device, top_percent=5):
+    """
+    剔除训练集中残差最大的 top_percent% 样本，返回 Subset
+    """
+    residuals = get_train_residuals(model, dataset, device)
+    # 计算阈值（百分位数）
+    threshold = np.percentile(residuals, 100 - top_percent)
+    keep_indices = np.where(residuals <= threshold)[0].tolist()
+    print(f"清洗前样本数: {len(dataset)}, 清洗后: {len(keep_indices)}, 剔除比例: {100 - len(keep_indices)/len(dataset)*100:.1f}%")
+    return torch.utils.data.Subset(dataset, keep_indices)
 
 def train_one_epoch(model, loader, optimizer, device):
     model.train()
@@ -185,6 +210,44 @@ def main():
     sample_data = next(iter(train_loader))
     in_dim = sample_data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    # ==================== 新增：离群点清洗 ====================
+    # 可配置参数（您可调整或移至 config.py）
+    OUTLIER_CLEANING = True      # 是否启用清洗
+    OUTLIER_TOP_PERCENT = 5      # 剔除残差最大的前百分之几
+    BASE_EPOCHS = 20             # 基准模型训练轮数（无需收敛）
+
+    if OUTLIER_CLEANING and len(train_dataset) > 100:   # 数据量过小则跳过
+        print("\n========== 开始离群点清洗 ==========")
+        # 1. 训练基准模型（快速）
+        base_model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM,
+                              num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
+        base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
+                              weight_decay=WEIGHT_DECAY)
+        base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+        for ep in range(BASE_EPOCHS):
+            loss = train_one_epoch(base_model, base_loader, base_optimizer, device)
+            print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
+
+        # 2. 计算每个样本的残差
+        residuals = get_train_residuals(base_model, train_dataset, device)
+        threshold = np.percentile(residuals, 100 - OUTLIER_TOP_PERCENT)
+        keep_indices = np.where(residuals <= threshold)[0].tolist()
+
+        print(f"  原始样本数: {len(train_dataset)}")
+        print(f"  清洗后样本数: {len(keep_indices)}")
+        print(f"  剔除比例: {(1 - len(keep_indices)/len(train_dataset))*100:.1f}%")
+
+        # 3. 用清洗后的子集替换原训练集，重新构建 train_loader
+        train_subset = torch.utils.data.Subset(train_dataset, keep_indices)
+        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
+
+        # 释放基准模型显存（如有）
+        del base_model, base_optimizer
+        print("========== 清洗完成 ==========\n")
+    else:
+        print("\n跳过离群点清洗（未启用或样本量过少）\n")
+    # ==================== 清洗结束 ====================    
+    
     model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
@@ -200,41 +263,43 @@ def main():
     elif LR_SCHEDULER == 'CosineAnnealingLR':
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
     # --------------------------------
-    
-    best_val_loss = float('inf')
+
+    # ========== 修改点：保存和早停依据改为 Val Rel Err ==========
+    best_val_rel = float('inf')           # <<< 改为追踪相对误差
     patience_counter = 0
     print("Start training...")
     for epoch in range(EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
         
-        # 打印学习率
         current_lr = optimizer.param_groups[0]['lr']
         print(f"Epoch {epoch+1:03d} | LR: {current_lr:.2e} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Rel Err: {val_rel_err:.2f}%")
         
-        # 调度器更新
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
                 scheduler.step(val_loss)
             else:
                 scheduler.step()
         
-        # 早停和保存逻辑
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # 保存和早停条件基于 Val Rel Err
+        if val_rel_err < best_val_rel:    # <<< 保存条件改为相对误差
+            best_val_rel = val_rel_err
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             patience_counter = 0
+            print(f"  >>> New best model saved (Val Rel Err: {val_rel_err:.2f}%)")
         else:
             patience_counter += 1
             if patience_counter >= PATIENCE:
                 print("Early stopping")
                 break
+    # ======================================================
 
     # 测试最佳模型
     model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, 'best_model.pt')))
+    val_loss_after_load, val_rel_err_after_load, _, _ = evaluate(model, val_loader, device)
+    print(f"Best model performance on Val Set: Loss = {val_loss_after_load:.4f} | Rel Err = {val_rel_err_after_load:.2f}%")
     test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
     print(f"\nTest Loss: {test_loss:.4f} | Test Mean Relative Error: {test_rel_err:.2f}%")
     np.savez(os.path.join(OUTPUT_DIR, 'test_predictions.npz'), preds=preds, targets=targets)
-
 if __name__ == "__main__":
     main()
