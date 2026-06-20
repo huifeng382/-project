@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 import torch
 import json
+import os
 from torch_geometric.data import Data, Dataset
 from src.graph_builder import build_static_graph, GATE_TYPES
 from src.utils import load_scaler
@@ -136,9 +137,16 @@ class DelayDataset(Dataset):
         self._prepare_static_graphs()
 
     def _prepare_static_graphs(self):
+        os.makedirs(self.cache_dir, exist_ok=True)
         for cid in self.dynamic_df['circuit_id'].unique():
-            netlist = self.static_df.loc[cid, 'gate_level_netlist']
-            node_names, node_static, edge_index = build_static_graph(cid, netlist)
+            cache_path = os.path.join(self.cache_dir, f"{cid}_graph.pt")
+            if os.path.exists(cache_path):
+                # 加载缓存
+                node_names, node_static, edge_index = torch.load(cache_path)
+            else:
+                netlist = self.static_df.loc[cid, 'gate_level_netlist']
+                node_names, node_static, edge_index = build_static_graph(cid, netlist)
+                torch.save((node_names, node_static, edge_index), cache_path)
             self.graph_cache[cid] = (node_names, node_static, edge_index)
 
     def _get_static(self, cid):
