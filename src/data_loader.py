@@ -47,6 +47,10 @@ class DelayDataset(Dataset):
             # 输出负载
             if 'output_load' not in df.columns and 'output_load_f' in df.columns:
                 df = df.rename(columns={'output_load_f': 'output_load'})
+            
+            # 确保 input_pins_json 列存在（若没有，则补默认5引脚）
+            if 'input_pins_json' not in df.columns:
+                df['input_pins_json'] = ['["a","b","c","d","e"]'] * len(df)
             return df
 
         def normalize_dynamic(df):
@@ -67,9 +71,9 @@ class DelayDataset(Dataset):
                         df = df.rename(columns={col: 'DELAY'})
                         break
 
-            # 确保 vector 列存在且格式正确
-            if 'vector' in df.columns:
-                df['vector'] = df['vector'].astype(str).str.zfill(5)
+            # 确保 direction 列存在（若没有，默认 'rise'）
+            if 'direction' not in df.columns:
+                df['direction'] = 'rise'
 
             return df
         # -----------------------------------------------------
@@ -92,14 +96,27 @@ class DelayDataset(Dataset):
 
         # 筛选电路（如果指定）
         if circuit_ids is not None:
-            self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
+            self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)]
 
-        # 确保 vector 列格式正确（再次保证）
-        if 'vector' in self.dynamic_df.columns:
-            self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
+        # 删除 DELAY 为 NaN 的行
+        self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
 
-        # 固定引脚列表（所有电路都是 a,b,c,d,e）
-        self.pins = ['a', 'b', 'c', 'd', 'e']
+        # 动态读取引脚列表（从 static_df 中读取 input_pins_json）
+        if 'input_pins_json' in self.static_df.columns:
+            first_row = self.static_df.iloc[0]
+            try:
+                pins = json.loads(first_row['input_pins_json'])
+                if isinstance(pins, list) and len(pins) > 0:
+                    self.pins = pins
+                else:
+                    self.pins = ['a','b','c','d','e']
+                    print("Warning: input_pins_json is not a valid list, using default pins.")
+            except:
+                self.pins = ['a','b','c','d','e']
+                print("Warning: Failed to parse input_pins_json, using default pins.")
+        else:
+            self.pins = ['a','b','c','d','e']
+            print("Warning: No 'input_pins_json' column, using default pins.")
 
         self.scaler = scaler
         self.cache_dir = cache_dir
@@ -117,12 +134,22 @@ class DelayDataset(Dataset):
 
     def _get_dynamic_features(self, row, pin_loads_dict):
         pins = self.pins
-        vector = row['vector']
-        # 确保 vector 长度为5，如果不足则补前导零
-        if len(vector) < len(pins):
-            vector = vector.zfill(len(pins))
-        logic = {pin: int(vector[i]) for i, pin in enumerate(pins)}
+        # 获取 switching_pin 和 direction
         switching = row['switching_pin']
+        direction = row.get('direction', 'rise')
+
+        # 确定切换引脚的逻辑值
+        if direction == 'rise':   # 0->1 跳变，跳变前为 0
+            switch_logic = 0.0
+        elif direction == 'fall': # 1->0 跳变，跳变前为 1
+            switch_logic = 1.0
+        else:
+            switch_logic = 0.5   # 未知方向
+
+        # 构建逻辑值字典，非切换引脚一律设为 0.5
+        logic = {pin: 0.5 for pin in pins}
+        logic[switching] = switch_logic
+
         dyn_feats = {}
         for pin in pins:
             # 负载：优先从动态数据读取 load_{pin}，否则从静态字典
@@ -138,7 +165,6 @@ class DelayDataset(Dataset):
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
             else:
-                # 尝试使用全局列（batch02 可能没有 e 的独立列）
                 slew_val = row.get('slew_s', 0.0)
             if arrival_col in row.index and pd.notna(row[arrival_col]):
                 arrival_val = row[arrival_col]
@@ -146,7 +172,7 @@ class DelayDataset(Dataset):
                 arrival_val = row.get('arrival_time_s', 0.0)
 
             feat = [
-                float(logic[pin]),
+                float(logic[pin]),      # 使用新的逻辑值
                 1.0 if pin == switching else 0.0,
                 slew_val,
                 arrival_val,
