@@ -12,7 +12,6 @@ GATE_TYPES = [
     'SC_JOIN_BRIDGE_WIRE_WIRE_WIRE_BRIDGE_WIRE_WIRE_WIRE',
     'SC_INV_WIRE', 'INPUT_PIN', 'OUTPUT_PIN',
     'SC_JOIN_BRIDGE__BRIDGE', 
-    'SC_INV',
     # batch02 新增的门类型
     'AND2x2_ASAP7_75t_R',
     'AND3x2_ASAP7_75t_R',
@@ -27,53 +26,46 @@ GATE_TYPES = [
     'OR2x2_ASAP7_75t_R',
     'OR3x2_ASAP7_75t_R',
     'TIEHIx1_ASAP7_75t_R',
-    'TIELOx1_ASAP7_75t_R'
+    'TIELOx1_ASAP7_75t_R',
+    'UNKNOWN_GATE',
 ]
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
 def parse_netlist(netlist_str):
     lines = netlist_str.strip().split('\n')
-
-    # ---- 新增：解析 .SUBCKT 行获取输入引脚 ----
-    input_pins = []
-    for line in lines:
-        if line.lower().startswith('.subckt'):
-            parts = line.split()
-            # parts[0] = '.subckt', parts[1] = 'DUT', 其余为引脚名
-            if len(parts) > 2:
-                input_pins = parts[2:]   # 直接取所有引脚名（假设全部为输入）
-            break
-    # 若未找到，则回退到默认 5 引脚（兼容旧数据）
-    if not input_pins:
-        input_pins = ['a','b','c','d','e']
-        print("Warning: No .SUBCKT line found, using default pins.")
-    # -----------------------------------------
-
-
     gates = {}
     wire_to_driver = {}
+    input_pins = []
 
     for line in lines:
-        if not line.startswith('X_'):
+        stripped = line.strip()
+        if stripped.upper().startswith('.SUBCKT DUT'):
+            parts = stripped.split()
+            if len(parts) >= 3:
+                input_pins = [
+                    p for p in parts[2:]
+                    if p.lower() not in ('vdd', 'gnd', 'vss', 'out')
+                ]
             continue
-        tokens = line.split()
+        if not stripped.startswith('X_'):
+            continue
+        tokens = stripped.split()
+        if len(tokens) < 3:
+            continue
         inst = tokens[0]
-
-        gtype = tokens[-1] 
-        if not gtype.startswith('SC_'):
+        # SPICE 实例行格式: X_<inst> <nets...> <subckt_name>
+        # 最后一个 token 是 subckt 名称（门类型）
+        gtype = tokens[-1]
+        # 中间的 nets：去掉实例名和门类型
+        io_tokens = tokens[1:-1]
+        if len(io_tokens) < 1:
             continue
-
-        # 移除 inst 和 gtype，剩下的就是输入输出 token
-        io = [t for t in tokens if t != inst and t != gtype]
-        if len(io) < 2:
-            continue
-        output = io[-1]
-        inputs = io[:-1]
-
-
+        # 按 SPICE 惯例，最后一个 net 是输出，前面的是输入
+        output = io_tokens[-1]
+        inputs = io_tokens[:-1]
         gates[inst] = {'type': gtype, 'inputs': inputs, 'output': output}
         wire_to_driver[output] = inst
-        
+
     nodes = {}
     for inst, info in gates.items():
         nodes[inst] = {'type': info['type'], 'is_input': False, 'is_output': False}
@@ -120,7 +112,8 @@ def build_static_graph(circuit_id, netlist_str):
     for n in node_names:
         gt = nodes[n]['type']
         onehot = [0.0] * len(GATE_TYPES)
-        onehot[GATE_TO_IDX[gt]] = 1.0
+        idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
+        onehot[idx] = 1.0
         node_type_enc.append(onehot)
     node_type_enc = torch.tensor(node_type_enc, dtype=torch.float)
     

@@ -47,10 +47,6 @@ class DelayDataset(Dataset):
             # 输出负载
             if 'output_load' not in df.columns and 'output_load_f' in df.columns:
                 df = df.rename(columns={'output_load_f': 'output_load'})
-            
-            # 确保 input_pins_json 列存在（若没有，则补默认5引脚）
-            if 'input_pins_json' not in df.columns:
-                df['input_pins_json'] = ['["a","b","c","d","e"]'] * len(df)
             return df
 
         def normalize_dynamic(df):
@@ -71,9 +67,9 @@ class DelayDataset(Dataset):
                         df = df.rename(columns={col: 'DELAY'})
                         break
 
-            # 确保 direction 列存在（若没有，默认 'rise'）
-            if 'direction' not in df.columns:
-                df['direction'] = 'rise'
+            # 确保 vector 列存在且格式正确
+            if 'vector' in df.columns:
+                df['vector'] = df['vector'].astype(str).str.zfill(5)
 
             return df
         # -----------------------------------------------------
@@ -96,27 +92,43 @@ class DelayDataset(Dataset):
 
         # 筛选电路（如果指定）
         if circuit_ids is not None:
-            self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)]
+            self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
 
-        # 删除 DELAY 为 NaN 的行
-        self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
+        # 剔除 DELAY 为 NaN 的样本
+        if 'DELAY' in self.dynamic_df.columns:
+            self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
 
-        # 动态读取引脚列表（从 static_df 中读取 input_pins_json）
+        # 确保 vector 列格式正确（再次保证）
+        if 'vector' in self.dynamic_df.columns:
+            self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
+
+        # 从静态数据中动态推断输入引脚（替代硬编码）
         if 'input_pins_json' in self.static_df.columns:
-            first_row = self.static_df.iloc[0]
-            try:
-                pins = json.loads(first_row['input_pins_json'])
-                if isinstance(pins, list) and len(pins) > 0:
-                    self.pins = pins
-                else:
-                    self.pins = ['a','b','c','d','e']
-                    print("Warning: input_pins_json is not a valid list, using default pins.")
-            except:
-                self.pins = ['a','b','c','d','e']
-                print("Warning: Failed to parse input_pins_json, using default pins.")
+            all_pins = set()
+            for pins_json in self.static_df['input_pins_json']:
+                all_pins.update(json.loads(pins_json))
+            self.pins = sorted(all_pins)
         else:
-            self.pins = ['a','b','c','d','e']
-            print("Warning: No 'input_pins_json' column, using default pins.")
+            # fallback 1: 从第一个网表的 .SUBCKT DUT 行解析
+            sample_netlist = self.static_df['gate_level_netlist'].iloc[0]
+            self.pins = []
+            for line in sample_netlist.split('\n'):
+                if line.strip().upper().startswith('.SUBCKT DUT'):
+                    parts = line.strip().split()
+                    if len(parts) >= 3:
+                        self.pins = [
+                            p for p in parts[2:]
+                            if p.lower() not in ('vdd', 'gnd', 'vss', 'out')
+                        ]
+                    break
+
+        # fallback 2: 如果网表也没有输入引脚，从动态数据的 slew_*/arrival_* 列名推断
+        if not self.pins:
+            pin_cols = [c for c in self.dynamic_df.columns if c.startswith('slew_')]
+            candidate_pins = sorted([c[5:] for c in pin_cols])
+            # 过滤：只保留在 switching_pin 中实际出现过的引脚（排除参考信号如 s）
+            actual_pins = set(self.dynamic_df['switching_pin'].dropna().unique())
+            self.pins = [p for p in candidate_pins if p in actual_pins]
 
         self.scaler = scaler
         self.cache_dir = cache_dir
@@ -134,22 +146,11 @@ class DelayDataset(Dataset):
 
     def _get_dynamic_features(self, row, pin_loads_dict):
         pins = self.pins
-        # 获取 switching_pin 和 direction
         switching = row['switching_pin']
-        direction = row.get('direction', 'rise')
-
-        # 确定切换引脚的逻辑值
-        if direction == 'rise':   # 0->1 跳变，跳变前为 0
-            switch_logic = 0.0
-        elif direction == 'fall': # 1->0 跳变，跳变前为 1
-            switch_logic = 1.0
-        else:
-            switch_logic = 0.5   # 未知方向
-
-        # 构建逻辑值字典，非切换引脚一律设为 0.5
-        logic = {pin: 0.5 for pin in pins}
-        logic[switching] = switch_logic
-
+        direction = row['direction']
+        # 从 direction 推断 switching_pin 的切换前状态
+        # rise: 0 -> 1，切换前为 0; fall: 1 -> 0，切换前为 1
+        switching_before = 0.0 if direction == 'rise' else 1.0
         dyn_feats = {}
         for pin in pins:
             # 负载：优先从动态数据读取 load_{pin}，否则从静态字典
@@ -159,20 +160,27 @@ class DelayDataset(Dataset):
             else:
                 load_val = pin_loads_dict.get(pin, 0.0)
 
-            # 获取 slew 和 arrival
+            # 获取 slew 和 arrival（支持多种列名格式）
             slew_col = f'slew_{pin}'
-            arrival_col = f'arrival_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
             else:
-                slew_val = row.get('slew_s', 0.0)
+                slew_val = 0.0
+
+            # arrival 列可能是 arrival_{pin} 或 arrival_time_{pin}
+            arrival_col = f'arrival_{pin}'
+            arrival_time_col = f'arrival_time_{pin}'
             if arrival_col in row.index and pd.notna(row[arrival_col]):
                 arrival_val = row[arrival_col]
+            elif arrival_time_col in row.index and pd.notna(row[arrival_time_col]):
+                arrival_val = row[arrival_time_col]
             else:
-                arrival_val = row.get('arrival_time_s', 0.0)
+                arrival_val = 0.0
 
+            # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
+            logic_val = switching_before if pin == switching else 0.5
             feat = [
-                float(logic[pin]),      # 使用新的逻辑值
+                logic_val,
                 1.0 if pin == switching else 0.0,
                 slew_val,
                 arrival_val,
