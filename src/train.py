@@ -127,6 +127,16 @@ def main():
     if removed > 0:
         print(f"Data cleaning: removed {removed} rows with NaN values.")
     print(f"Remaining rows: {len(dynamic_df)}")
+    # ---------- 新增：剔除物理上不合理的极端延迟值 ----------
+    # 延迟过小（<1e-12s）或过大（>1e-8s）的样本可能是测量误差或异常值，应去除
+    before_extreme = len(dynamic_df)
+    dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
+    removed_extreme = before_extreme - len(dynamic_df)
+    if removed_extreme > 0:
+        print(f"Removed {removed_extreme} rows with extreme DELAY values (<1e-12 or >1e-8).")
+    print(f"Remaining rows after extreme removal: {len(dynamic_df)}")
+    # ------------------------------------------------------
+
     # ========== 数据清洗结束 ==========
     print("Unique circuit_ids after cleaning:", dynamic_df['circuit_id'].nunique())
 
@@ -214,10 +224,7 @@ def main():
     in_dim = sample_data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     # ==================== 新增：离群点清洗 ====================
-    # 可配置参数（您可调整或移至 config.py）
-    OUTLIER_CLEANING = True      # 是否启用清洗
-    OUTLIER_TOP_PERCENT = 2      # 剔除残差最大的前百分之几
-    BASE_EPOCHS = 20             # 基准模型训练轮数（无需收敛）
+
 
     if OUTLIER_CLEANING and len(train_dataset) > 100:   # 数据量过小则跳过
         print("\n========== 开始离群点清洗 ==========")
