@@ -202,9 +202,6 @@ class DelayDataset(Dataset):
             dyn_feats[pin] = feat
         return dyn_feats
 
-    def __len__(self):
-        return len(self.dynamic_df)
-
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
             idx = idx.item()
@@ -230,3 +227,118 @@ class DelayDataset(Dataset):
         data = Data(x=x, edge_index=edge_index, y=y)
         data.switching_pin = row['switching_pin']
         return data
+    def extract_features(self, idx):
+        """
+        提取第 idx 个样本的特征向量和标签（用于 XGBoost 等树模型）
+        返回: (features: np.ndarray, label: float)
+        """
+        row = self.dynamic_df.iloc[idx]
+        cid = row['circuit_id']
+        node_names, node_static, edge_index = self._get_static(cid)
+        node_static_np = node_static.numpy()
+        num_nodes = node_static_np.shape[0]
+        
+        # ----- 1. 图级静态统计 -----
+        fanout = node_static_np[:, -3]
+        depth = node_static_np[:, -2]
+        drive = node_static_np[:, -1]
+        
+        features = []
+        num_edges = edge_index.size(1)
+        features.extend([num_nodes, num_edges])
+        features.extend([np.mean(fanout), np.max(fanout), np.std(fanout)])
+        features.extend([np.mean(depth), np.max(depth), np.std(depth)])
+        features.extend([np.mean(drive), np.max(drive), np.std(drive)])
+        
+        # ----- 2. 动态特征：切换引脚、方向 -----
+        switching = row['switching_pin']
+        direction = row['direction']
+        for p in self.pins:
+            features.append(1.0 if p == switching else 0.0)
+        features.append(0.0 if direction == 'rise' else 1.0)
+        
+        # ----- 3. 各引脚的 slew/arrival/load 的统计量 -----
+        slew_vals = []
+        arrival_vals = []
+        load_vals = []
+        for p in self.pins:
+            slew_vals.append(row.get(f'slew_{p}', 0.0))
+            arrival_vals.append(row.get(f'arrival_{p}', 0.0))
+            load_vals.append(row.get(f'load_{p}', 0.0))
+        features.extend([np.mean(slew_vals), np.max(slew_vals), np.min(slew_vals)])
+        features.extend([np.mean(arrival_vals), np.max(arrival_vals), np.min(arrival_vals)])
+        features.extend([np.mean(load_vals), np.max(load_vals), np.min(load_vals)])
+        
+        # ----- 4. 切换引脚的单独特征 -----
+        if switching in self.pins:
+            sw_idx = self.pins.index(switching)
+            features.extend([slew_vals[sw_idx], arrival_vals[sw_idx], load_vals[sw_idx]])
+        else:
+            features.extend([0.0, 0.0, 0.0])
+        
+        # ----- 5. 路径级特征（添加防御性处理）-----
+        from collections import deque
+        reverse_adj = {n: [] for n in node_names}
+        for u, v in edge_index.t().tolist():
+            if u < len(node_names) and v < len(node_names):
+                reverse_adj[node_names[v]].append(node_names[u])
+        
+        dist_to_out = {n: float('inf') for n in node_names}
+        dist_to_out['out'] = 0
+        q = deque(['out'])
+        while q:
+            u = q.popleft()
+            for prev in reverse_adj.get(u, []):
+                if dist_to_out[prev] > dist_to_out[u] + 1:
+                    dist_to_out[prev] = dist_to_out[u] + 1
+                    q.append(prev)
+        
+        # 收集输入引脚距离（替换 inf 为 0）
+        input_pins = [p for p in self.pins if p in node_names]
+        if input_pins:
+            path_lengths = []
+            for p in input_pins:
+                d = dist_to_out.get(p, 0.0)
+                if np.isinf(d):
+                    d = 0.0
+                path_lengths.append(d)
+            features.extend([
+                np.mean(path_lengths),
+                np.std(path_lengths) if len(path_lengths) > 1 else 0.0,
+                np.max(path_lengths),
+                np.min(path_lengths),
+                np.median(path_lengths)
+            ])
+        else:
+            features.extend([0.0, 0.0, 0.0, 0.0, 0.0])
+        
+        # 路径上平均扇出和驱动强度
+        fanout_vals = []
+        drive_vals = []
+        for pin in input_pins:
+            if dist_to_out.get(pin, float('inf')) < float('inf'):
+                path_nodes = [n for n in node_names if dist_to_out.get(n, float('inf')) <= dist_to_out[pin]]
+                for n in path_nodes:
+                    if n in node_names:
+                        idx_n = node_names.index(n)
+                        fanout_vals.append(node_static_np[idx_n, -3])
+                        drive_vals.append(node_static_np[idx_n, -1])
+        if fanout_vals:
+            features.extend([np.mean(fanout_vals), np.std(fanout_vals), np.max(fanout_vals)])
+        else:
+            features.extend([0.0, 0.0, 0.0])
+        if drive_vals:
+            features.extend([np.mean(drive_vals), np.std(drive_vals), np.max(drive_vals)])
+        else:
+            features.extend([0.0, 0.0, 0.0])
+        
+        # ----- 清理所有特征，确保无 NaN 或 Inf -----
+        features = np.array(features, dtype=np.float32)
+        features = np.nan_to_num(features, nan=0.0, posinf=0.0, neginf=0.0)
+        
+        label = row['DELAY']
+        return features, label
+    
+
+    def __len__(self):
+        return len(self.dynamic_df)
