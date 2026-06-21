@@ -25,7 +25,9 @@ RANDOM_SEED = 42
 HUBER_DELTA = 0.3   # 可调整，建议从 0.2 开始尝试
 
 # 学习率调度器配置
-LR_SCHEDULER = 'ReduceLROnPlateau'   # 可选: 'ReduceLROnPlateau', 'StepLR', 'CosineAnnealingLR'
+LR_SCHEDULER = 'CosineAnnealingLR'   # 改为余弦退火
+LR_T_MAX = 50                        # 半个周期长度（epoch数）
+LR_ETA_MIN = 1e-6                    # 最小学习率
 LR_FACTOR = 0.7                      # 每次降低的倍数
 LR_PATIENCE = 20                     # 验证损失连续多少epoch不下降时降低学习率
 LR_MIN = 5e-6                        # 学习率下限

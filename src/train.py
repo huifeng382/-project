@@ -83,7 +83,8 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0):
 def evaluate(model, loader, device):
     model.eval()
     total_loss = 0
-    preds_log, targets = [], []
+    preds_log = []   # 必须在使用前初始化
+    targets = []     # 必须在使用前初始化
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
@@ -92,9 +93,15 @@ def evaluate(model, loader, device):
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
             targets.append(data.y.cpu().numpy())
+    
+    # 防止 loader 为空（例如验证集无样本）
+    if len(preds_log) == 0:
+        return 0.0, 0.0, np.array([]), np.array([])
+    
     preds_log = np.concatenate(preds_log)
     targets = np.concatenate(targets)
-    preds = 10 ** preds_log           # 转换回实际延迟
+    preds = 10 ** preds_log                     # 转换回实际延迟
+    preds = np.clip(preds, 1e-12, 1e-8)        # 物理边界裁剪（避免极端离群预测）
     rel_error = np.abs(preds - targets) / targets * 100
     return total_loss / len(loader), np.mean(rel_error), preds, targets
 
@@ -271,7 +278,9 @@ def main():
     elif LR_SCHEDULER == 'StepLR':
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=30, gamma=0.5)
     elif LR_SCHEDULER == 'CosineAnnealingLR':
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=EPOCHS)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=LR_T_MAX, eta_min=LR_ETA_MIN
+        )    
     # --------------------------------
 
     # ========== 修改点：保存和早停依据改为 Val Rel Err ==========
