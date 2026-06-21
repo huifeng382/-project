@@ -11,7 +11,7 @@ from torch.optim import Adam
 from torch_geometric.loader import DataLoader
 from sklearn.preprocessing import StandardScaler
 import numpy as np
-
+from config import HUBER_DELTA
 from src.utils import set_seed, split_by_circuit, save_scaler, create_dir
 from src.data_loader import DelayDataset
 from src.model import DelayGNN
@@ -52,25 +52,28 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
     print(f"清洗前样本数: {len(dataset)}, 清洗后: {len(keep_indices)}, 剔除比例: {100 - len(keep_indices)/len(dataset)*100:.1f}%")
     return torch.utils.data.Subset(dataset, keep_indices)
 
-def train_one_epoch(model, loader, optimizer, device):
+def train_one_epoch(model, loader, optimizer, device, delta=1.0):
     model.train()
     total_loss = 0
     for data in loader:
         data = data.to(device)
         optimizer.zero_grad()
         out = model(data.x, data.edge_index, data.batch)
-        # 基础 loss
         target_log = torch.log10(data.y + 1e-12)
-        base_loss = F.mse_loss(out, target_log)
-        # 获取每个样本的权重
+        
+        # 计算残差
+        residual = out - target_log
+        abs_res = torch.abs(residual)
+        
+        # Huber 损失（逐样本）
+        sample_loss = torch.where(abs_res <= delta,
+                                  0.5 * residual ** 2,
+                                  delta * (abs_res - 0.5 * delta))
+        
+        # 获取样本权重
         weights = torch.tensor([PIN_WEIGHTS[pin] for pin in data.switching_pin], device=device)
-        # 加权 loss：对每个样本的 MSE 加权平均
-        # 注意：out 和 target_log 都是 batch 中的每个样本
-        # 需要逐元素计算平方差后加权平均
-        squared_diff = (out - target_log) ** 2
-        weighted_loss = (squared_diff * weights).mean()
-        # 或使用加权 MSE
-        loss = weighted_loss
+        loss = (sample_loss * weights).mean()
+        
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -213,7 +216,7 @@ def main():
     # ==================== 新增：离群点清洗 ====================
     # 可配置参数（您可调整或移至 config.py）
     OUTLIER_CLEANING = True      # 是否启用清洗
-    OUTLIER_TOP_PERCENT = 5      # 剔除残差最大的前百分之几
+    OUTLIER_TOP_PERCENT = 2      # 剔除残差最大的前百分之几
     BASE_EPOCHS = 20             # 基准模型训练轮数（无需收敛）
 
     if OUTLIER_CLEANING and len(train_dataset) > 100:   # 数据量过小则跳过
@@ -225,7 +228,7 @@ def main():
                               weight_decay=WEIGHT_DECAY)
         base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
         for ep in range(BASE_EPOCHS):
-            loss = train_one_epoch(base_model, base_loader, base_optimizer, device)
+            loss = train_one_epoch(base_model, base_loader, base_optimizer, device, delta=HUBER_DELTA)
             print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
 
         # 2. 计算每个样本的残差
@@ -269,7 +272,7 @@ def main():
     patience_counter = 0
     print("Start training...")
     for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
         
         current_lr = optimizer.param_groups[0]['lr']
