@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from sklearn.preprocessing import StandardScaler
-import xgboost as xgb
+import lightgbm as lgb
 from config import *
 from src.utils import set_seed, split_by_circuit, create_dir
 from src.data_loader import DelayDataset
@@ -74,85 +74,60 @@ X_train = scaler_x.fit_transform(X_train)
 X_val = scaler_x.transform(X_val)
 X_test = scaler_x.transform(X_test)
 
-# ==================== 目标变量变换选项 ====================
-# 选择一种变换方式（取消注释对应的代码块，注释掉其他）
-
-# ---------- 选项 0: 原始 log10（基线） ----------
-# y_train_target = np.log10(y_train + 1e-12)
-# y_val_target   = np.log10(y_val + 1e-12)
-# y_test_target  = np.log10(y_test + 1e-12)
-# use_boxcox = False
-# use_standardize = False
-
-# ---------- 选项 1: Box-Cox 变换 ----------
-y_train_bc, lambda_opt = boxcox(y_train + 1e-12)  # 自动寻找最佳 λ
+# ==================== 目标变量变换（Box-Cox） ====================
+y_train_bc, lambda_opt = boxcox(y_train + 1e-12)
 y_val_bc   = (y_val + 1e-12) ** lambda_opt - 1 / lambda_opt
 y_test_bc  = (y_test + 1e-12) ** lambda_opt - 1 / lambda_opt
 y_train_target = y_train_bc
 y_val_target   = y_val_bc
 y_test_target  = y_test_bc
 use_boxcox = True
-use_standardize = False  # 下面可再叠加标准化
-
-# ---------- 选项 2: 目标标准化（对 log10 或 Box-Cox 后的目标） ----------
-# 若希望叠加标准化，将 use_standardize = True 并设置上面的 use_boxcox 为 True 或 False
-# 示例：先 Box-Cox 再标准化
-# scaler_y = StandardScaler()
-# y_train_scaled = scaler_y.fit_transform(y_train_target.reshape(-1, 1)).ravel()
-# y_val_scaled   = scaler_y.transform(y_val_target.reshape(-1, 1)).ravel()
-# y_test_scaled  = scaler_y.transform(y_test_target.reshape(-1, 1)).ravel()
-# y_train_target, y_val_target, y_test_target = y_train_scaled, y_val_scaled, y_test_scaled
-# use_standardize = True
-
-# ---------- 选项 3: 分位数回归（需配合目标变换） ----------
-# 建议使用 log10 或 Box-Cox 后的目标，然后设置 objective='reg:quantileerror'
 # ================================================================
 
-# ========== 根据选择的变换，设置相应的逆变换函数 ==========
 def inverse_transform(preds_target):
-    # 如果使用了 Box-Cox
+    """逆变换回原始延迟"""
     if use_boxcox:
-        preds_bc = preds_target
-        # 如果同时使用了标准化，先逆标准化
-        if use_standardize:
-            preds_bc = scaler_y.inverse_transform(preds_bc.reshape(-1, 1)).ravel()
-        preds = inv_boxcox(preds_bc, lambda_opt) - 1e-12
+        preds = inv_boxcox(preds_target, lambda_opt) - 1e-12
     else:
-        # 仅 log10（可能加标准化）
-        if use_standardize:
-            preds_log = scaler_y.inverse_transform(preds_target.reshape(-1, 1)).ravel()
-        else:
-            preds_log = preds_target
-        preds = 10 ** preds_log
+        preds = 10 ** preds_target
     return preds
 
-# ==================== 训练 XGBoost ====================
-# 选择目标函数（可根据需要修改）
-model = xgb.XGBRegressor(
-    # objective='reg:absoluteerror',   # 原方案
-    objective='reg:squarederror',      # 配合变换后常用
-    # objective='reg:quantileerror',   # 分位数回归，需设置 quantile_alpha
-    # quantile_alpha=0.5,
-    n_estimators=300,
-    max_depth=8,
-    learning_rate=0.05,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    random_state=42,
-    n_jobs=-1,
-    early_stopping_rounds=30,
-    eval_metric='mae'
-)
+# ==================== 训练 LightGBM ====================
+# 创建 LightGBM 数据集（支持早停和验证）
+train_data = lgb.Dataset(X_train, label=y_train_target)
+val_data = lgb.Dataset(X_val, label=y_val_target, reference=train_data)
 
-model.fit(
-    X_train, y_train_target,
-    eval_set=[(X_val, y_val_target)],
-    verbose=False
+# 参数配置（可调节）
+params = {
+    'objective': 'regression',           # 回归任务
+    'metric': 'mae',                     # 评估指标（早停依据）
+    'boosting_type': 'gbdt',             # 梯度提升树
+    'num_leaves': 31,                    # 叶子节点数，控制复杂度
+    'max_depth': 8,                      # 最大深度
+    'learning_rate': 0.05,               # 学习率
+    'feature_fraction': 0.8,             # 列采样
+    'bagging_fraction': 0.8,             # 行采样
+    'bagging_freq': 5,                   # 每5轮做一次bagging
+    'reg_alpha': 0.1,                    # L1正则
+    'reg_lambda': 0.1,                   # L2正则
+    'min_child_samples': 20,             # 叶子最小样本数
+    'n_jobs': -1,
+    'random_state': 42,
+    'verbose': -1
+}
+
+# 训练模型（带早停）
+model = lgb.train(
+    params,
+    train_data,
+    valid_sets=[val_data],
+    num_boost_round=1000,
+    callbacks=[lgb.early_stopping(30), lgb.log_evaluation(0)]
 )
 
 # 预测
-preds_val_target = model.predict(X_val)
-preds_test_target = model.predict(X_test)
+preds_val_target = model.predict(X_val, num_iteration=model.best_iteration)
+preds_test_target = model.predict(X_test, num_iteration=model.best_iteration)
 
 # 逆变换回原始延迟
 preds_val = inverse_transform(preds_val_target)
@@ -162,6 +137,6 @@ preds_test = inverse_transform(preds_test_target)
 rel_err_val = np.abs(preds_val - y_val) / y_val * 100
 rel_err_test = np.abs(preds_test - y_test) / y_test * 100
 
-print(f"XGBoost Val Mean Relative Error: {np.mean(rel_err_val):.2f}%")
-print(f"XGBoost Test Mean Relative Error: {np.mean(rel_err_test):.2f}%")
-np.savez(os.path.join(OUTPUT_DIR, 'xgb_predictions.npz'), preds=preds_test, targets=y_test)
+print(f"LightGBM Val Mean Relative Error: {np.mean(rel_err_val):.2f}%")
+print(f"LightGBM Test Mean Relative Error: {np.mean(rel_err_test):.2f}%")
+np.savez(os.path.join(OUTPUT_DIR, 'lgb_predictions.npz'), preds=preds_test, targets=y_test)
