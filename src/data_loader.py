@@ -159,31 +159,32 @@ class DelayDataset(Dataset):
         # 从 direction 推断 switching_pin 的切换前状态
         # rise: 0 -> 1，切换前为 0; fall: 1 -> 0，切换前为 1
         switching_before = 0.0 if direction == 'rise' else 1.0
+
+        # 全局动态参数（来自 timing_arcs，每个向量不同）
+        global_slew = row.get('slew_s', 0.0) if pd.notna(row.get('slew_s')) else 0.0
+        global_out_load = row.get('output_load_f', 0.0) if pd.notna(row.get('output_load_f')) else 0.0
+
         dyn_feats = {}
         for pin in pins:
-            # 负载：优先从动态数据读取 load_{pin}，否则从静态字典
-            load_col = f'load_{pin}'
-            if load_col in row.index and pd.notna(row[load_col]):
-                load_val = row[load_col]
+            # 负载逻辑：
+            # 1. 输出引脚用全局 output_load_f
+            # 2. 输入引脚优先读动态列 load_{pin}，否则从静态字典
+            pl = pin.lower()
+            if pl.startswith('out'):
+                load_val = global_out_load
             else:
-                load_val = pin_loads_dict.get(pin, 0.0)
+                load_col = f'load_{pin}'
+                if load_col in row.index and pd.notna(row[load_col]):
+                    load_val = row[load_col]
+                else:
+                    load_val = pin_loads_dict.get(pin, 0.0)
 
-            # 获取 slew 和 arrival（支持多种列名格式）
+            # 获取 slew（支持 per-pin 列或全局 slew_s）
             slew_col = f'slew_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
             else:
-                slew_val = 0.0
-
-            # arrival 列可能是 arrival_{pin} 或 arrival_time_{pin}
-            arrival_col = f'arrival_{pin}'
-            arrival_time_col = f'arrival_time_{pin}'
-            if arrival_col in row.index and pd.notna(row[arrival_col]):
-                arrival_val = row[arrival_col]
-            elif arrival_time_col in row.index and pd.notna(row[arrival_time_col]):
-                arrival_val = row[arrival_time_col]
-            else:
-                arrival_val = 0.0
+                slew_val = global_slew if pin == switching else 0.0
 
             # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
             logic_val = switching_before if pin == switching else 0.5
@@ -191,9 +192,8 @@ class DelayDataset(Dataset):
                 logic_val,
                 1.0 if pin == switching else 0.0,
                 slew_val,
-                arrival_val,
                 load_val,
-                0.0  # output_load placeholder
+                global_out_load,
             ]
             if self.scaler is not None:
                 continuous = np.array([feat[2], feat[3], feat[4]]).reshape(1, -1)
@@ -214,14 +214,14 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        node_feat_dim = node_static.shape[1] + 6
+        node_feat_dim = node_static.shape[1] + 5
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
 
         for i, n in enumerate(node_names):
             if n in dyn_feats:
                 dyn = dyn_feats[n]
-                x[i, -6:] = torch.tensor(dyn, dtype=torch.float)
+                x[i, -5:] = torch.tensor(dyn, dtype=torch.float)
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
@@ -257,24 +257,21 @@ class DelayDataset(Dataset):
             features.append(1.0 if p == switching else 0.0)
         features.append(0.0 if direction == 'rise' else 1.0)
         
-        # ----- 3. 各引脚的 slew/arrival/load 的统计量 -----
+        # ----- 3. 各引脚的 slew/load 的统计量 -----
         slew_vals = []
-        arrival_vals = []
         load_vals = []
         for p in self.pins:
-            slew_vals.append(row.get(f'slew_{p}', 0.0))
-            arrival_vals.append(row.get(f'arrival_{p}', 0.0))
+            slew_vals.append(row.get(f'slew_{p}', row.get('slew_s', 0.0)))
             load_vals.append(row.get(f'load_{p}', 0.0))
         features.extend([np.mean(slew_vals), np.max(slew_vals), np.min(slew_vals)])
-        features.extend([np.mean(arrival_vals), np.max(arrival_vals), np.min(arrival_vals)])
         features.extend([np.mean(load_vals), np.max(load_vals), np.min(load_vals)])
-        
+
         # ----- 4. 切换引脚的单独特征 -----
         if switching in self.pins:
             sw_idx = self.pins.index(switching)
-            features.extend([slew_vals[sw_idx], arrival_vals[sw_idx], load_vals[sw_idx]])
+            features.extend([slew_vals[sw_idx], load_vals[sw_idx]])
         else:
-            features.extend([0.0, 0.0, 0.0])
+            features.extend([0.0, 0.0])
         
         # ----- 5. 路径级特征（添加防御性处理）-----
         from collections import deque
