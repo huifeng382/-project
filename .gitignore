@@ -1,7 +1,20 @@
-cache/
-outputs/
+# Python 缓存
 __pycache__/
 *.pyc
-*.pt
+*.pyo
+
+# 数据文件（大文件或生成文件）
+data/
+cache/
+outputs/
+*.parquet
 *.npz
 *.pkl
+
+# IDE 配置
+.vscode/
+.idea/
+
+# 临时文件
+*.log
+*.tmp

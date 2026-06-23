@@ -71,7 +71,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0):
                                   delta * (abs_res - 0.5 * delta))
         
         # 获取样本权重
-        weights = torch.tensor([PIN_WEIGHTS[pin] for pin in data.switching_pin], device=device)
+        weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
         
         loss.backward()
