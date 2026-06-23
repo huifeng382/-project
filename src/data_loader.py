@@ -268,11 +268,18 @@ class DelayDataset(Dataset):
         # ----- 3. 各引脚的 slew/load 的统计量 -----
         slew_vals = []
         load_vals = []
+        # 获取该样本对应的静态负载字典
+        pin_loads_dict = self.static_df.loc[cid, 'pin_loads_dict']
         for p in self.pins:
-            slew_vals.append(row.get(f'slew_{p}', row.get('slew_s', 0.0)))
-            load_vals.append(row.get(f'load_{p}', 0.0))
-        features.extend([np.mean(slew_vals), np.max(slew_vals), np.min(slew_vals)])
-        features.extend([np.mean(load_vals), np.max(load_vals), np.min(load_vals)])
+            # 读取 slew（优先 per-pin，否则全局）
+            slew = row.get(f'slew_{p}')
+            if slew is None or pd.isna(slew):
+                slew = row.get('slew_s', 0.0)
+            slew_vals.append(float(slew) if slew is not None else 0.0)
+    
+            # 从静态字典读取负载，不存在则用 0.0
+            load_val = pin_loads_dict.get(p, 0.0)
+            load_vals.append(float(load_val) if not pd.isna(load_val) else 0.0)
 
         # ----- 4. 切换引脚的单独特征 -----
         if switching in self.pins:

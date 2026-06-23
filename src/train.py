@@ -112,12 +112,12 @@ def main():
     create_dir(OUTPUT_DIR)
 
     # 自动扫描所有批次的 Parquet 文件
-    static_parquets = glob.glob("data/batch_03/circuit_static.parquet")
-    dynamic_parquets = glob.glob("data/batch_03/timing_arcs.parquet")
+    static_parquets = glob.glob("data/batch_*/circuit_static.parquet")
+    dynamic_parquets = glob.glob("data/batch_*/timing_arcs.parquet")
 
     if not static_parquets or not dynamic_parquets:
         raise FileNotFoundError(
-            "No Parquet files found in data/batch_03/ directories.\n"
+            "No Parquet files found in data/batch_*/ directories.\n"
             "Please run convert_to_parquet.py first to generate the files."
         )
 
@@ -166,21 +166,68 @@ def main():
     # 按电路划分训练/验证/测试集
     train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
 
-    # 准备标准化器（基于训练集中所有电路的各引脚 slew, arrival, load）
+    # 准备标准化器（基于训练集中所有电路的各引脚 slew, load, global_out_load）
     train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
+    
+    # ===== 加载静态数据以获取负载 =====
+    # 定义列名规范化函数（与 data_loader 中一致）
+    def normalize_static(df):
+        if 'circuit_id' not in df.columns:
+            if 'candidate' in df.columns:
+                df = df.rename(columns={'candidate': 'circuit_id'})
+            elif 'candidate_id' in df.columns:
+                df = df.rename(columns={'candidate_id': 'circuit_id'})
+            else:
+                raise KeyError(f"Static data missing id column. Columns: {df.columns.tolist()}")
+        df['circuit_id'] = df['circuit_id'].astype(str)
+        if 'gate_level_netlist' not in df.columns:
+            if 'gate_level_netlist_std' in df.columns:
+                df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
+        return df
+
+    static_dfs = []
+    for p in static_parquets:
+        df = pd.read_parquet(p)
+        df = normalize_static(df)
+        static_dfs.append(df)
+    static_df = pd.concat(static_dfs).drop_duplicates('circuit_id').set_index('circuit_id')
+
+    # 解析 pin_loads_json 为字典
+    if 'pin_loads_json' in static_df.columns:
+        def parse_loads(x):
+            try:
+                return json.loads(x) if isinstance(x, str) else x
+            except:
+                return {}
+        static_df['pin_loads_dict'] = static_df['pin_loads_json'].apply(parse_loads)
+    else:
+        static_df['pin_loads_dict'] = [{}] * len(static_df)
+    # ===================================
+    
+    # 推断引脚
+    pins = sorted({c.split('_')[1] for c in train_dynamic.columns 
+                   if c.startswith('slew_') and c != 'slew_s'})
+    if not pins:
+        pins = sorted(train_dynamic['switching_pin'].dropna().unique())
+    print(f"Detected pins: {pins}")
+    
     all_cont_features = []
-    # 动态推断引脚：从数据中实际存在的 slew_* 列获取（排除 slew_s）
-    pins = sorted({c.split('_')[1] for c in train_dynamic.columns if c.startswith('slew_') and c != 'slew_s'})
-    print(f"Detected pins from data: {pins}")
     for _, row in train_dynamic.iterrows():
+        cid = row['circuit_id']
+        pin_loads = static_df.loc[cid, 'pin_loads_dict']
         for pin in pins:
-            # 适配不同批次的列名差异
             slew_col = f'slew_{pin}'
-            arrival_col = f'arrival_{pin}' if f'arrival_{pin}' in row.index else f'arrival_time_{pin}'
-            load_col = f'load_{pin}' if f'load_{pin}' in row.index else 'output_load_f'
-            all_cont_features.append([row[slew_col], row[arrival_col], row[load_col]])
+            load_val = pin_loads.get(pin, 0.0)
+            all_cont_features.append([
+                row.get(slew_col, 0.0),
+                load_val,
+                row.get('output_load_f', 0.0)
+            ])
+    
     scaler = StandardScaler(with_std=False)
     scaler.fit(all_cont_features)
+
+
     print("=" * 50)
     print("Scaler check:")
     print(f"  Mean shape: {scaler.mean_.shape if scaler.mean_ is not None else 'None'}")
