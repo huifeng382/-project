@@ -20,7 +20,6 @@ PIN_WEIGHTS = {
     'b': 1.0,
     'c': 1.0,
     'd': 1.3,
-    'e': 1.0,
 }
 def log_mse_loss(pred_log, target):
     """pred_log: 模型输出的 log10(delay) , target: 真实 delay"""
@@ -71,7 +70,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0):
                                   delta * (abs_res - 0.5 * delta))
         
         # 获取样本权重
-        weights = torch.tensor([PIN_WEIGHTS[pin] for pin in data.switching_pin], device=device)
+        weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
         
         loss.backward()
@@ -111,9 +110,9 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # 自动扫描所有批次的 Parquet 文件
-    static_parquets = glob.glob("data/batch_*/circuit_static.parquet")
-    dynamic_parquets = glob.glob("data/batch_*/timing_arcs.parquet")
+    # 自动扫描所有批次的 Parquet文件
+    static_parquets = glob.glob("data/dataset_expr400_500/circuit_static.parquet")
+    dynamic_parquets = glob.glob("data/dataset_expr400_500/timing_arcs.parquet")
 
     if not static_parquets or not dynamic_parquets:
         raise FileNotFoundError(
@@ -125,14 +124,20 @@ def main():
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
+    # 统一列名：新数据集使用 candidate_id
+    if 'circuit_id' not in dynamic_df.columns and 'candidate_id' in dynamic_df.columns:
+        dynamic_df = dynamic_df.rename(columns={'candidate_id': 'circuit_id'})
+
     # ========== 数据清洗开始 ==========
     original_len = len(dynamic_df)
     dynamic_df = dynamic_df.dropna(subset=['circuit_id'])
     dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
     dynamic_df = dynamic_df.dropna(subset=['DELAY'])
+    # 过滤 SPICE 数值噪声导致的负延迟
+    dynamic_df = dynamic_df[dynamic_df['DELAY'] > 0]
     removed = original_len - len(dynamic_df)
     if removed > 0:
-        print(f"Data cleaning: removed {removed} rows with NaN values.")
+        print(f"Data cleaning: removed {removed} rows with NaN or non-positive DELAY values.")
     print(f"Remaining rows: {len(dynamic_df)}")
     # ---------- 新增：剔除物理上不合理的极端延迟值 ----------
     # 延迟过小（<1e-12s）或过大（>1e-8s）的样本可能是测量误差或异常值，应去除
@@ -152,13 +157,19 @@ def main():
     # 按电路划分训练/验证/测试集
     train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
 
-    # 准备标准化器（基于训练集中所有电路的各引脚 slew, arrival, load）
+    # 准备标准化器（基于训练集中所有电路的各引脚 slew, load, output_load）
     train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
     all_cont_features = []
-    pins = ['a','b','c','d','e']
+    pins = sorted([c[5:] for c in dynamic_df.columns if c.startswith('slew_')])
+    actual_pins = set(dynamic_df['switching_pin'].dropna().unique())
+    pins = [p for p in pins if p in actual_pins]
+    print(f"Detected pins: {pins}")
     for _, row in train_dynamic.iterrows():
         for pin in pins:
-            all_cont_features.append([row[f'slew_{pin}'], row[f'arrival_{pin}'], row[f'load_{pin}']])
+            slew_val = row.get(f'slew_{pin}', 0)
+            load_val = row.get(f'load_{pin}', 0)
+            out_load = row.get('output_load_f', 0.0)
+            all_cont_features.append([slew_val, load_val, out_load])
     scaler = StandardScaler(with_std=False)
     scaler.fit(all_cont_features)
     print("=" * 50)

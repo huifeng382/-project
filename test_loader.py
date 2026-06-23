@@ -27,8 +27,8 @@ def test_loader():
     train_ids = all_ids[:3]   # 只取前3个电路快速测试
     
     dataset = DelayDataset(
-        static_parquet=static_path,
-        dynamic_parquet=dynamic_path,
+        static_parquets=[static_path],
+        dynamic_parquets=[dynamic_path],
         circuit_ids=train_ids,
         scaler=None,
         cache_dir=os.path.join(project_root, "cache")
