@@ -264,7 +264,16 @@ class DelayDataset(Dataset):
         for p in self.pins:
             features.append(1.0 if p == switching else 0.0)
         features.append(0.0 if direction == 'rise' else 1.0)
-        
+
+        # 全局动态参数（每个样本不同）
+        features.append(float(row.get('slew_s', 0.0)))         # 全局 slew
+        features.append(float(row.get('output_load_f', 0.0)))  # 输出负载
+
+        # vector 编码（5-bit 输入模式，决定不同 delay 的关键特征）
+        vector = str(row.get('vector', '00000')).zfill(5)
+        for bit in vector:
+            features.append(float(bit))
+
         # ----- 3. 各引脚的 slew/load 的统计量 -----
         slew_vals = []
         load_vals = []

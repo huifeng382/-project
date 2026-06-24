@@ -95,6 +95,8 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"base{BASE_EPOCHS}",
         f"huber{HUBER_DELTA}",
         f"seed{RANDOM_SEED}",
+        f"hdim{HIDDEN_DIM}",
+        f"nlay{NUM_LAYERS}",
     ]
     # 加入数据文件的修改时间，数据变了缓存自动失效
     for p in sorted(static_parquets + dynamic_parquets):
@@ -114,11 +116,11 @@ def main():
 
     # ---------- 适配 sweep 数据集路径 ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_1w/circuit_static.parquet"))
-    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_1w/timing_arcs.parquet"))
+    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_05/circuit_static.parquet"))
+    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_05/timing_arcs.parquet"))
 
     if not static_parquets or not dynamic_parquets:
-        raise FileNotFoundError("No Parquet files found in batch_1w/")
+        raise FileNotFoundError("No Parquet files found in batch_05/")
 
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)

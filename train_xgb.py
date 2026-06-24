@@ -10,38 +10,38 @@ from config import *
 from src.utils import set_seed, split_by_circuit, create_dir
 from src.data_loader import DelayDataset
 
-# ========== 新增导入 ==========
-from scipy.stats import boxcox
-from scipy.special import inv_boxcox
-# =============================
-
 set_seed(RANDOM_SEED)
+create_dir(CACHE_DIR)
 create_dir(OUTPUT_DIR)
 
-static_parquets = glob.glob("data/batch_*/circuit_static.parquet")
-dynamic_parquets = glob.glob("data/batch_*/timing_arcs.parquet")
+static_parquets = glob.glob("data/batch_05/circuit_static.parquet")
+dynamic_parquets = glob.glob("data/batch_05/timing_arcs.parquet")
 if not static_parquets or not dynamic_parquets:
     raise FileNotFoundError("No Parquet files found.")
 
 # 合并动态数据并清洗
 dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
 dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
-dynamic_df = dynamic_df.dropna(subset=['circuit_id', 'DELAY'])
+
+# 列名规范化
+for col in ['candidate', 'candidate_id']:
+    if col in dynamic_df.columns and 'circuit_id' not in dynamic_df.columns:
+        dynamic_df = dynamic_df.rename(columns={col: 'circuit_id'})
 dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
+if 'DELAY' not in dynamic_df.columns:
+    for col in ['delay_s', 'delay']:
+        if col in dynamic_df.columns:
+            dynamic_df = dynamic_df.rename(columns={col: 'DELAY'})
+            break
+
+dynamic_df = dynamic_df.dropna(subset=['circuit_id', 'DELAY'])
 dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
 
 circuit_ids = dynamic_df['circuit_id'].unique().tolist()
 train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
 
-# 标准化器（与 train.py 一致）
-train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
-all_cont_features = []
-pins = ['a','b','c','d','e']
-for _, row in train_dynamic.iterrows():
-    for pin in pins:
-        all_cont_features.append([row[f'slew_{pin}'], row[f'arrival_{pin}'], row[f'load_{pin}']])
-scaler = StandardScaler(with_std=False)
-scaler.fit(all_cont_features)
+# extract_features 不使用 scaler，传 None 即可
+scaler = None
 
 train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)
 val_dataset   = DelayDataset(static_parquets, dynamic_parquets, val_ids,   scaler, CACHE_DIR)
@@ -74,22 +74,15 @@ X_train = scaler_x.fit_transform(X_train)
 X_val = scaler_x.transform(X_val)
 X_test = scaler_x.transform(X_test)
 
-# ==================== 目标变量变换（Box-Cox） ====================
-y_train_bc, lambda_opt = boxcox(y_train + 1e-12)
-y_val_bc   = (y_val + 1e-12) ** lambda_opt - 1 / lambda_opt
-y_test_bc  = (y_test + 1e-12) ** lambda_opt - 1 / lambda_opt
-y_train_target = y_train_bc
-y_val_target   = y_val_bc
-y_test_target  = y_test_bc
-use_boxcox = True
-# ================================================================
+# ==================== 目标变量变换（log10，与 GNN 一致） ====================
+y_train_target = np.log10(y_train + 1e-12)
+y_val_target   = np.log10(y_val + 1e-12)
+y_test_target  = np.log10(y_test + 1e-12)
 
 def inverse_transform(preds_target):
     """逆变换回原始延迟"""
-    if use_boxcox:
-        preds = inv_boxcox(preds_target, lambda_opt) - 1e-12
-    else:
-        preds = 10 ** preds_target
+    preds = 10 ** preds_target
+    preds = np.clip(preds, 1e-12, 1e-8)
     return preds
 
 # ==================== 训练 LightGBM ====================
@@ -140,3 +133,15 @@ rel_err_test = np.abs(preds_test - y_test) / y_test * 100
 print(f"LightGBM Val Mean Relative Error: {np.mean(rel_err_val):.2f}%")
 print(f"LightGBM Test Mean Relative Error: {np.mean(rel_err_test):.2f}%")
 np.savez(os.path.join(OUTPUT_DIR, 'lgb_predictions.npz'), preds=preds_test, targets=y_test)
+
+# Per-corner breakdown
+test_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(test_ids)]
+if 'corner' in test_dynamic.columns and len(preds_test) > 0:
+    print("\nPer-corner relative error:")
+    corners = test_dynamic['corner'].values
+    if len(corners) == len(preds_test):
+        for c in sorted(set(corners)):
+            mask = corners == c
+            if mask.sum() > 0:
+                err = np.abs(preds_test[mask] - y_test[mask]) / y_test[mask] * 100
+                print(f"  {c}: {np.mean(err):.2f}%")
