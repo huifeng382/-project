@@ -1,6 +1,7 @@
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import hashlib
 import torch.utils.data
 from config import *
 import glob
@@ -86,6 +87,26 @@ def evaluate(model, loader, device):
     rel_error = np.abs(preds - targets) / targets * 100
     return total_loss / len(loader), np.mean(rel_error), preds, targets
 
+def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
+    """生成离群点清洗缓存的路径，数据或配置变化时自动失效。"""
+    key_parts = [
+        ','.join(sorted(train_ids)),
+        f"top{OUTLIER_TOP_PERCENT}",
+        f"base{BASE_EPOCHS}",
+        f"huber{HUBER_DELTA}",
+        f"seed{RANDOM_SEED}",
+    ]
+    # 加入数据文件的修改时间，数据变了缓存自动失效
+    for p in sorted(static_parquets + dynamic_parquets):
+        try:
+            key_parts.append(str(int(os.path.getmtime(p))))
+        except OSError:
+            key_parts.append('0')
+    key_str = '_'.join(key_parts)
+    key_hash = hashlib.md5(key_str.encode()).hexdigest()[:12]
+    return os.path.join(CACHE_DIR, f'outlier_keep_{key_hash}.npy')
+
+
 def main():
     set_seed(RANDOM_SEED)
     create_dir(CACHE_DIR)
@@ -93,11 +114,11 @@ def main():
 
     # ---------- 适配 sweep 数据集路径 ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    static_parquets = glob.glob(os.path.join(data_dir, "dataset_sweep_20expr/circuit_static.parquet"))
-    dynamic_parquets = glob.glob(os.path.join(data_dir, "dataset_sweep_20expr/timing_arcs.parquet"))
+    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_1w/circuit_static.parquet"))
+    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_1w/timing_arcs.parquet"))
 
     if not static_parquets or not dynamic_parquets:
-        raise FileNotFoundError("No Parquet files found in dataset_sweep_20expr/")
+        raise FileNotFoundError("No Parquet files found in batch_1w/")
 
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
@@ -209,28 +230,40 @@ def main():
 
     # ---------- 离群点清洗 ----------
     if OUTLIER_CLEANING and len(train_dataset) > 100:
-        print("\n========== 开始离群点清洗 ==========")
-        base_model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM,
-                              num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
-        base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
-                              weight_decay=WEIGHT_DECAY)
-        base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-        for ep in range(BASE_EPOCHS):
-            loss = train_one_epoch(base_model, base_loader, base_optimizer, device, delta=HUBER_DELTA)
-            print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
+        cache_path = get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets)
 
-        residuals = get_train_residuals(base_model, train_dataset, device)
-        threshold = np.percentile(residuals, 100 - OUTLIER_TOP_PERCENT)
-        keep_indices = np.where(residuals <= threshold)[0].tolist()
+        if os.path.exists(cache_path):
+            keep_indices = np.load(cache_path).tolist()
+            print(f"\n加载离群点清洗缓存: {cache_path}")
+            print(f"  原始样本数: {len(train_dataset)}, 清洗后: {len(keep_indices)}, "
+                  f"剔除: {(1 - len(keep_indices)/len(train_dataset))*100:.1f}%")
+        else:
+            print("\n========== 开始离群点清洗 ==========")
+            base_model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM,
+                                  num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
+            base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
+                                  weight_decay=WEIGHT_DECAY)
+            base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            for ep in range(BASE_EPOCHS):
+                loss = train_one_epoch(base_model, base_loader, base_optimizer, device, delta=HUBER_DELTA)
+                print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
 
-        print(f"  原始样本数: {len(train_dataset)}")
-        print(f"  清洗后样本数: {len(keep_indices)}")
-        print(f"  剔除比例: {(1 - len(keep_indices)/len(train_dataset))*100:.1f}%")
+            residuals = get_train_residuals(base_model, train_dataset, device)
+            threshold = np.percentile(residuals, 100 - OUTLIER_TOP_PERCENT)
+            keep_indices = np.where(residuals <= threshold)[0].tolist()
+
+            print(f"  原始样本数: {len(train_dataset)}")
+            print(f"  清洗后样本数: {len(keep_indices)}")
+            print(f"  剔除比例: {(1 - len(keep_indices)/len(train_dataset))*100:.1f}%")
+
+            np.save(cache_path, np.array(keep_indices))
+            print(f"  缓存已保存: {cache_path}")
+
+            del base_model, base_optimizer
+            print("========== 清洗完成 ==========\n")
 
         train_subset = torch.utils.data.Subset(train_dataset, keep_indices)
         train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
-        del base_model, base_optimizer
-        print("========== 清洗完成 ==========\n")
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 
