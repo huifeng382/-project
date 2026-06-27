@@ -1,0 +1,235 @@
+{
+  "dataset_name": "dataset_diverse_500",
+  "description": "TransiLog generated candidate circuits with Xyce SPICE simulation results.",
+  "created_date": "2026-06-27",
+  "source": "TransiLog e-graph equality saturation + structural diversity filtering",
+  "files": {
+    "circuit_static.parquet": {
+      "rows": 4995,
+      "description": "Static features per candidate circuit. One row per unique candidate.",
+      "fields": {
+        "candidate_id": {
+          "description": "Unique candidate identifier",
+          "example": "candidate_expr0001_0000"
+        },
+        "expr": {
+          "description": "Expression index from the e-graph enumeration",
+          "example": "expr0001"
+        },
+        "candidate_idx": {
+          "description": "Candidate index within the same expression group",
+          "example": "0000"
+        },
+        "transistor_count": {
+          "description": "Total number of transistors in the candidate netlist",
+          "type": "int",
+          "unit": "count"
+        },
+        "gate_level_netlist": {
+          "description": "Original gate-level netlist (raw custom subcircuit names)",
+          "type": "string"
+        },
+        "gate_level_netlist_std": {
+          "description": "Gate-level netlist with ASAP7-style standard cell names (best-effort heuristic mapping)",
+          "type": "string"
+        },
+        "cell_types_json": {
+          "description": "JSON list of original custom cell types",
+          "type": "string (JSON array)"
+        },
+        "cell_types_std_json": {
+          "description": "JSON list of mapped ASAP7-style standard cell types",
+          "type": "string (JSON array)"
+        },
+        "input_pins_json": {
+          "description": "JSON list of input pin names",
+          "type": "string (JSON array)",
+          "example": "[\"a\", \"b\", \"c\", \"d\"]"
+        },
+        "output_pins_json": {
+          "description": "JSON list of output pin names",
+          "type": "string (JSON array)",
+          "example": "[\"out\"]"
+        },
+        "pin_loads_json": {
+          "description": "JSON dict mapping each pin name to its estimated internal load capacitance",
+          "type": "string (JSON object)",
+          "unit": "F (Farad)"
+        },
+        "output_load_f": {
+          "description": "Output capacitive load applied in the testbench",
+          "type": "float64",
+          "unit": "F (Farad)"
+        }
+      }
+    },
+    "timing_arcs.parquet": {
+      "rows": 49950,
+      "description": "Dynamic timing arcs per simulation. One row per (candidate, vector, direction) combination.",
+      "fields": {
+        "candidate_id": {
+          "description": "Candidate identifier linking to circuit_static",
+          "example": "candidate_expr0001_0000"
+        },
+        "expr": {
+          "description": "Expression index",
+          "example": "expr0001"
+        },
+        "candidate_idx": {
+          "description": "Candidate index within expression",
+          "example": "0000"
+        },
+        "vector": {
+          "description": "Input vector index for this simulation",
+          "example": "00000"
+        },
+        "direction": {
+          "description": "Output transition direction",
+          "type": "string",
+          "values": [
+            "rise",
+            "fall"
+          ]
+        },
+        "switching_pin": {
+          "description": "The input pin that toggles in this simulation",
+          "example": "a"
+        },
+        "slew_s": {
+          "description": "Input signal slew rate (transition time) of the switching pin",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "arrival_time_s": {
+          "description": "Time when the input switching signal crosses 50% VDD",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "DELAY": {
+          "description": "Measured propagation delay from 50% input to 50% output",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "slew_a": {
+          "description": "Input signal slew rate for pin a. Measured when a is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "slew_b": {
+          "description": "Input signal slew rate for pin b. Measured when b is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "slew_c": {
+          "description": "Input signal slew rate for pin c. Measured when c is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "slew_d": {
+          "description": "Input signal slew rate for pin d. Measured when d is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "arrival_time_a": {
+          "description": "Arrival time (50% VDD crossing) for pin a. Measured when a is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "arrival_time_b": {
+          "description": "Arrival time (50% VDD crossing) for pin b. Measured when b is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "arrival_time_c": {
+          "description": "Arrival time (50% VDD crossing) for pin c. Measured when c is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        },
+        "arrival_time_d": {
+          "description": "Arrival time (50% VDD crossing) for pin d. Measured when d is switching_pin; otherwise backfilled with Liberty typical value",
+          "type": "float64",
+          "unit": "s (seconds)"
+        }
+      }
+    }
+  },
+  "standard_cell_library": {
+    "name": "ASAP7",
+    "version": "asap7sc7p5t_27",
+    "lib_file": "asap7sc7p5t_SIMPLE_RVT_TT_ccs_201020.lib",
+    "lib_file_datecode": "201020",
+    "corner": "TT (Typical-Typical)",
+    "voltage": "0.7V (RVT)",
+    "notes": "SIMPLE library subset containing AND/OR/NAND/NOR/XOR/XNOR/MAJ/FA/HA/TIE cells. No INV/BUF/AOI/OAI cells in this subset."
+  },
+  "simulator": {
+    "name": "Xyce",
+    "version": "7.10.0",
+    "installation": "Spack-managed on WSL Ubuntu",
+    "binary_path": "/home/cao/spack/opt/spack/linux-skylake/xyce-7.10.0-nqsfotswsqlqpf3uhl5b4ico7gy4baxx/bin/Xyce"
+  },
+  "simulation_conditions": {
+    "temperature_c": 25,
+    "vdd": 1.8,
+    "vdd_unit": "V",
+    "input_slew": 2.0,
+    "input_slew_unit": "ps",
+    "output_load": 1.0,
+    "output_load_unit": "fF",
+    "output_load_in_farads": 1e-15,
+    "transient_step": 1.0,
+    "transient_step_unit": "ps",
+    "transient_stop": 1.0,
+    "transient_stop_unit": "ns",
+    "stimulus_format": "PWL(0 0 20p 0 22p {VDD} 1n {VDD}) for rise; PWL(0 {VDD} 20p {VDD} 22p 0 1n 0) for fall",
+    "measurement_threshold": "50% VDD",
+    "nonlinear_options": "continuation=gmin",
+    "notes": "All simulations use identical input slew (2ps) and output load (1fF)."
+  },
+  "pinout": {
+    "input_pins": [
+      "a",
+      "b",
+      "c",
+      "d"
+    ],
+    "output_pins": [
+      "out"
+    ],
+    "power_pins": [
+      "vdd",
+      "gnd"
+    ]
+  },
+  "data_quality_notes": {
+    "null_delays": 4034,
+    "total_timing_arcs": 49950,
+    "null_delay_percentage": "8.1%",
+    "null_delay_explanation": "Some simulations did not produce valid DELAY measurements in Xyce .mt0 output, typically due to non-switching output or convergence issues for certain input vectors."
+  },
+  "backfill_strategy": {
+    "description": "ALL pins (switching and non-switching) get the same per-row slew_s / arrival_time_s value measured from the simulation. The testbench generates a single PWL stimulus, so any pin would see approximately the same input transition if it were the switching pin. This avoids the artificial gap between switching (~12 ps) and non-switching (~40 ps Liberty typical) pins present in the old strategy.",
+    "source": "Per-row measured slew_s and arrival_time_s from Xyce .mt0 output; NaN values filled with dataset-wide column mean",
+    "slew_backfill_mean_s": 2.5010210210210205e-11,
+    "arrival_backfill_mean_s": 2.0000000000000005e-11,
+    "slew_backfill_unit": "s",
+    "arrival_backfill_unit": "s",
+    "backfilled_columns": [
+      "slew_a",
+      "slew_b",
+      "slew_c",
+      "slew_d",
+      "arrival_time_a",
+      "arrival_time_b",
+      "arrival_time_c",
+      "arrival_time_d"
+    ],
+    "measured_when": "All pins use the same per-row value; the switching_pin column still identifies which pin actually toggled"
+  },
+  "units_summary": {
+    "time": "s (seconds)",
+    "capacitance": "F (Farads)",
+    "voltage": "V (Volts)",
+    "temperature": "degC"
+  }
+}
