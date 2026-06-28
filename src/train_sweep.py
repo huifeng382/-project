@@ -114,31 +114,37 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # ---------- 适配 sweep 数据集路径 ----------
+    # ---------- 适配多批次数据集路径 ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_06/circuit_static.parquet"))
-    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_06/timing_arcs.parquet"))
+    static_parquets = sorted(glob.glob(os.path.join(data_dir, "data/batch_*/circuit_static.parquet")))
+    dynamic_parquets = sorted(glob.glob(os.path.join(data_dir, "data/batch_*/timing_arcs.parquet")))
 
     if not static_parquets or not dynamic_parquets:
-        raise FileNotFoundError("No Parquet files found in batch_06/")
+        raise FileNotFoundError("No Parquet files found in data/batch_*/")
 
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
-    # ---------- 列名规范化（sweep 数据用 candidate_id / delay_s）----------
-    for col in ['candidate', 'candidate_id']:
-        if col in dynamic_df.columns and 'circuit_id' not in dynamic_df.columns:
-            dynamic_df = dynamic_df.rename(columns={col: 'circuit_id'})
-    dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
-    if 'DELAY' not in dynamic_df.columns:
-        for col in ['delay_s', 'delay']:
-            if col in dynamic_df.columns:
-                dynamic_df = dynamic_df.rename(columns={col: 'DELAY'})
-                break
+    # ---------- 列名规范化：合并 candidate_id → circuit_id ----------
+    if 'candidate_id' in dynamic_df.columns:
+        if 'circuit_id' not in dynamic_df.columns:
+            dynamic_df = dynamic_df.rename(columns={'candidate_id': 'circuit_id'})
+        else:
+            dynamic_df['circuit_id'] = dynamic_df['circuit_id'].fillna(
+                dynamic_df['candidate_id'].astype(str))
+            dynamic_df = dynamic_df.drop(columns=['candidate_id'])
+    # 合并 delay_s → DELAY
+    if 'delay_s' in dynamic_df.columns:
+        if 'DELAY' not in dynamic_df.columns:
+            dynamic_df = dynamic_df.rename(columns={'delay_s': 'DELAY'})
+        else:
+            dynamic_df['DELAY'] = dynamic_df['DELAY'].fillna(dynamic_df['delay_s'])
+            dynamic_df = dynamic_df.drop(columns=['delay_s'])
 
     # ---------- 数据清洗 ----------
     print(f"原始样本数: {len(dynamic_df)}")
     dynamic_df = dynamic_df.dropna(subset=['circuit_id', 'DELAY'])
+    dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
     dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
     print(f"清洗后样本数: {len(dynamic_df)}, 电路数: {dynamic_df['circuit_id'].nunique()}")
 
@@ -147,20 +153,27 @@ def main():
     print(f"划分: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
 
     # ---------- 读取静态数据用于 scaler ----------
-    static_df = pd.read_parquet(static_parquets[0])
-    for col in ['candidate', 'candidate_id']:
-        if col in static_df.columns:
-            static_df = static_df.rename(columns={col: 'circuit_id'})
-    static_df['circuit_id'] = static_df['circuit_id'].astype(str)
+    static_dfs_raw = [pd.read_parquet(p) for p in static_parquets]
+    for i, df in enumerate(static_dfs_raw):
+        # 列名规范化
+        for col in ['candidate', 'candidate_id']:
+            if col in df.columns:
+                df = df.rename(columns={col: 'circuit_id'})
+        df['circuit_id'] = df['circuit_id'].astype(str)
+        # 优先使用标准化网表
+        if 'gate_level_netlist_std' in df.columns:
+            df = df.drop(columns=['gate_level_netlist'], errors='ignore')
+            df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
+        static_dfs_raw[i] = df
+    static_df = pd.concat(static_dfs_raw).drop_duplicates('circuit_id').set_index('circuit_id')
     pin_loads_map = {}
-    for _, srow in static_df.iterrows():
+    for cid, srow in static_df.iterrows():
         try:
-            pin_loads_map[srow['circuit_id']] = json.loads(srow['pin_loads_json'])
+            pin_loads_map[cid] = json.loads(srow['pin_loads_json'])
         except Exception:
-            pin_loads_map[srow['circuit_id']] = {}
+            pin_loads_map[cid] = {}
 
-    # sweep 数据无 per-pin slew/load 列，只有全局 slew_s
-    # 根据 dynamic_df 列推断引脚
+    # 根据 dynamic_df 列推断引脚（支持 per-pin slew 和全局 slew_s）
     pins = sorted([c[5:] for c in dynamic_df.columns if c.startswith('slew_')])
     actual = set(dynamic_df['switching_pin'].dropna().unique())
     pins = [p for p in pins if p in actual]
@@ -168,7 +181,7 @@ def main():
         pins = sorted(actual)
     print(f"引脚: {pins}")
 
-    # ---------- Scaler 拟合（匹配 DelayDataset fallback 逻辑）----------
+    # ---------- Scaler 拟合（匹配 DelayDataset._get_dynamic_features 逻辑）----------
     train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
     all_cont_features = []
     for _, row in train_dynamic.iterrows():
@@ -177,8 +190,18 @@ def main():
         out_load = row.get('output_load_f', 0.0)
         loads_dict = pin_loads_map.get(row['circuit_id'], {})
         for pin in pins:
-            slew_val = global_slew if pin == switching else 0.0
-            load_val = loads_dict.get(pin, 0.0)
+            # 匹配 data_loader 逻辑：优先 per-pin slew，否则全局
+            slew_col = f'slew_{pin}'
+            if slew_col in row.index and pd.notna(row[slew_col]):
+                slew_val = row[slew_col]
+            else:
+                slew_val = global_slew if pin == switching else 0.0
+            # 匹配 data_loader 逻辑：优先 per-pin load，否则静态字典
+            load_col = f'load_{pin}'
+            if load_col in row.index and pd.notna(row[load_col]):
+                load_val = row[load_col]
+            else:
+                load_val = loads_dict.get(pin, 0.0)
             all_cont_features.append([slew_val, load_val, out_load])
     scaler = StandardScaler(with_std=True)
     scaler.fit(all_cont_features)
