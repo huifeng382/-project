@@ -27,12 +27,13 @@ class DelayDataset(Dataset):
                     raise KeyError(f"Static data missing id column. Columns: {df.columns.tolist()}")
             df['circuit_id'] = df['circuit_id'].astype(str)
 
-            # 网表列
-            if 'gate_level_netlist' not in df.columns:
-                if 'gate_level_netlist_std' in df.columns:
-                    df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
-                else:
-                    raise KeyError(f"Static data missing netlist column. Columns: {df.columns.tolist()}")
+            # 网表列：优先使用标准化网表（gate_level_netlist_std），
+            # 它使用ASAP7标准单元名称，门类型覆盖率远高于原始网表
+            if 'gate_level_netlist_std' in df.columns:
+                df = df.drop(columns=['gate_level_netlist'], errors='ignore')
+                df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
+            elif 'gate_level_netlist' not in df.columns:
+                raise KeyError(f"Static data missing netlist column. Columns: {df.columns.tolist()}")
 
             # 解析 pin_loads_json
             if 'pin_loads_json' in df.columns:

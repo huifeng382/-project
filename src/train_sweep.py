@@ -116,11 +116,11 @@ def main():
 
     # ---------- 适配 sweep 数据集路径 ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_05/circuit_static.parquet"))
-    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_05/timing_arcs.parquet"))
+    static_parquets = glob.glob(os.path.join(data_dir, "data/batch_06/circuit_static.parquet"))
+    dynamic_parquets = glob.glob(os.path.join(data_dir, "data/batch_06/timing_arcs.parquet"))
 
     if not static_parquets or not dynamic_parquets:
-        raise FileNotFoundError("No Parquet files found in batch_05/")
+        raise FileNotFoundError("No Parquet files found in batch_06/")
 
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)

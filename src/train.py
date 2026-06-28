@@ -111,9 +111,9 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # 自动扫描所有批次的 Parquet 文件
-    static_parquets = glob.glob("data/batch_*/circuit_static.parquet")
-    dynamic_parquets = glob.glob("data/batch_*/timing_arcs.parquet")
+    # 仅使用 batch_06 数据
+    static_parquets = glob.glob("data/batch_06/circuit_static.parquet")
+    dynamic_parquets = glob.glob("data/batch_06/timing_arcs.parquet")
 
     if not static_parquets or not dynamic_parquets:
         raise FileNotFoundError(
@@ -125,9 +125,27 @@ def main():
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
-    # 列名规范化：batch_03 使用 candidate_id 而非 circuit_id
-    if 'circuit_id' not in dynamic_df.columns and 'candidate_id' in dynamic_df.columns:
-        dynamic_df = dynamic_df.rename(columns={'candidate_id': 'circuit_id'})
+    # 列名规范化：合并 candidate_id 到 circuit_id
+    # batch_1w 使用 circuit_id，batch_05/batch_06 使用 candidate_id
+    if 'candidate_id' in dynamic_df.columns:
+        if 'circuit_id' not in dynamic_df.columns:
+            dynamic_df = dynamic_df.rename(columns={'candidate_id': 'circuit_id'})
+        else:
+            # 两者都存在：用 candidate_id 填充 circuit_id 的 NaN
+            dynamic_df['circuit_id'] = dynamic_df['circuit_id'].fillna(
+                dynamic_df['candidate_id'].astype(str))
+            dynamic_df = dynamic_df.drop(columns=['candidate_id'])
+
+    # 列名规范化：合并 delay_s 到 DELAY（batch_05 使用 delay_s）
+    if 'delay_s' in dynamic_df.columns:
+        if 'DELAY' not in dynamic_df.columns:
+            dynamic_df = dynamic_df.rename(columns={'delay_s': 'DELAY'})
+        else:
+            dynamic_df['DELAY'] = dynamic_df['DELAY'].fillna(dynamic_df['delay_s'])
+            dynamic_df = dynamic_df.drop(columns=['delay_s'])
+
+    # astype(str) 必须在 dropna 之后，否则 NaN 会变成字符串 'nan'
+    dynamic_df = dynamic_df.dropna(subset=['circuit_id'])
     dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
 
     # ========== 数据清洗开始 ==========
@@ -180,9 +198,10 @@ def main():
             else:
                 raise KeyError(f"Static data missing id column. Columns: {df.columns.tolist()}")
         df['circuit_id'] = df['circuit_id'].astype(str)
-        if 'gate_level_netlist' not in df.columns:
-            if 'gate_level_netlist_std' in df.columns:
-                df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
+        # 网表列：优先使用标准化网表（gate_level_netlist_std）
+        if 'gate_level_netlist_std' in df.columns:
+            df = df.drop(columns=['gate_level_netlist'], errors='ignore')
+            df = df.rename(columns={'gate_level_netlist_std': 'gate_level_netlist'})
         return df
 
     static_dfs = []

@@ -1,0 +1,8 @@
+{
+  "dataset_name": "batch_1w",
+  "description": "Random 10000 samples drawn from dataset_sweep_20expr (seed=42)",
+  "source": "dataset_sweep_20expr",
+  "n_candidates": 197,
+  "n_timing_arcs": 10000,
+  "sample_seed": 42
+}

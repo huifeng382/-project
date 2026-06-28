@@ -27,6 +27,10 @@ GATE_TYPES = [
     'OR3x2_ASAP7_75t_R',
     'TIEHIx1_ASAP7_75t_R',
     'TIELOx1_ASAP7_75t_R',
+    # batch06 新增的 ASAP7 标准单元
+    'AND8x2_ASAP7_75t_R',
+    'NAND4x1_ASAP7_75t_R',
+    'OR8x2_ASAP7_75t_R',
     'UNKNOWN_GATE',
 ]
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}

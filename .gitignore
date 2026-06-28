@@ -3,11 +3,9 @@ __pycache__/
 *.pyc
 *.pyo
 
-# 数据文件（大文件或生成文件）
-data/
+# 生成/运行时文件
 cache/
 outputs/
-*.parquet
 *.npz
 *.pkl
 
