@@ -269,9 +269,20 @@ def main():
             base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
                                   weight_decay=WEIGHT_DECAY)
             base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            best_base_loss = float('inf')
+            base_patience_counter = 0
             for ep in range(BASE_EPOCHS):
                 loss = train_one_epoch(base_model, base_loader, base_optimizer, device, delta=HUBER_DELTA)
                 print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
+                # 动态早停
+                if loss < best_base_loss - BASE_MIN_DELTA:
+                    best_base_loss = loss
+                    base_patience_counter = 0
+                else:
+                    base_patience_counter += 1
+                if ep + 1 >= BASE_MIN_EPOCHS and base_patience_counter >= BASE_PATIENCE:
+                    print(f"  离群点清洗早停于 epoch {ep+1}（loss 已连续 {BASE_PATIENCE} epoch 无明显下降）")
+                    break
 
             residuals = get_train_residuals(base_model, train_dataset, device)
             threshold = np.percentile(residuals, 100 - OUTLIER_TOP_PERCENT)
