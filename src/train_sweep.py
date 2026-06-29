@@ -183,8 +183,8 @@ def main():
         except Exception:
             pin_loads_map[cid] = {}
 
-    # 根据 dynamic_df 列推断引脚（支持 per-pin slew 和全局 slew_s）
-    pins = sorted([c[5:] for c in dynamic_df.columns if c.startswith('slew_')])
+    # 根据 dynamic_df 列推断引脚（排除 slew_s，它是全局值不是引脚）
+    pins = sorted([c[5:] for c in dynamic_df.columns if c.startswith('slew_') and c != 'slew_s'])
     actual = set(dynamic_df['switching_pin'].dropna().unique())
     pins = [p for p in pins if p in actual]
     if not pins:
