@@ -35,6 +35,19 @@ GATE_TYPES = [
 ]
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
+
+def rebuild_gate_types(cell_types):
+    """
+    从实际数据中动态构建门类型映射。
+    cell_types: 所有出现的 cell 类型字符串的可迭代集合。
+    调用后 GATE_TYPES 和 GATE_TO_IDX 会被重建，包含所有 found types +
+    INPUT_PIN / OUTPUT_PIN / UNKNOWN_GATE。
+    """
+    global GATE_TYPES, GATE_TO_IDX
+    reserved = ['INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE']
+    GATE_TYPES = sorted(set(cell_types)) + reserved
+    GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
+
 def parse_netlist(netlist_str):
     lines = netlist_str.strip().split('\n')
     gates = {}

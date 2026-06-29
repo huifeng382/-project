@@ -2,9 +2,9 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hashlib
+import shutil
 import torch.utils.data
 from config import *
-import glob
 import json
 import pandas as pd
 import torch
@@ -17,6 +17,7 @@ from config import HUBER_DELTA
 from src.utils import set_seed, split_by_circuit, save_scaler, create_dir
 from src.data_loader import DelayDataset
 from src.model import DelayGNN
+from src.graph_builder import rebuild_gate_types
 
 PIN_WEIGHTS = {'a': 1.3, 'b': 1.0, 'c': 1.0, 'd': 1.3, 'e': 1.0}
 
@@ -114,13 +115,22 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # ---------- 适配多批次数据集路径 ----------
+    # ---------- 数据集路径：两批新数据 ----------
+    # batch1: 手选电路全sweep (642电路, 30 corners, ~47.5万样本)
+    # batch2: e-graph稀疏sweep (2845电路, 9 corners, ~16.9万样本)
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    static_parquets = sorted(glob.glob(os.path.join(data_dir, "data/batch_*/circuit_static.parquet")))
-    dynamic_parquets = sorted(glob.glob(os.path.join(data_dir, "data/batch_*/timing_arcs.parquet")))
+    static_parquets = [
+        os.path.join(data_dir, "data/dataset_batch1_handpicked/circuit_static.parquet"),
+        os.path.join(data_dir, "data/dataset_batch2_egraph_1k/circuit_static.parquet"),
+    ]
+    dynamic_parquets = [
+        os.path.join(data_dir, "data/dataset_batch1_handpicked/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/dataset_batch2_egraph_1k/timing_arcs.parquet"),
+    ]
 
-    if not static_parquets or not dynamic_parquets:
-        raise FileNotFoundError("No Parquet files found in data/batch_*/")
+    for p in static_parquets + dynamic_parquets:
+        if not os.path.exists(p):
+            raise FileNotFoundError(f"Data file not found: {p}")
 
     dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
@@ -213,6 +223,23 @@ def main():
         print("  WARNING: Some features have zero variance!")
     print("=" * 50)
     save_scaler(scaler, os.path.join(OUTPUT_DIR, 'scaler.pkl'))
+
+    # ---------- 动态构建门类型映射 + 清除旧缓存 ----------
+    # 收集所有数据中的 cell 类型，更新 graph_builder 的 GATE_TYPES
+    all_cell_types = set()
+    for _, srow in static_df.iterrows():
+        try:
+            types = json.loads(srow['cell_types_json']) if isinstance(srow['cell_types_json'], str) else srow['cell_types_json']
+            all_cell_types.update(types)
+        except Exception:
+            pass
+    rebuild_gate_types(all_cell_types)
+    print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt")
+
+    # 清除旧图缓存（GATE_TYPES 变了，one-hot 维度不同）
+    if os.path.exists(CACHE_DIR):
+        shutil.rmtree(CACHE_DIR)
+    os.makedirs(CACHE_DIR, exist_ok=True)
 
     # ---------- 创建数据集 ----------
     train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)
