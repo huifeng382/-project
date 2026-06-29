@@ -115,17 +115,17 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # ---------- 数据集路径：两批新数据 ----------
-    # batch1: 手选电路全sweep (642电路, 30 corners, ~47.5万样本)
-    # batch2: e-graph稀疏sweep (2845电路, 9 corners, ~16.9万样本)
+    # ---------- 数据集路径：方案B采样后 ~10万样本 ----------
+    # batch1: 手选电路全sweep (130电路, 30 corners) → ~29K
+    # batch2: e-graph稀疏sweep (1200电路, 9 corners) → ~69K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
-        os.path.join(data_dir, "data/dataset_batch1_handpicked/circuit_static.parquet"),
-        os.path.join(data_dir, "data/dataset_batch2_egraph_1k/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch1_30k/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch2_70k/circuit_static.parquet"),
     ]
     dynamic_parquets = [
-        os.path.join(data_dir, "data/dataset_batch1_handpicked/timing_arcs.parquet"),
-        os.path.join(data_dir, "data/dataset_batch2_egraph_1k/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch1_30k/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch2_70k/timing_arcs.parquet"),
     ]
 
     for p in static_parquets + dynamic_parquets:

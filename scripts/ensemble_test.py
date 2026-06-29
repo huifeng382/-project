@@ -1,6 +1,6 @@
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import torch
 import numpy as np
@@ -9,7 +9,7 @@ from torch_geometric.loader import DataLoader
 from config import *
 from src.data_loader import DelayDataset
 from src.model import DelayGNN
-from src.train import evaluate  # 复用评估函数
+from src.train_sweep import evaluate  # 复用评估函数
 from src.utils import set_seed, create_dir
 
 def ensemble_predict(models, data_loader, device):

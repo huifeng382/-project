@@ -2,7 +2,7 @@ import os
 import sys
 
 # 获取当前脚本所在目录的上级目录（即项目根目录）
-project_root = os.path.dirname(os.path.abspath(__file__))
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)   # 将项目根目录加入模块搜索路径
 
 import torch
