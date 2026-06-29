@@ -200,12 +200,12 @@ def main():
         out_load = row.get('output_load_f', 0.0)
         loads_dict = pin_loads_map.get(row['circuit_id'], {})
         for pin in pins:
-            # 匹配 data_loader 逻辑：优先 per-pin slew，否则全局
+            # 匹配 data_loader 逻辑：优先 per-pin slew，否则所有节点共享全局 slew
             slew_col = f'slew_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
             else:
-                slew_val = global_slew if pin == switching else 0.0
+                slew_val = global_slew
             # 匹配 data_loader 逻辑：优先 per-pin load，否则静态字典
             load_col = f'load_{pin}'
             if load_col in row.index and pd.notna(row[load_col]):

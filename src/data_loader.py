@@ -189,11 +189,12 @@ class DelayDataset(Dataset):
                     load_val = pin_loads_dict.get(pin, 0.0)
 
             # 获取 slew（支持 per-pin 列或全局 slew_s）
+            # 所有节点共享全局 slew，避免 mean pooling 稀释切换引脚信号
             slew_col = f'slew_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
             else:
-                slew_val = global_slew if pin == switching else 0.0
+                slew_val = global_slew
 
             # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
             logic_val = switching_before if pin == switching else 0.5
