@@ -116,8 +116,8 @@ def main():
     create_dir(OUTPUT_DIR)
 
     # ---------- 数据集路径：方案B采样后 ~10万样本 ----------
-    # batch1: 手选电路全sweep (130电路, 30 corners) → ~29K
-    # batch2: e-graph稀疏sweep (1200电路, 9 corners) → ~69K
+    # batch1: 手选电路全sweep (170电路, 30 corners) → ~30K
+    # batch2: e-graph稀疏sweep (1215电路, 9 corners) → ~70K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
         os.path.join(data_dir, "data/batch1_30k/circuit_static.parquet"),
@@ -380,17 +380,29 @@ def main():
     print(f"\nTest Loss: {test_loss:.4f} | Test Mean Relative Error: {test_rel_err:.2f}%")
     np.savez(os.path.join(OUTPUT_DIR, 'test_predictions.npz'), preds=preds, targets=targets)
 
-    # Per-corner breakdown
-    test_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(test_ids)]
-    if 'corner' in test_dynamic.columns and len(preds) > 0:
-        print("\nPer-corner relative error:")
-        corners = test_dynamic['corner'].values
-        if len(corners) == len(preds):
+    # Per-corner breakdown (使用 test_dataset 的 dynamic_df 保证行数对齐)
+    test_dyn = test_dataset.dynamic_df.reset_index(drop=True)
+    if 'corner' in test_dyn.columns and len(preds) > 0:
+        print(f"\nPer-corner relative error (test samples: {len(test_dyn)}, preds: {len(preds)}):")
+        if len(test_dyn) == len(preds):
+            corners = test_dyn['corner'].values
             for c in sorted(set(corners)):
                 mask = corners == c
                 if mask.sum() > 0:
                     err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
-                    print(f"  {c}: {np.mean(err):.2f}%")
+                    print(f"  {c}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
+        else:
+            print(f"  WARNING: row mismatch (test_dyn={len(test_dyn)}, preds={len(preds)})")
+
+    # Per-batch breakdown
+    if 'expr' in test_dyn.columns:
+        # batch1 circuits have expr starting with expr04, batch2 start with expr00
+        batch1_mask = test_dyn['expr'].str.startswith('expr04').values
+        batch2_mask = ~batch1_mask
+        for label, mask in [('Batch1 (handpicked)', batch1_mask), ('Batch2 (egraph)', batch2_mask)]:
+            if mask.sum() > 0:
+                err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
+                print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
 if __name__ == "__main__":
     main()
