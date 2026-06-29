@@ -1,8 +1,8 @@
 {
   "dataset_name": "batch1_30k",
   "description": "Plan B downsampled: gate-type stratified selection",
-  "n_circuits": 130,
-  "n_samples": 29101,
+  "n_circuits": 170,
+  "n_samples": 29556,
   "n_corners_per_circuit": 30,
   "seed": 42,
   "parent_datasets": [

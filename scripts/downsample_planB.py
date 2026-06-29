@@ -99,22 +99,47 @@ def greedy_coverage_select(circuit_cell_types, n_select, all_types=None):
     return selected
 
 
+def filter_standard_pins(static_df, allowed_pins=None):
+    """
+    只保留输入引脚属于允许集合的电路。
+    默认标准引脚: {a, b, c, d}
+    """
+    if allowed_pins is None:
+        allowed_pins = {'a', 'b', 'c', 'd'}
+
+    valid_cids = set()
+    for _, row in static_df.iterrows():
+        cid = row['circuit_id']
+        try:
+            pins = json.loads(row['input_pins_json']) if isinstance(row['input_pins_json'], str) else row['input_pins_json']
+        except Exception:
+            pins = []
+        if pins and set(pins).issubset(allowed_pins):
+            valid_cids.add(cid)
+
+    print(f"  Standard pins ({allowed_pins}): {len(valid_cids)}/{len(static_df)} circuits")
+    return valid_cids
+
+
 def downsample_batch1(s, d, n_circuits=130):
     """Batch 1: 贪心选电路 + 每(corner,pin,dir)只留1个vector"""
     print("\n=== Batch 1: Handpicked ===")
+
+    # 1. 只保留标准引脚电路
+    std_cids = filter_standard_pins(s)
+
     circuit_cell_types = get_cell_types_per_circuit(s)
 
-    # 1. 贪心选择电路
-    all_cids = sorted(d["circuit_id"].unique())
-    valid_cids = [c for c in all_cids if c in circuit_cell_types]
+    # 2. 贪心选择电路（仅从标准引脚电路中选）
+    valid_cids = [c for c in sorted(std_cids) if c in circuit_cell_types]
     selected_cids = greedy_coverage_select(
         {c: circuit_cell_types[c] for c in valid_cids}, n_circuits
     )
 
-    # 2. 过滤动态数据
+    # 3. 过滤动态数据
     d_sel = d[d["circuit_id"].isin(selected_cids)].copy()
 
-    # 3. 每个 (circuit, corner, switching_pin, direction) 只保留第1个vector
+    # 4. 每个 (circuit, corner, switching_pin, direction) 只保留第1个vector
     group_cols = ["circuit_id", "corner", "switching_pin", "direction"]
     d_sel = d_sel.sort_values(["circuit_id", "corner", "switching_pin", "direction", "vector"])
     d_sel = d_sel.groupby(group_cols, as_index=False).first()
@@ -130,11 +155,14 @@ def downsample_batch1(s, d, n_circuits=130):
 def downsample_batch2(s, d, n_circuits=1200):
     """Batch 2: 贪心选电路，保留全部样本"""
     print("\n=== Batch 2: E-graph ===")
+
+    # 1. 只保留标准引脚电路
+    std_cids = filter_standard_pins(s)
+
     circuit_cell_types = get_cell_types_per_circuit(s)
 
-    # 1. 贪心选择电路
-    all_cids = sorted(d["circuit_id"].unique())
-    valid_cids = [c for c in all_cids if c in circuit_cell_types]
+    # 2. 贪心选择电路（仅从标准引脚电路中选）
+    valid_cids = [c for c in sorted(std_cids) if c in circuit_cell_types]
     selected_cids = greedy_coverage_select(
         {c: circuit_cell_types[c] for c in valid_cids}, n_circuits
     )
@@ -187,12 +215,12 @@ def main():
 
     # ---- Batch 1 ----
     s1, d1 = load_and_clean("dataset_batch1_handpicked")
-    s1_sel, d1_sel = downsample_batch1(s1, d1, n_circuits=130)
+    s1_sel, d1_sel = downsample_batch1(s1, d1, n_circuits=170)
     save_dataset(s1_sel, d1_sel, "batch1_30k")
 
     # ---- Batch 2 ----
     s2, d2 = load_and_clean("dataset_batch2_egraph_1k")
-    s2_sel, d2_sel = downsample_batch2(s2, d2, n_circuits=1200)
+    s2_sel, d2_sel = downsample_batch2(s2, d2, n_circuits=1215)
     save_dataset(s2_sel, d2_sel, "batch2_70k")
 
     total = len(d1_sel) + len(d2_sel)
