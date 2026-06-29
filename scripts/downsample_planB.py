@@ -29,10 +29,10 @@ def load_and_clean(name):
     s["circuit_id"] = s["circuit_id"].astype(str)
     d["circuit_id"] = d["circuit_id"].astype(str)
 
-    # 清洗负延迟
+    # 清洗物理不可行延迟（<1e-12s 为噪声，>1e-8s 为测量误差）
     before = len(d)
-    d = d[d["DELAY"] > 0].copy()
-    print(f"  {name}: removed {before - len(d)} rows with DELAY <= 0, {len(d)} remaining")
+    d = d[(d["DELAY"] > 1e-12) & (d["DELAY"] < 1e-8)].copy()
+    print(f"  {name}: removed {before - len(d)} rows outside [1e-12, 1e-8], {len(d)} remaining")
 
     return s, d
 

@@ -2,7 +2,7 @@
   "dataset_name": "batch2_70k",
   "description": "Plan B downsampled: gate-type stratified selection",
   "n_circuits": 1215,
-  "n_samples": 69929,
+  "n_samples": 69874,
   "n_corners_per_circuit": 8,
   "seed": 42,
   "parent_datasets": [

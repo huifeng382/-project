@@ -73,13 +73,13 @@ class DelayDataset(Dataset):
             if 'vector' in df.columns:
                 df['vector'] = df['vector'].astype(str).str.zfill(5)
 
-            # 过滤非法延迟值（负数/零会导致 log10 出 nan）
+            # 过滤非法延迟值（<1e-12s 视为物理不可行噪声，log10 会出极端值）
             if 'DELAY' in df.columns:
                 before = len(df)
-                df = df[df['DELAY'] > 0]
+                df = df[df['DELAY'] > 1e-12]
                 removed = before - len(df)
                 if removed > 0:
-                    print(f"normalize_dynamic: removed {removed} rows with DELAY <= 0")
+                    print(f"normalize_dynamic: removed {removed} rows with DELAY <= 1e-12")
 
             return df
         # -----------------------------------------------------
