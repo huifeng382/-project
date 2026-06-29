@@ -12,6 +12,7 @@ OUTPUT_DIR = "outputs"
 # 模型超参数
 HIDDEN_DIM = 256
 NUM_LAYERS = 4
+GATE_EMBED_DIM = 32   # 门类型 Embedding 维度（替代 one-hot，大幅减少参数量）
 DROPOUT = 0.3
 LEARNING_RATE = 1e-4
 WEIGHT_DECAY = 1e-4

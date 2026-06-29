@@ -234,7 +234,9 @@ def main():
         except Exception:
             pass
     rebuild_gate_types(all_cell_types)
-    print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt")
+    import src.graph_builder as gb
+    num_gate_types = len(gb.GATE_TYPES)
+    print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt ({num_gate_types} total)")
 
     # 清除旧图缓存（GATE_TYPES 变了，one-hot 维度不同）
     if os.path.exists(CACHE_DIR):
@@ -292,7 +294,9 @@ def main():
         else:
             print("\n========== 开始离群点清洗 ==========")
             base_model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM,
-                                  num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
+                                  num_layers=NUM_LAYERS, dropout=DROPOUT,
+                                  num_gate_types=num_gate_types,
+                                  gate_embed_dim=GATE_EMBED_DIM).to(device)
             base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
                                   weight_decay=WEIGHT_DECAY)
             base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
@@ -330,7 +334,9 @@ def main():
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 
-    model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT).to(device)
+    model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT,
+                     num_gate_types=num_gate_types,
+                     gate_embed_dim=GATE_EMBED_DIM).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
     scheduler = None

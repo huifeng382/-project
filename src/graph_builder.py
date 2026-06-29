@@ -124,15 +124,13 @@ def build_static_graph(circuit_id, netlist_str):
             edge_index.append([node_names.index(u), node_names.index(v)])
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     
-    # 节点 one-hot 编码（使用固定 GATE_TYPES）
-    node_type_enc = []
+    # 节点门类型索引（不再用 one-hot，改为整数索引，由模型 Embedding 层处理）
+    node_type_idx = []
     for n in node_names:
         gt = nodes[n]['type']
-        onehot = [0.0] * len(GATE_TYPES)
         idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
-        onehot[idx] = 1.0
-        node_type_enc.append(onehot)
-    node_type_enc = torch.tensor(node_type_enc, dtype=torch.float)
+        node_type_idx.append([float(idx)])
+    node_type_idx = torch.tensor(node_type_idx, dtype=torch.float)
     
     # 1. 扇出数（出度）
     out_degree = {n: 0 for n in node_names}
@@ -179,7 +177,7 @@ def build_static_graph(circuit_id, netlist_str):
     depth_feat  = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
     drive_feat  = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
     
-    # 合并静态特征：one-hot + 扇出 + 深度 + 驱动强度
-    node_static = torch.cat([node_type_enc, fanout_feat, depth_feat, drive_feat], dim=1)
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动强度
+    node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat], dim=1)
     
     return node_names, node_static, edge_index
