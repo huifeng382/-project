@@ -45,10 +45,11 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
     print(f"清洗前样本数: {len(dataset)}, 清洗后: {len(keep_indices)}, 剔除比例: {100 - len(keep_indices)/len(dataset)*100:.1f}%")
     return torch.utils.data.Subset(dataset, keep_indices)
 
-def train_one_epoch(model, loader, optimizer, device, delta=1.0):
+def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False):
     model.train()
     total_loss = 0
-    for data in loader:
+    total_batches = len(loader)
+    for i, data in enumerate(loader):
         data = data.to(device)
         optimizer.zero_grad()
         out = model(data.x, data.edge_index, data.batch)
@@ -64,6 +65,8 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0):
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
         total_loss += loss.item()
+        if show_progress and (i + 1) % 200 == 0:
+            print(f"    batch {i+1}/{total_batches} ({100*(i+1)/total_batches:.0f}%)")
     return total_loss / len(loader)
 
 def evaluate(model, loader, device):
@@ -347,10 +350,13 @@ def main():
             base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
                                   weight_decay=WEIGHT_DECAY)
             base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            print(f"  Training base model on {len(train_dataset)} samples "
+                  f"({len(base_loader)} batches/epoch, may take several minutes per epoch on CPU)...")
             best_base_loss = float('inf')
             base_patience_counter = 0
             for ep in range(BASE_EPOCHS):
-                loss = train_one_epoch(base_model, base_loader, base_optimizer, device, delta=HUBER_DELTA)
+                loss = train_one_epoch(base_model, base_loader, base_optimizer, device,
+                                       delta=HUBER_DELTA, show_progress=True)
                 print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
                 # 动态早停
                 if loss < best_base_loss - BASE_MIN_DELTA:
