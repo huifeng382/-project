@@ -16,30 +16,25 @@ class DelayGNN(nn.Module):
 
         # GATv2 图卷积层（带注意力，让节点关注重要邻居）
         self.convs = nn.ModuleList()
-        self.bns = nn.ModuleList()
+        self.norms = nn.ModuleList()
         self.num_layers = num_layers
 
         # 第一层：输入 → hidden_dim
         self.convs.append(GATv2Conv(actual_in_dim, hidden_dim // gat_heads,
                                      heads=gat_heads, dropout=dropout))
-        self.bns.append(nn.BatchNorm1d(hidden_dim))
+        self.norms.append(nn.LayerNorm(hidden_dim))
 
         # 中间层：hidden_dim → hidden_dim（带残差）
         for _ in range(num_layers - 1):
             self.convs.append(GATv2Conv(hidden_dim, hidden_dim // gat_heads,
                                          heads=gat_heads, dropout=dropout))
-            self.bns.append(nn.BatchNorm1d(hidden_dim))
+            self.norms.append(nn.LayerNorm(hidden_dim))
 
         # 注意力读出层：让模型学会聚焦于关键节点（如切换引脚），替代 mean_pool
         self.readout_attn = nn.Linear(hidden_dim, 1)
 
-        # 最终预测头
-        self.pred_head = nn.Sequential(
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim // 2, 1),
-        )
+        # 最终预测层
+        self.lin = nn.Linear(hidden_dim, 1)
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch):
@@ -49,10 +44,10 @@ class DelayGNN(nn.Module):
         gate_emb = self.gate_embed(gate_idx)
         x = torch.cat([gate_emb, struct_dyn], dim=1)
 
-        for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
+        for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
             residual = x
             x = conv(x, edge_index)
-            x = bn(x)
+            x = norm(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
             # 残差连接（第一层维度可能不同，跳过）
@@ -64,5 +59,5 @@ class DelayGNN(nn.Module):
         attn_weights = softmax(attn_scores, batch)  # softmax within each graph → sum=1
         x_pooled = global_add_pool(attn_weights * x, batch)  # 加权求和
 
-        x = self.pred_head(x_pooled)
+        x = self.lin(x_pooled)
         return x.squeeze(-1)
