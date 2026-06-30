@@ -202,6 +202,27 @@ def main():
     train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
     print(f"划分: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
 
+    # ---------- 可选：只保留4引脚标准电路 ----------
+    if FOUR_PIN_ONLY:
+        static_check = pd.concat([pd.read_parquet(p) for p in static_parquets])
+        for col in ['candidate', 'candidate_id']:
+            if col in static_check.columns:
+                static_check = static_check.rename(columns={col: 'circuit_id'})
+        static_check['circuit_id'] = static_check['circuit_id'].astype(str)
+        four_pin_ids = set()
+        for _, row in static_check.iterrows():
+            try:
+                pins = json.loads(row['input_pins_json']) if isinstance(row['input_pins_json'], str) else row['input_pins_json']
+                if sorted(pins) == ['a', 'b', 'c', 'd']:
+                    four_pin_ids.add(row['circuit_id'])
+            except: pass
+        train_ids = [c for c in train_ids if c in four_pin_ids]
+        val_ids = [c for c in val_ids if c in four_pin_ids]
+        test_ids = [c for c in test_ids if c in four_pin_ids]
+        dynamic_df = dynamic_df[dynamic_df['circuit_id'].isin(four_pin_ids)]
+        print(f"4-pin only: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路, "
+              f"samples={len(dynamic_df)} (removed {100*(1-len(four_pin_ids)/len(circuit_ids)):.0f}% circuits)")
+
     # ---------- 读取静态数据用于 scaler ----------
     static_dfs_raw = [pd.read_parquet(p) for p in static_parquets]
     for i, df in enumerate(static_dfs_raw):
@@ -334,6 +355,12 @@ def main():
 
     # ---------- 离群点清洗 ----------
     if OUTLIER_CLEANING and len(train_dataset) > 100:
+        # 测试模式下缩减离群点清洗，节省时间
+        base_epochs = BASE_EPOCHS
+        if QUICK_TEST:
+            base_epochs = min(BASE_EPOCHS, 5)
+            print(f"\nQUICK_TEST mode: reducing outlier cleaning to {base_epochs} epochs")
+
         cache_path = get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets)
 
         if os.path.exists(cache_path):
@@ -354,10 +381,10 @@ def main():
                   f"({len(base_loader)} batches/epoch, may take several minutes per epoch on CPU)...")
             best_base_loss = float('inf')
             base_patience_counter = 0
-            for ep in range(BASE_EPOCHS):
+            for ep in range(base_epochs):
                 loss = train_one_epoch(base_model, base_loader, base_optimizer, device,
                                        delta=HUBER_DELTA, show_progress=True)
-                print(f"  Base epoch {ep+1}/{BASE_EPOCHS}: loss = {loss:.4f}")
+                print(f"  Base epoch {ep+1}/{base_epochs}: loss = {loss:.4f}")
                 # 动态早停
                 if loss < best_base_loss - BASE_MIN_DELTA:
                     best_base_loss = loss
