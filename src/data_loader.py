@@ -173,6 +173,13 @@ class DelayDataset(Dataset):
         global_slew = row.get('slew_s', 0.0) if pd.notna(row.get('slew_s')) else 0.0
         global_out_load = row.get('output_load_f', 0.0) if pd.notna(row.get('output_load_f')) else 0.0
 
+        # vector 归一化：仿真向量编号 0~31，归一化到 0~1
+        vector_str = str(row.get('vector', '00000')).zfill(5)
+        try:
+            vector_norm = int(vector_str) / 31.0
+        except ValueError:
+            vector_norm = 0.0
+
         dyn_feats = {}
         for pin in pins:
             # 负载逻辑：
@@ -188,13 +195,14 @@ class DelayDataset(Dataset):
                 else:
                     load_val = pin_loads_dict.get(pin, 0.0)
 
-            # 获取 slew（支持 per-pin 列或全局 slew_s）
-            # 所有节点共享全局 slew，避免 mean pooling 稀释切换引脚信号
+            # 获取 slew（只有切换引脚有输入 slew，其他引脚为 0）
             slew_col = f'slew_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
-            else:
+            elif pin == switching:
                 slew_val = global_slew
+            else:
+                slew_val = 0.0
 
             # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
             logic_val = switching_before if pin == switching else 0.5
@@ -204,8 +212,10 @@ class DelayDataset(Dataset):
                 slew_val,
                 load_val,
                 global_out_load,
+                vector_norm,
             ]
             if self.scaler is not None:
+                # 只缩放连续值特征: slew, load, out_load（vector_norm 已是 0~1 不需要缩放）
                 continuous = np.array([feat[2], feat[3], feat[4]]).reshape(1, -1)
                 scaled_cont = self.scaler.transform(continuous)[0]
                 feat[2], feat[3], feat[4] = scaled_cont[0], scaled_cont[1], scaled_cont[2]
@@ -224,14 +234,15 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        node_feat_dim = node_static.shape[1] + 5
+        num_dyn_feats = 6
+        node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
 
         for i, n in enumerate(node_names):
             if n in dyn_feats:
                 dyn = dyn_feats[n]
-                x[i, -5:] = torch.tensor(dyn, dtype=torch.float)
+                x[i, -num_dyn_feats:] = torch.tensor(dyn, dtype=torch.float)
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
@@ -275,6 +286,11 @@ class DelayDataset(Dataset):
         vector = str(row.get('vector', '00000')).zfill(5)
         for bit in vector:
             features.append(float(bit))
+        # vector 数值归一化（0~31 → 0~1）
+        try:
+            features.append(int(vector) / 31.0)
+        except ValueError:
+            features.append(0.0)
 
         # ----- 3. 各引脚的 slew/load 的统计量 -----
         slew_vals = []
@@ -282,12 +298,16 @@ class DelayDataset(Dataset):
         # 获取该样本对应的静态负载字典
         pin_loads_dict = self.static_df.loc[cid, 'pin_loads_dict']
         for p in self.pins:
-            # 读取 slew（优先 per-pin，否则全局）
+            # 读取 slew（优先 per-pin 列，否则只有切换引脚用全局 slew）
             slew = row.get(f'slew_{p}')
-            if slew is None or pd.isna(slew):
-                slew = row.get('slew_s', 0.0)
-            slew_vals.append(float(slew) if slew is not None else 0.0)
-    
+            if slew is not None and not pd.isna(slew):
+                slew_val = float(slew)
+            elif p == switching:
+                slew_val = float(row.get('slew_s', 0.0))
+            else:
+                slew_val = 0.0
+            slew_vals.append(slew_val)
+
             # 从静态字典读取负载，不存在则用 0.0
             load_val = pin_loads_dict.get(p, 0.0)
             load_vals.append(float(load_val) if not pd.isna(load_val) else 0.0)
