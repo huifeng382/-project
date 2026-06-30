@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GATv2Conv, global_add_pool
+from torch_geometric.nn import GraphConv, global_add_pool
 from torch_geometric.utils import softmax
 
 
@@ -14,20 +14,18 @@ class DelayGNN(nn.Module):
         # 实际输入维度 = embed_dim + (in_dim - 1)  （in_dim 包含 gate_idx + 3 结构 + N 动态）
         actual_in_dim = gate_embed_dim + (in_dim - 1)
 
-        # GATv2 图卷积层（带注意力，让节点关注重要邻居）
+        # GraphConv 图卷积层（对小型电路图更稳定，GAT 对小图容易过拟合）
         self.convs = nn.ModuleList()
         self.norms = nn.ModuleList()
         self.num_layers = num_layers
 
         # 第一层：输入 → hidden_dim
-        self.convs.append(GATv2Conv(actual_in_dim, hidden_dim // gat_heads,
-                                     heads=gat_heads, dropout=dropout))
+        self.convs.append(GraphConv(actual_in_dim, hidden_dim))
         self.norms.append(nn.LayerNorm(hidden_dim))
 
         # 中间层：hidden_dim → hidden_dim（带残差）
         for _ in range(num_layers - 1):
-            self.convs.append(GATv2Conv(hidden_dim, hidden_dim // gat_heads,
-                                         heads=gat_heads, dropout=dropout))
+            self.convs.append(GraphConv(hidden_dim, hidden_dim))
             self.norms.append(nn.LayerNorm(hidden_dim))
 
         # 注意力读出层：让模型学会聚焦于关键节点（如切换引脚），替代 mean_pool

@@ -88,8 +88,42 @@ def evaluate(model, loader, device):
     rel_error = np.abs(preds - targets) / targets * 100
     return total_loss / len(loader), np.mean(rel_error), preds, targets
 
+def get_model_hash():
+    """计算模型文件的哈希，模型架构变化时自动失效所有缓存。"""
+    model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                              'src', 'model.py')
+    try:
+        with open(model_path, 'rb') as f:
+            return hashlib.md5(f.read()).hexdigest()[:8]
+    except OSError:
+        return 'nomodel'
+
+
+def check_and_clear_cache():
+    """检查缓存的模型版本，若模型已变化则自动清除所有旧缓存。"""
+    version_file = os.path.join(CACHE_DIR, '.model_version')
+    current_hash = get_model_hash()
+
+    if os.path.exists(CACHE_DIR):
+        if os.path.exists(version_file):
+            with open(version_file, 'r') as f:
+                old_hash = f.read().strip()
+            if old_hash != current_hash:
+                print(f"Model changed ({old_hash} -> {current_hash}), clearing all caches...")
+                shutil.rmtree(CACHE_DIR)
+        else:
+            # 没有版本文件 → 旧缓存，清除
+            if os.listdir(CACHE_DIR):
+                print("No model version file found, clearing stale caches...")
+                shutil.rmtree(CACHE_DIR)
+
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    with open(version_file, 'w') as f:
+        f.write(current_hash)
+
+
 def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
-    """生成离群点清洗缓存的路径，数据或配置变化时自动失效。"""
+    """生成离群点清洗缓存的路径，数据/模型/配置变化时自动失效。"""
     key_parts = [
         ','.join(sorted(train_ids)),
         f"top{OUTLIER_TOP_PERCENT}",
@@ -98,6 +132,7 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"seed{RANDOM_SEED}",
         f"hdim{HIDDEN_DIM}",
         f"nlay{NUM_LAYERS}",
+        f"model{get_model_hash()}",   # 模型变了缓存自动失效
     ]
     # 加入数据文件的修改时间，数据变了缓存自动失效
     for p in sorted(static_parquets + dynamic_parquets):
@@ -114,6 +149,8 @@ def main():
     set_seed(RANDOM_SEED)
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
+    # 启动时检查：如果模型代码变了，自动清除所有缓存
+    check_and_clear_cache()
 
     # ---------- 数据集路径：方案B采样后 ~10万样本 ----------
     # batch1: 手选电路全sweep (170电路, 30 corners) → ~30K
@@ -240,10 +277,18 @@ def main():
     num_gate_types = len(gb.GATE_TYPES)
     print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt ({num_gate_types} total)")
 
-    # 清除旧图缓存（GATE_TYPES 变了，one-hot 维度不同）
+    # 清除旧图缓存（GATE_TYPES 变了，embedding 维度可能不同）
+    version_file = os.path.join(CACHE_DIR, '.model_version')
+    saved_version = None
+    if os.path.exists(version_file):
+        with open(version_file, 'r') as f:
+            saved_version = f.read().strip()
     if os.path.exists(CACHE_DIR):
         shutil.rmtree(CACHE_DIR)
     os.makedirs(CACHE_DIR, exist_ok=True)
+    if saved_version:
+        with open(version_file, 'w') as f:
+            f.write(saved_version)
 
     # ---------- 创建数据集 ----------
     train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)
@@ -394,7 +439,17 @@ def main():
             patience_counter += 1
             plateau_counter += 1
 
-            # 智能早停：检测过拟合平台期
+            # ---- 测试模式：快速平台检测 ----
+            if QUICK_TEST and epoch + 1 >= QUICK_MIN_EPOCHS:
+                if len(val_err_history) > QUICK_WINDOW:
+                    best_before_window = min(val_err_history[:-QUICK_WINDOW])
+                    improved = best_before_window - best_val_rel
+                    if improved < QUICK_MIN_DELTA:
+                        print(f"  >>> Quick test stop: best={best_val_rel:.1f}%, "
+                              f"only improved {improved:.1f} pts in last {QUICK_WINDOW} epochs")
+                        break
+
+            # ---- 智能早停：检测过拟合平台期 ----
             # 仅当 LR 已衰减过 + train 还在降 + val 不再改善 → 过拟合，提前终止
             if (plateau_counter >= PLATEAU_WINDOW
                     and epoch + 1 >= PLATEAU_MIN_EPOCHS
