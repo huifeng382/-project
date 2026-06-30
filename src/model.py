@@ -1,25 +1,45 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch_geometric.nn import GraphConv, global_mean_pool
+from torch_geometric.nn import GATv2Conv, global_add_pool
+from torch_geometric.utils import softmax
+
 
 class DelayGNN(nn.Module):
     def __init__(self, in_dim, hidden_dim=64, num_layers=2, dropout=0.3,
-                 num_gate_types=100, gate_embed_dim=32):
+                 num_gate_types=100, gate_embed_dim=32, gat_heads=4):
         super().__init__()
-        # 门类型 Embedding：把 1 维整数索引映射为 gate_embed_dim 维稠密向量
+        # 门类型 Embedding
         self.gate_embed = nn.Embedding(num_gate_types, gate_embed_dim)
-        # 实际输入维度 = embed_dim + (in_dim - 1)  （in_dim 包含 gate_idx + 3 结构 + 5 动态）
+        # 实际输入维度 = embed_dim + (in_dim - 1)  （in_dim 包含 gate_idx + 3 结构 + N 动态）
         actual_in_dim = gate_embed_dim + (in_dim - 1)
 
+        # GATv2 图卷积层（带注意力，让节点关注重要邻居）
         self.convs = nn.ModuleList()
         self.bns = nn.ModuleList()
-        self.convs.append(GraphConv(actual_in_dim, hidden_dim))
+        self.num_layers = num_layers
+
+        # 第一层：输入 → hidden_dim
+        self.convs.append(GATv2Conv(actual_in_dim, hidden_dim // gat_heads,
+                                     heads=gat_heads, dropout=dropout))
         self.bns.append(nn.BatchNorm1d(hidden_dim))
+
+        # 中间层：hidden_dim → hidden_dim（带残差）
         for _ in range(num_layers - 1):
-            self.convs.append(GraphConv(hidden_dim, hidden_dim))
+            self.convs.append(GATv2Conv(hidden_dim, hidden_dim // gat_heads,
+                                         heads=gat_heads, dropout=dropout))
             self.bns.append(nn.BatchNorm1d(hidden_dim))
-        self.lin = nn.Linear(hidden_dim, 1)
+
+        # 注意力读出层：让模型学会聚焦于关键节点（如切换引脚），替代 mean_pool
+        self.readout_attn = nn.Linear(hidden_dim, 1)
+
+        # 最终预测头
+        self.pred_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim // 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_dim // 2, 1),
+        )
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch):
@@ -29,11 +49,20 @@ class DelayGNN(nn.Module):
         gate_emb = self.gate_embed(gate_idx)
         x = torch.cat([gate_emb, struct_dyn], dim=1)
 
-        for conv, bn in zip(self.convs, self.bns):
+        for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
+            residual = x
             x = conv(x, edge_index)
             x = bn(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-        x = global_mean_pool(x, batch)
-        x = self.lin(x)
+            # 残差连接（第一层维度可能不同，跳过）
+            if i > 0 and residual.shape == x.shape:
+                x = x + residual
+
+        # 注意力读出：模型学习每个节点的重要性权重
+        attn_scores = self.readout_attn(x)  # (N, 1)
+        attn_weights = softmax(attn_scores, batch)  # softmax within each graph → sum=1
+        x_pooled = global_add_pool(attn_weights * x, batch)  # 加权求和
+
+        x = self.pred_head(x_pooled)
         return x.squeeze(-1)
