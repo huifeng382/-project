@@ -356,6 +356,12 @@ def main():
 
     best_val_rel = float('inf')
     patience_counter = 0
+    plateau_counter = 0
+    val_err_history = []
+    train_loss_history = []
+    plateau_triggered = False
+    last_lr = LEARNING_RATE
+    lr_decayed = False
     print("\nStart training...")
     for epoch in range(EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA)
@@ -370,13 +376,56 @@ def main():
             else:
                 scheduler.step()
 
+        val_err_history.append(val_rel_err)
+        train_loss_history.append(train_loss)
+
+        # 检测 LR 是否已衰减（LR 降低是突破平台期的契机，在此之前不早停）
+        if current_lr < last_lr * 0.99:
+            lr_decayed = True
+        last_lr = current_lr
+
         if val_rel_err < best_val_rel:
             best_val_rel = val_rel_err
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             patience_counter = 0
+            plateau_counter = 0
             print(f"  >>> New best model saved (Val Rel Err: {val_rel_err:.2f}%)")
         else:
             patience_counter += 1
+            plateau_counter += 1
+
+            # 智能早停：检测过拟合平台期
+            # 仅当 LR 已衰减过 + train 还在降 + val 不再改善 → 过拟合，提前终止
+            if (plateau_counter >= PLATEAU_WINDOW
+                    and epoch + 1 >= PLATEAU_MIN_EPOCHS
+                    and lr_decayed
+                    and not plateau_triggered):
+                recent_val = val_err_history[-PLATEAU_WINDOW:]
+                recent_train = train_loss_history[-PLATEAU_WINDOW:]
+                # 与更早的窗口比较
+                prev_start = max(0, len(train_loss_history) - 2 * PLATEAU_WINDOW)
+                prev_train = train_loss_history[prev_start:len(train_loss_history) - PLATEAU_WINDOW]
+
+                val_range = max(recent_val) - min(recent_val)
+                val_best_recent = min(recent_val)
+                train_mean_recent = np.mean(recent_train)
+                train_mean_prev = np.mean(prev_train) if prev_train else train_mean_recent
+
+                # 条件1: train loss 在持续下降（比前一窗口明显更低）
+                train_still_improving = train_mean_recent < train_mean_prev - 0.0005
+                # 条件2: val err 没有破新低（比全局最优差超过 PLATEAU_MIN_DELTA 个百分点）
+                val_not_improving = val_best_recent > best_val_rel + PLATEAU_MIN_DELTA
+                # 条件3: val err 在窗口内震荡（没有明显下降趋势）
+                val_first_half = np.mean(recent_val[:PLATEAU_WINDOW//2])
+                val_second_half = np.mean(recent_val[PLATEAU_WINDOW//2:])
+                val_no_trend = val_second_half > val_first_half - PLATEAU_MIN_DELTA
+
+                if train_still_improving and val_not_improving and val_no_trend:
+                    plateau_triggered = True
+                    print(f"  >>> Plateau detected: train still improving ({train_mean_prev:.4f}→{train_mean_recent:.4f}) "
+                          f"but val oscillating in [{min(recent_val):.1f}%~{max(recent_val):.1f}%], best={best_val_rel:.1f}%")
+                    break
+
             if patience_counter >= PATIENCE:
                 print("Early stopping")
                 break
