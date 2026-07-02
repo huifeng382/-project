@@ -10,12 +10,12 @@ CACHE_DIR = "cache"
 OUTPUT_DIR = "outputs"
 
 # 模型超参数
-HIDDEN_DIM = 256
+HIDDEN_DIM = 512
 NUM_LAYERS = 4
 GATE_EMBED_DIM = 32   # 门类型 Embedding 维度（替代 one-hot，大幅减少参数量）
-DROPOUT = 0.3
+DROPOUT = 0.5
 LEARNING_RATE = 1e-4
-WEIGHT_DECAY = 1e-4
+WEIGHT_DECAY = 5e-4
 BATCH_SIZE = 64
 EPOCHS = 1200
 PATIENCE = 40
