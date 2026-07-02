@@ -174,12 +174,8 @@ class DelayDataset(Dataset):
         global_out_load = row.get('output_load_f', 0.0) if pd.notna(row.get('output_load_f')) else 0.0
         global_arrival = row.get('arrival_time_s', 0.0) if pd.notna(row.get('arrival_time_s')) else 0.0
 
-        # vector 归一化：仿真向量编号 0~31，归一化到 0~1
+        # vector 编码：5位字符串，每位对应一个引脚的逻辑状态
         vector_str = str(row.get('vector', '00000')).zfill(5)
-        try:
-            vector_norm = int(vector_str) / 31.0
-        except ValueError:
-            vector_norm = 0.0
 
         dyn_feats = {}
         for pin in pins:
@@ -214,8 +210,17 @@ class DelayDataset(Dataset):
             else:
                 arrival_val = 0.0
 
-            # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
-            logic_val = switching_before if pin == switching else 0.5
+            # 逻辑值：切换引脚用推断的切换前状态
+            # 非切换引脚：从 vector 对应位读取实际逻辑状态（不再用 0.5 占位）
+            if pin == switching:
+                logic_val = switching_before
+            else:
+                try:
+                    bit_idx = pins.index(pin)
+                    logic_val = float(vector_str[bit_idx]) if bit_idx < len(vector_str) else 0.5
+                except (ValueError, IndexError):
+                    logic_val = 0.5
+
             feat = [
                 logic_val,
                 1.0 if pin == switching else 0.0,
@@ -223,10 +228,9 @@ class DelayDataset(Dataset):
                 load_val,
                 global_out_load,
                 arrival_val,
-                vector_norm,
             ]
             if self.scaler is not None:
-                # 只缩放连续值特征: slew, load, out_load, arrival（vector_norm 已是 0~1 不需要缩放）
+                # 缩放连续值特征: slew, load, out_load, arrival
                 continuous = np.array([feat[2], feat[3], feat[4], feat[5]]).reshape(1, -1)
                 scaled_cont = self.scaler.transform(continuous)[0]
                 feat[2], feat[3], feat[4], feat[5] = scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3]
@@ -245,7 +249,7 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        num_dyn_feats = 7
+        num_dyn_feats = 6
         node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
