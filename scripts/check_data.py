@@ -56,11 +56,41 @@ train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
 
 # 标准化器（仅用于加载数据集，不影响检查）
 train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
+# 推断引脚（数据驱动的）
+pins = sorted([c[5:] for c in train_dynamic.columns if c.startswith('slew_') and c != 'slew_s'])
+if not pins:
+    pins = sorted(train_dynamic['switching_pin'].dropna().unique())
+print(f"检测到引脚: {pins}")
+
 all_cont_features = []
-pins = ['a', 'b', 'c', 'd', 'e']
 for _, row in train_dynamic.iterrows():
+    switching = row.get('switching_pin', '')
+    global_slew = row.get('slew_s', 0.0)
+    out_load = row.get('output_load_f', 0.0)
     for pin in pins:
-        all_cont_features.append([row[f'slew_{pin}'], row[f'arrival_{pin}'], row[f'load_{pin}']])
+        # slew: prefer per-pin, fallback to global_slew for switching pin
+        slew_col = f'slew_{pin}'
+        if slew_col in row.index and pd.notna(row[slew_col]):
+            slew_val = row[slew_col]
+        elif pin == switching:
+            slew_val = global_slew
+        else:
+            slew_val = 0.0
+        # load: prefer per-pin load column, fallback to 0.0
+        load_col = f'load_{pin}'
+        if load_col in row.index and pd.notna(row[load_col]):
+            load_val = row[load_col]
+        else:
+            load_val = 0.0
+        # arrival: prefer per-pin, fallback to global arrival_time_s for switching
+        arrival_col = f'arrival_time_{pin}'
+        if arrival_col in row.index and pd.notna(row[arrival_col]):
+            arrival_val = row[arrival_col]
+        elif pin == switching:
+            arrival_val = row.get('arrival_time_s', 0.0)
+        else:
+            arrival_val = 0.0
+        all_cont_features.append([slew_val, load_val, out_load, arrival_val])
 scaler = StandardScaler(with_std=False)
 scaler.fit(all_cont_features)
 

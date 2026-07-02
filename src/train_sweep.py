@@ -155,17 +155,17 @@ def main():
     # 启动时检查：如果模型代码变了，自动清除所有缓存
     check_and_clear_cache()
 
-    # ---------- 数据集路径：方案B采样后 ~10万样本 ----------
-    # batch1: 手选电路全sweep (170电路, 30 corners) → ~30K
-    # batch2: e-graph稀疏sweep (1215电路, 9 corners) → ~70K
+    # ---------- 数据集路径：新生成 ~10w+ 样本 ----------
+    # batch1: 手选电路全sweep (150电路, 30 corners) → ~58K
+    # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
-        os.path.join(data_dir, "data/batch1_30k/circuit_static.parquet"),
-        os.path.join(data_dir, "data/batch2_70k/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch1/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch2/circuit_static.parquet"),
     ]
     dynamic_parquets = [
-        os.path.join(data_dir, "data/batch1_30k/timing_arcs.parquet"),
-        os.path.join(data_dir, "data/batch2_70k/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch1/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch2/timing_arcs.parquet"),
     ]
 
     for p in static_parquets + dynamic_parquets:
@@ -275,7 +275,15 @@ def main():
                 load_val = row[load_col]
             else:
                 load_val = loads_dict.get(pin, 0.0)
-            all_cont_features.append([slew_val, load_val, out_load])
+            # 匹配 data_loader 逻辑：arrival_time
+            arrival_col = f'arrival_time_{pin}'
+            if arrival_col in row.index and pd.notna(row[arrival_col]):
+                arrival_val = row[arrival_col]
+            elif pin == switching:
+                arrival_val = row.get('arrival_time_s', 0.0)
+            else:
+                arrival_val = 0.0
+            all_cont_features.append([slew_val, load_val, out_load, arrival_val])
     scaler = StandardScaler(with_std=True)
     scaler.fit(all_cont_features)
     print("=" * 50)
@@ -541,9 +549,15 @@ def main():
 
     # Per-batch breakdown
     if 'expr' in test_dyn.columns:
-        # batch1 circuits have expr starting with expr04, batch2 start with expr00
-        batch1_mask = test_dyn['expr'].str.startswith('expr04').values
-        batch2_mask = ~batch1_mask
+        # batch1 circuits have expr in range expr0000-expr0039, batch2 in expr0200-expr0352
+        def _expr_num(e):
+            try:
+                return int(str(e).replace('expr', ''))
+            except:
+                return -1
+        expr_nums = test_dyn['expr'].apply(_expr_num).values
+        batch1_mask = (expr_nums >= 0) & (expr_nums <= 199)
+        batch2_mask = expr_nums >= 200
         for label, mask in [('Batch1 (handpicked)', batch1_mask), ('Batch2 (egraph)', batch2_mask)]:
             if mask.sum() > 0:
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100

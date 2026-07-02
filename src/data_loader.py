@@ -172,6 +172,7 @@ class DelayDataset(Dataset):
         # 全局动态参数（来自 timing_arcs，每个向量不同）
         global_slew = row.get('slew_s', 0.0) if pd.notna(row.get('slew_s')) else 0.0
         global_out_load = row.get('output_load_f', 0.0) if pd.notna(row.get('output_load_f')) else 0.0
+        global_arrival = row.get('arrival_time_s', 0.0) if pd.notna(row.get('arrival_time_s')) else 0.0
 
         # vector 归一化：仿真向量编号 0~31，归一化到 0~1
         vector_str = str(row.get('vector', '00000')).zfill(5)
@@ -195,7 +196,7 @@ class DelayDataset(Dataset):
                 else:
                     load_val = pin_loads_dict.get(pin, 0.0)
 
-            # 获取 slew（只有切换引脚有输入 slew，其他引脚为 0）
+            # 获取 slew（切换引脚有输入 slew，其他引脚优先读 per-pin 列）
             slew_col = f'slew_{pin}'
             if slew_col in row.index and pd.notna(row[slew_col]):
                 slew_val = row[slew_col]
@@ -203,6 +204,15 @@ class DelayDataset(Dataset):
                 slew_val = global_slew
             else:
                 slew_val = 0.0
+
+            # 获取 arrival_time（各引脚信号到达时间）
+            arrival_col = f'arrival_time_{pin}'
+            if arrival_col in row.index and pd.notna(row[arrival_col]):
+                arrival_val = row[arrival_col]
+            elif pin == switching:
+                arrival_val = global_arrival
+            else:
+                arrival_val = 0.0
 
             # 逻辑值：切换引脚用推断的切换前状态，其他引脚设为 0.5（未知）
             logic_val = switching_before if pin == switching else 0.5
@@ -212,13 +222,14 @@ class DelayDataset(Dataset):
                 slew_val,
                 load_val,
                 global_out_load,
+                arrival_val,
                 vector_norm,
             ]
             if self.scaler is not None:
-                # 只缩放连续值特征: slew, load, out_load（vector_norm 已是 0~1 不需要缩放）
-                continuous = np.array([feat[2], feat[3], feat[4]]).reshape(1, -1)
+                # 只缩放连续值特征: slew, load, out_load, arrival（vector_norm 已是 0~1 不需要缩放）
+                continuous = np.array([feat[2], feat[3], feat[4], feat[5]]).reshape(1, -1)
                 scaled_cont = self.scaler.transform(continuous)[0]
-                feat[2], feat[3], feat[4] = scaled_cont[0], scaled_cont[1], scaled_cont[2]
+                feat[2], feat[3], feat[4], feat[5] = scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3]
             dyn_feats[pin] = feat
         return dyn_feats
 
@@ -234,7 +245,7 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        num_dyn_feats = 6
+        num_dyn_feats = 7
         node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
