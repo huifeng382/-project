@@ -261,19 +261,33 @@ class DelayDataset(Dataset):
                 dyn = dyn_feats[n]
                 x[i, -num_dyn_feats:] = torch.tensor(dyn, dtype=torch.float)
 
-        # 路径特征：标记哪些门在信号路径上（门状态来自 gate_states_json）
+        # 路径特征：标记哪些门在信号路径上
+        # 优先从 gate_states_json 读取，若为空则用轻量级逻辑仿真推导
         gate_states = {}
         try:
             gs = row.get('gate_states_json')
-            if gs is not None and pd.notna(gs):
+            if gs is not None and pd.notna(gs) and str(gs).strip() not in ('', '{}'):
                 gate_states = json.loads(gs) if isinstance(gs, str) else gs
         except Exception:
             pass
+
+        if not gate_states:
+            # 用逻辑仿真推导信号路径
+            from src.logic_sim import compute_gate_states
+            from src.graph_builder import GATE_TYPES
+            node_types = {}
+            for j, n in enumerate(node_names):
+                type_idx = int(node_static[j, 0].item())
+                node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
+            vector_str = str(row.get('vector', '00000')).zfill(5)
+            gate_states = compute_gate_states(node_names, node_types, edge_index,
+                                               vector_str, self.pins, row['switching_pin'])
+
         for i, n in enumerate(node_names):
             if n in gate_states:
-                x[i, -1] = float(gate_states[n])  # 1=在路径上, 0=不在
+                x[i, -1] = float(gate_states[n])
             elif n == 'out':
-                x[i, -1] = 1.0  # 输出节点始终在路径上
+                x[i, -1] = 1.0
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
