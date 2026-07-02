@@ -229,6 +229,7 @@ class DelayDataset(Dataset):
                 load_val,
                 global_out_load,
                 arrival_val,
+                0.0,  # gate_state: 输入引脚固定为0，门节点在 __getitem__ 中设置
             ]
             if self.scaler is not None:
                 # 缩放连续值特征: slew, load, out_load, arrival
@@ -250,7 +251,7 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        num_dyn_feats = 6
+        num_dyn_feats = 7
         node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
@@ -259,6 +260,20 @@ class DelayDataset(Dataset):
             if n in dyn_feats:
                 dyn = dyn_feats[n]
                 x[i, -num_dyn_feats:] = torch.tensor(dyn, dtype=torch.float)
+
+        # 路径特征：标记哪些门在信号路径上（门状态来自 gate_states_json）
+        gate_states = {}
+        try:
+            gs = row.get('gate_states_json')
+            if gs is not None and pd.notna(gs):
+                gate_states = json.loads(gs) if isinstance(gs, str) else gs
+        except Exception:
+            pass
+        for i, n in enumerate(node_names):
+            if n in gate_states:
+                x[i, -1] = float(gate_states[n])  # 1=在路径上, 0=不在
+            elif n == 'out':
+                x[i, -1] = 1.0  # 输出节点始终在路径上
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
