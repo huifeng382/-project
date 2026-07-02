@@ -174,6 +174,18 @@ class DelayDataset(Dataset):
         global_out_load = row.get('output_load_f', 0.0) if pd.notna(row.get('output_load_f')) else 0.0
         global_arrival = row.get('arrival_time_s', 0.0) if pd.notna(row.get('arrival_time_s')) else 0.0
 
+        # 解析 corner 条件（如 s05p0_l10p0 → slew=5.0ps, load=10.0fF）
+        corner_str = str(row.get('corner', 's05p0_l10p0'))
+        corner_slew_cond = 5.0   # 默认值
+        corner_load_cond = 10.0
+        try:
+            s_part = corner_str.split('_')[0]  # s05p0
+            l_part = corner_str.split('_')[1]  # l10p0
+            corner_slew_cond = float(s_part[1:].replace('p', '.'))   # 05p0 → 5.0
+            corner_load_cond = float(l_part[1:].replace('p', '.'))   # 10p0 → 10.0
+        except (IndexError, ValueError):
+            pass
+
         # vector 编码：5位字符串，每位对应一个引脚的逻辑状态
         vector_str = str(row.get('vector', '00000')).zfill(5)
 
@@ -229,13 +241,18 @@ class DelayDataset(Dataset):
                 load_val,
                 global_out_load,
                 arrival_val,
+                corner_slew_cond,   # corner的S条件（ps），所有引脚相同
+                corner_load_cond,   # corner的L条件（fF），所有引脚相同
                 0.0,  # gate_state: 输入引脚固定为0，门节点在 __getitem__ 中设置
             ]
             if self.scaler is not None:
-                # 缩放连续值特征: slew, load, out_load, arrival
-                continuous = np.array([feat[2], feat[3], feat[4], feat[5]]).reshape(1, -1)
+                # 缩放连续值特征: slew, load, out_load, arrival, corner_slew, corner_load
+                continuous = np.array([feat[2], feat[3], feat[4], feat[5],
+                                       feat[6], feat[7]]).reshape(1, -1)
                 scaled_cont = self.scaler.transform(continuous)[0]
-                feat[2], feat[3], feat[4], feat[5] = scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3]
+                feat[2], feat[3], feat[4], feat[5], feat[6], feat[7] = (
+                    scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3],
+                    scaled_cont[4], scaled_cont[5])
             dyn_feats[pin] = feat
         return dyn_feats
 
@@ -251,7 +268,7 @@ class DelayDataset(Dataset):
         dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        num_dyn_feats = 7
+        num_dyn_feats = 9
         node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static

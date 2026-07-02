@@ -260,6 +260,18 @@ def main():
         global_slew = row.get('slew_s', 0.0)
         out_load = row.get('output_load_f', 0.0)
         loads_dict = pin_loads_map.get(row['circuit_id'], {})
+
+        # 解析 corner 条件
+        corner_str = str(row.get('corner', 's05p0_l10p0'))
+        try:
+            s_part = corner_str.split('_')[0]
+            l_part = corner_str.split('_')[1]
+            corner_slew = float(s_part[1:].replace('p', '.'))
+            corner_load = float(l_part[1:].replace('p', '.'))
+        except (IndexError, ValueError):
+            corner_slew = 5.0
+            corner_load = 10.0
+
         for pin in pins:
             # 匹配 data_loader 逻辑：优先 per-pin slew 列，否则只有切换引脚用全局 slew
             slew_col = f'slew_{pin}'
@@ -284,7 +296,8 @@ def main():
                     arrival_val = row.get('arrival_time_s', 0.0)
             else:
                 arrival_val = 0.0
-            all_cont_features.append([slew_val, load_val, out_load, arrival_val])
+            all_cont_features.append([slew_val, load_val, out_load, arrival_val,
+                                       corner_slew, corner_load])
     scaler = StandardScaler(with_std=True)
     scaler.fit(all_cont_features)
     print("=" * 50)
