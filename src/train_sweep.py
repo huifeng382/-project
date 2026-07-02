@@ -275,12 +275,13 @@ def main():
                 load_val = row[load_col]
             else:
                 load_val = loads_dict.get(pin, 0.0)
-            # 匹配 data_loader 逻辑：arrival_time
-            arrival_col = f'arrival_time_{pin}'
-            if arrival_col in row.index and pd.notna(row[arrival_col]):
-                arrival_val = row[arrival_col]
-            elif pin == switching:
-                arrival_val = row.get('arrival_time_s', 0.0)
+            # 匹配 data_loader 逻辑：仅切换引脚有 arrival_time
+            if pin == switching:
+                arrival_col = f'arrival_time_{pin}'
+                if arrival_col in row.index and pd.notna(row[arrival_col]):
+                    arrival_val = row[arrival_col]
+                else:
+                    arrival_val = row.get('arrival_time_s', 0.0)
             else:
                 arrival_val = 0.0
             all_cont_features.append([slew_val, load_val, out_load, arrival_val])

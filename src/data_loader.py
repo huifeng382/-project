@@ -201,12 +201,13 @@ class DelayDataset(Dataset):
             else:
                 slew_val = 0.0
 
-            # 获取 arrival_time（各引脚信号到达时间）
-            arrival_col = f'arrival_time_{pin}'
-            if arrival_col in row.index and pd.notna(row[arrival_col]):
-                arrival_val = row[arrival_col]
-            elif pin == switching:
-                arrival_val = global_arrival
+            # 获取 arrival_time（仅切换引脚有意义，非切换引脚为静态→填0）
+            if pin == switching:
+                arrival_col = f'arrival_time_{pin}'
+                if arrival_col in row.index and pd.notna(row[arrival_col]):
+                    arrival_val = row[arrival_col]
+                else:
+                    arrival_val = global_arrival
             else:
                 arrival_val = 0.0
 
