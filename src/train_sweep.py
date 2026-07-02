@@ -59,8 +59,9 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         sample_loss = torch.where(abs_res <= delta,
                                   0.5 * residual ** 2,
                                   delta * (abs_res - 0.5 * delta))
-        weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
-        loss = (sample_loss * weights).mean()
+        pin_w = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
+        batch_w = data.sample_weight.to(device)
+        loss = (sample_loss * pin_w * batch_w).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()

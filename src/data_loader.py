@@ -143,6 +143,16 @@ class DelayDataset(Dataset):
         self.scaler = scaler
         self.cache_dir = cache_dir
         self.graph_cache = {}
+
+        # 计算样本权重：平衡不同批次电路的loss贡献
+        expr_num = self.dynamic_df['expr'].str.extract(r'(\d+)', expand=False).astype(int)
+        batch1 = expr_num < 200
+        batch2 = expr_num >= 200
+        n1, n2 = batch1.sum(), batch2.sum()
+        self.sample_weights = np.ones(len(self.dynamic_df), dtype=np.float32)
+        if n1 > 0 and n2 > 0:
+            self.sample_weights[batch2.values] = n1 / n2
+
         self._prepare_static_graphs()
 
     def _prepare_static_graphs(self):
@@ -309,6 +319,7 @@ class DelayDataset(Dataset):
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
         data.switching_pin = row['switching_pin']
+        data.sample_weight = torch.tensor([self.sample_weights[idx]], dtype=torch.float)
         return data
     def extract_features(self, idx):
         """
