@@ -162,22 +162,81 @@ def build_static_graph(circuit_id, netlist_str):
         if match:
             return float(match.group(1))
         return 1.0
-    
+
+    # 4. 逻辑努力参数（寄生延迟 p, 逻辑努力 g, 输入电容 C_in）
+    def get_logic_params(gate_type, num_inputs):
+        gt = gate_type.upper()
+        n = max(num_inputs, 1)
+        # 寄生延迟 p
+        if 'INV' in gt or 'NOT' in gt:    p = 1.0
+        elif 'NAND' in gt:                p = n
+        elif 'NOR' in gt:                 p = n
+        elif 'AND' in gt:                 p = n + 1   # AND = NAND + INV
+        elif 'OR' in gt:                  p = n + 1   # OR = NOR + INV
+        elif 'XOR' in gt:                 p = 2 * n
+        elif 'BUF' in gt:                 p = 1.0
+        elif 'JOIN' in gt or 'BRIDGE' in gt or 'WIRE' in gt: p = 0.5
+        else:                             p = 1.0
+        # 逻辑努力 g
+        if 'INV' in gt or 'NOT' in gt:    g = 1.0
+        elif 'NAND' in gt:                g = (n + 2) / 3
+        elif 'NOR' in gt:                 g = (2 * n + 1) / 3
+        elif 'AND' in gt:                 g = (n + 2) / 3   # NAND part
+        elif 'OR' in gt:                  g = (2 * n + 1) / 3  # NOR part
+        elif 'XOR' in gt:                 g = 4.0
+        elif 'BUF' in gt:                 g = 1.0
+        elif 'JOIN' in gt or 'BRIDGE' in gt or 'WIRE' in gt: g = 0.5
+        else:                             g = 1.0
+        # 输入电容 C_in (从门类型名提取驱动等级)
+        match = re.search(r'x(\d+)', gate_type, re.IGNORECASE)
+        cin = float(match.group(1)) if match else 1.0
+        return p, g, cin
+
     drive_strength = []
+    parasitic = []
+    logic_effort = []
+    input_cap = []
+    fanin_count = []
     for n in node_names:
         if n.startswith('X_'):
             gt = nodes[n]['type']
             ds = get_drive_strength(gt)
+            num_in = len([e for e in edges if e[1] == n])
+            p, g, cin = get_logic_params(gt, num_in)
         else:
             ds = 0.0
+            num_in = 0
+            p, g, cin = 0.0, 0.0, 0.0
         drive_strength.append(ds)
-    
+        parasitic.append(p)
+        logic_effort.append(g)
+        input_cap.append(cin)
+        fanin_count.append(num_in)
+
+    # 电努力 h = 输出负载 / 输入电容（仅门节点，引脚为0）
+    out_load = [0.0] * len(node_names)
+    for u, v in edges:
+        ui = node_names.index(u)
+        vi = node_names.index(v)
+        out_load[ui] += input_cap[vi]
+    electrical_effort = []
+    for i, n in enumerate(node_names):
+        if n.startswith('X_'):
+            h = out_load[i] / max(input_cap[i], 0.01)
+        else:
+            h = 0.0
+        electrical_effort.append(h)
+
     # 将特征转换为张量（使用 log1p 平滑）
-    fanout_feat = torch.tensor([[np.log1p(out_degree[n])] for n in node_names], dtype=torch.float)
-    depth_feat  = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
-    drive_feat  = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
-    
-    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动强度
-    node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat], dim=1)
-    
+    fanout_feat  = torch.tensor([[np.log1p(out_degree[n])] for n in node_names], dtype=torch.float)
+    depth_feat   = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
+    drive_feat   = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
+    p_feat       = torch.tensor([[p] for p in parasitic], dtype=torch.float)
+    g_feat       = torch.tensor([[g] for g in logic_effort], dtype=torch.float)
+    h_feat       = torch.tensor([[np.log1p(h)] for h in electrical_effort], dtype=torch.float)
+
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 寄生延迟 + 逻辑努力 + 电努力
+    node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat,
+                              p_feat, g_feat, h_feat], dim=1)
+
     return node_names, node_static, edge_index

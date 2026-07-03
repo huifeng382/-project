@@ -331,9 +331,9 @@ class DelayDataset(Dataset):
         num_nodes = node_static_np.shape[0]
         
         # ----- 1. 图级静态统计 -----
-        fanout = node_static_np[:, -3]
-        depth = node_static_np[:, -2]
-        drive = node_static_np[:, -1]
+        fanout = node_static_np[:, 1]  # 绝对索引（静态特征位置固定）
+        depth = node_static_np[:, 2]
+        drive = node_static_np[:, 3]
         
         features = []
         num_edges = edge_index.size(1)
@@ -435,8 +435,8 @@ class DelayDataset(Dataset):
                 for n in path_nodes:
                     if n in node_names:
                         idx_n = node_names.index(n)
-                        fanout_vals.append(node_static_np[idx_n, -3])
-                        drive_vals.append(node_static_np[idx_n, -1])
+                        fanout_vals.append(node_static_np[idx_n, 1])
+                        drive_vals.append(node_static_np[idx_n, 3])
         if fanout_vals:
             features.extend([np.mean(fanout_vals), np.std(fanout_vals), np.max(fanout_vals)])
         else:
