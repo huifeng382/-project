@@ -217,7 +217,7 @@ def build_static_graph(circuit_id, netlist_str):
     depth_feat   = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
     drive_feat   = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
     fanin_feat   = torch.tensor([[np.log1p(in_degree[n])] for n in node_names], dtype=torch.float)
-    dist_feat    = torch.tensor([[float(dist_to_out[n])] for n in node_names], dtype=torch.float)
+    dist_feat    = torch.tensor([[np.log1p(dist_to_out[n])] for n in node_names], dtype=torch.float)
     onpath_feat  = torch.tensor([[1.0 if on_path[n] else 0.0] for n in node_names], dtype=torch.float)
 
     # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 扇入 + 输出距离 + 关键路径
