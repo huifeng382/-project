@@ -172,12 +172,7 @@ def build_static_graph(circuit_id, netlist_str):
             ds = 0.0
         drive_strength.append(ds)
     
-    # 4. 扇入数（入度）
-    in_degree = {n: 0 for n in node_names}
-    for u, v in edges:
-        in_degree[v] += 1
-
-    # 5. 到输出节点的最短距离（BFS 反向搜索）
+    # 4. 到输出节点的最短距离（BFS 反向搜索）
     reverse_adj = {n: [] for n in node_names}
     for u, v in edges:
         reverse_adj[v].append(u)
@@ -193,35 +188,16 @@ def build_static_graph(circuit_id, netlist_str):
                     q.append(prev)
     for n in node_names:
         if dist_to_out[n] == float('inf'):
-            dist_to_out[n] = len(node_names)  # 不可达节点给最大值
-
-    # 6. 是否在关键路径上（可达输出且可从输入到达）
-    # 从所有输入引脚正向 BFS，标记可达节点
-    reachable_from_input = {n: False for n in node_names}
-    fwd_q = deque([n for n in node_names if nodes[n].get('is_input')])
-    for n in fwd_q:
-        reachable_from_input[n] = True
-    while fwd_q:
-        u = fwd_q.popleft()
-        for v in adj.get(u, []):
-            if not reachable_from_input.get(v, False):
-                reachable_from_input[v] = True
-                fwd_q.append(v)
-    # 从输出反向 BFS，标记可达输出的节点
-    reachable_to_output = {n: (dist_to_out[n] < len(node_names)) for n in node_names}
-    on_path = {n: (reachable_from_input.get(n, False) and reachable_to_output.get(n, False))
-               for n in node_names}
+            dist_to_out[n] = len(node_names)
 
     # 将特征转换为张量（使用 log1p 平滑）
-    fanout_feat  = torch.tensor([[np.log1p(out_degree[n])] for n in node_names], dtype=torch.float)
-    depth_feat   = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
-    drive_feat   = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
-    fanin_feat   = torch.tensor([[np.log1p(in_degree[n])] for n in node_names], dtype=torch.float)
-    dist_feat    = torch.tensor([[np.log1p(dist_to_out[n])] for n in node_names], dtype=torch.float)
-    onpath_feat  = torch.tensor([[1.0 if on_path[n] else 0.0] for n in node_names], dtype=torch.float)
+    fanout_feat = torch.tensor([[np.log1p(out_degree[n])] for n in node_names], dtype=torch.float)
+    depth_feat  = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
+    drive_feat  = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
+    dist_feat   = torch.tensor([[np.log1p(dist_to_out[n])] for n in node_names], dtype=torch.float)
 
-    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 扇入 + 输出距离 + 关键路径
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 输出距离
     node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat,
-                              fanin_feat, dist_feat, onpath_feat], dim=1)
+                              dist_feat], dim=1)
 
     return node_names, node_static, edge_index
