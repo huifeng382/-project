@@ -577,5 +577,34 @@ def main():
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
+    # ---------- 摘要 ----------
+    print("\n" + "=" * 60)
+    print("SUMMARY")
+    print("=" * 60)
+    print(f"  Config: HIDDEN_DIM={HIDDEN_DIM} NUM_LAYERS={NUM_LAYERS} "
+          f"DROPOUT={DROPOUT} WEIGHT_DECAY={WEIGHT_DECAY}")
+    print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
+    print(f"  Device: {device}")
+    print(f"  Best Val Rel Err: {best_val_rel:.2f}%")
+    print(f"  Test Rel Err: {test_rel_err:.2f}%")
+    if 'corner' in test_dyn.columns:
+        corners = test_dyn['corner'].values
+        corner_errs = {}
+        for c in sorted(set(corners)):
+            mask = corners == c
+            if mask.sum() > 0:
+                corner_errs[c] = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
+        best_c = min(corner_errs, key=corner_errs.get)
+        worst_c = max(corner_errs, key=corner_errs.get)
+        print(f"  Best corner: {best_c} = {corner_errs[best_c]:.1f}%")
+        print(f"  Worst corner: {worst_c} = {corner_errs[worst_c]:.1f}%")
+        print(f"  Corner spread: {corner_errs[worst_c] - corner_errs[best_c]:.1f}%")
+    for label, mask in [('Batch1', batch1_mask), ('Batch2', batch2_mask)]:
+        if mask.sum() > 0:
+            err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
+            print(f"  {label}: {err:.1f}%")
+    print(f"  Total samples: test={len(test_dyn)} train={len(train_dataset)} val={len(val_dataset)}")
+    print("=" * 60)
+
 if __name__ == "__main__":
     main()
