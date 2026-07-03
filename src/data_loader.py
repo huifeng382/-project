@@ -143,6 +143,7 @@ class DelayDataset(Dataset):
         self.scaler = scaler
         self.cache_dir = cache_dir
         self.graph_cache = {}
+        self._gate_state_cache = {}  # 缓存逻辑仿真结果，数据不变时复用
         self._prepare_static_graphs()
 
     def _prepare_static_graphs(self):
@@ -289,16 +290,20 @@ class DelayDataset(Dataset):
             pass
 
         if not gate_states:
-            # 用逻辑仿真推导信号路径
-            from src.logic_sim import compute_gate_states
-            from src.graph_builder import GATE_TYPES
-            node_types = {}
-            for j, n in enumerate(node_names):
-                type_idx = int(node_static[j, 0].item())
-                node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
-            vector_str = str(row.get('vector', '00000')).zfill(5)
-            gate_states = compute_gate_states(node_names, node_types, edge_index,
-                                               vector_str, self.pins, row['switching_pin'])
+            cache_key = (cid, str(row.get('vector', '00000')).zfill(5), row['switching_pin'])
+            if cache_key in self._gate_state_cache:
+                gate_states = self._gate_state_cache[cache_key]
+            else:
+                from src.logic_sim import compute_gate_states
+                from src.graph_builder import GATE_TYPES
+                node_types = {}
+                for j, n in enumerate(node_names):
+                    type_idx = int(node_static[j, 0].item())
+                    node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
+                vector_str = cache_key[1]
+                gate_states = compute_gate_states(node_names, node_types, edge_index,
+                                                   vector_str, self.pins, cache_key[2])
+                self._gate_state_cache[cache_key] = gate_states
 
         for i, n in enumerate(node_names):
             if n in gate_states:
