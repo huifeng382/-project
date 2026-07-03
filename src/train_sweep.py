@@ -153,9 +153,6 @@ def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
     _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
                       data_hash, "Gate cache")
 
-    with open(version_file, 'w') as f:
-        f.write(current_version)
-
 
 def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
     """生成离群点清洗缓存的路径，数据/模型/配置变化时自动失效。"""
