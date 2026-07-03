@@ -91,38 +91,70 @@ def evaluate(model, loader, device):
     rel_error = np.abs(preds - targets) / targets * 100
     return total_loss / len(loader), np.mean(rel_error), preds, targets
 
-def get_model_hash():
-    """计算模型文件的哈希，模型架构变化时自动失效所有缓存。"""
-    model_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                              'src', 'model.py')
+def _file_hash(path):
     try:
-        with open(model_path, 'rb') as f:
+        with open(path, 'rb') as f:
             return hashlib.md5(f.read()).hexdigest()[:8]
     except OSError:
-        return 'nomodel'
+        return 'none'
 
+def _data_mtime_hash(static_parquets, dynamic_parquets):
+    h = hashlib.md5()
+    for p in sorted(static_parquets + dynamic_parquets):
+        try:
+            h.update(str(int(os.path.getmtime(p))).encode())
+        except OSError:
+            h.update(b'0')
+    return h.hexdigest()[:8]
 
-def check_and_clear_cache():
-    """检查缓存的模型版本，若模型已变化则自动清除所有旧缓存。"""
-    version_file = os.path.join(CACHE_DIR, '.model_version')
-    current_hash = get_model_hash()
-
-    if os.path.exists(CACHE_DIR):
-        if os.path.exists(version_file):
-            with open(version_file, 'r') as f:
-                old_hash = f.read().strip()
-            if old_hash != current_hash:
-                print(f"Model changed ({old_hash} -> {current_hash}), clearing all caches...")
-                shutil.rmtree(CACHE_DIR)
+def _check_cache_dir(cache_subdir, version_key, description):
+    """检查子缓存目录版本，过期则清除"""
+    os.makedirs(cache_subdir, exist_ok=True)
+    ver_file = os.path.join(cache_subdir, '.version')
+    old_ver = None
+    if os.path.exists(ver_file):
+        with open(ver_file, 'r') as f:
+            old_ver = f.read().strip()
+    if old_ver != version_key:
+        if old_ver:
+            print(f"  {description}: outdated, clearing")
         else:
-            # 没有版本文件 → 旧缓存，清除
-            if os.listdir(CACHE_DIR):
-                print("No model version file found, clearing stale caches...")
-                shutil.rmtree(CACHE_DIR)
+            print(f"  {description}: initializing")
+        for f in os.listdir(cache_subdir):
+            if f == '.version':
+                continue
+            fp = os.path.join(cache_subdir, f)
+            if os.path.isfile(fp):
+                os.remove(fp)
+            elif os.path.isdir(fp):
+                shutil.rmtree(fp)
+    with open(ver_file, 'w') as f:
+        f.write(version_key)
+    return old_ver == version_key  # True=命中, False=重建
 
-    os.makedirs(CACHE_DIR, exist_ok=True)
+
+def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
+    """
+    按缓存类型分别检查，仅在影响该类型的条件变化时清除。
+    - 图缓存：graph_builder.py + 数据 mtime
+    - 离群点缓存：model.py + graph_builder.py + 数据 mtime
+    - gate 缓存：仅数据 mtime
+    """
+    src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    gb_hash = _file_hash(os.path.join(src_dir, 'src/graph_builder.py'))
+    model_hash = _file_hash(os.path.join(src_dir, 'src/model.py'))
+    data_hash = _data_mtime_hash(static_parquets, dynamic_parquets)
+
+    print("Cache check:")
+    _check_cache_dir(os.path.join(CACHE_DIR, 'graphs'),
+                      gb_hash + data_hash, "Graph cache")
+    os.makedirs(os.path.join(CACHE_DIR, 'outlier'), exist_ok=True)
+    # 离群点缓存自管理：hash key 含 train_ids + config + data mtime
+    _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
+                      data_hash, "Gate cache")
+
     with open(version_file, 'w') as f:
-        f.write(current_hash)
+        f.write(current_version)
 
 
 def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
@@ -135,7 +167,6 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"seed{RANDOM_SEED}",
         f"hdim{HIDDEN_DIM}",
         f"nlay{NUM_LAYERS}",
-        f"model{get_model_hash()}",   # 模型变了缓存自动失效
     ]
     # 加入数据文件的修改时间，数据变了缓存自动失效
     for p in sorted(static_parquets + dynamic_parquets):
@@ -145,15 +176,15 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
             key_parts.append('0')
     key_str = '_'.join(key_parts)
     key_hash = hashlib.md5(key_str.encode()).hexdigest()[:12]
-    return os.path.join(CACHE_DIR, f'outlier_keep_{key_hash}.npy')
+    outlier_dir = os.path.join(CACHE_DIR, 'outlier')
+    os.makedirs(outlier_dir, exist_ok=True)
+    return os.path.join(outlier_dir, f'outlier_keep_{key_hash}.npy')
 
 
 def main():
     set_seed(RANDOM_SEED)
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
-    # 启动时检查：如果模型代码变了，自动清除所有缓存
-    check_and_clear_cache()
 
     # ---------- 数据集路径：新生成 ~10w+ 样本 ----------
     # batch1: 手选电路全sweep (150电路, 30 corners) → ~58K
@@ -167,6 +198,18 @@ def main():
         os.path.join(data_dir, "data/batch1/timing_arcs.parquet"),
         os.path.join(data_dir, "data/batch2/timing_arcs.parquet"),
     ]
+    # 可选追加数据（存在则加载，不存在则跳过）
+    for batch in ['batch1b', 'batch3']:
+        sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
+        dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
+        if os.path.exists(sp) and os.path.exists(dp):
+            static_parquets.append(sp)
+            dynamic_parquets.append(dp)
+            print(f"Found optional data: {batch}")
+        else:
+            print(f"Optional data not found, skipping: {batch}")
+    # 启动时检查：如果代码或数据变了，自动清除过期缓存
+    check_and_clear_cache(static_parquets, dynamic_parquets)
 
     for p in static_parquets + dynamic_parquets:
         if not os.path.exists(p):
@@ -322,19 +365,6 @@ def main():
     import src.graph_builder as gb
     num_gate_types = len(gb.GATE_TYPES)
     print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt ({num_gate_types} total)")
-
-    # 清除旧图缓存（GATE_TYPES 变了，embedding 维度可能不同）
-    version_file = os.path.join(CACHE_DIR, '.model_version')
-    saved_version = None
-    if os.path.exists(version_file):
-        with open(version_file, 'r') as f:
-            saved_version = f.read().strip()
-    if os.path.exists(CACHE_DIR):
-        shutil.rmtree(CACHE_DIR)
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    if saved_version:
-        with open(version_file, 'w') as f:
-            f.write(saved_version)
 
     # ---------- 创建数据集 ----------
     train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)

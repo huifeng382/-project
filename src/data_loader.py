@@ -143,13 +143,15 @@ class DelayDataset(Dataset):
         self.scaler = scaler
         self.cache_dir = cache_dir
         self.graph_cache = {}
-        self._gate_state_cache = {}  # 缓存逻辑仿真结果，数据不变时复用
+        self._graph_cache_dir = os.path.join(cache_dir, 'graphs')
+        self._gate_cache_dir = os.path.join(cache_dir, 'gate')
+        os.makedirs(self._graph_cache_dir, exist_ok=True)
+        os.makedirs(self._gate_cache_dir, exist_ok=True)
         self._prepare_static_graphs()
 
     def _prepare_static_graphs(self):
-        os.makedirs(self.cache_dir, exist_ok=True)
         for cid in self.dynamic_df['circuit_id'].unique():
-            cache_path = os.path.join(self.cache_dir, f"{cid}_graph.pt")
+            cache_path = os.path.join(self._graph_cache_dir, f"{cid}_graph.pt")
             if os.path.exists(cache_path):
                 # 加载缓存
                 node_names, node_static, edge_index = torch.load(cache_path)
@@ -290,9 +292,12 @@ class DelayDataset(Dataset):
             pass
 
         if not gate_states:
-            cache_key = (cid, str(row.get('vector', '00000')).zfill(5), row['switching_pin'])
-            if cache_key in self._gate_state_cache:
-                gate_states = self._gate_state_cache[cache_key]
+            vector_str = str(row.get('vector', '00000')).zfill(5)
+            sw = row['switching_pin']
+            gate_cache_path = os.path.join(self._gate_cache_dir,
+                                            f"{cid}_{vector_str}_{sw}_gate.pt")
+            if os.path.exists(gate_cache_path):
+                gate_states = torch.load(gate_cache_path)
             else:
                 from src.logic_sim import compute_gate_states
                 from src.graph_builder import GATE_TYPES
@@ -300,10 +305,9 @@ class DelayDataset(Dataset):
                 for j, n in enumerate(node_names):
                     type_idx = int(node_static[j, 0].item())
                     node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
-                vector_str = cache_key[1]
                 gate_states = compute_gate_states(node_names, node_types, edge_index,
-                                                   vector_str, self.pins, cache_key[2])
-                self._gate_state_cache[cache_key] = gate_states
+                                                   vector_str, self.pins, sw)
+                torch.save(gate_states, gate_cache_path)
 
         for i, n in enumerate(node_names):
             if n in gate_states:

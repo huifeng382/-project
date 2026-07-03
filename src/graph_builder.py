@@ -172,32 +172,12 @@ def build_static_graph(circuit_id, netlist_str):
             ds = 0.0
         drive_strength.append(ds)
     
-    # 4. 到输出节点的最短距离（BFS 反向搜索）
-    reverse_adj = {n: [] for n in node_names}
-    for u, v in edges:
-        reverse_adj[v].append(u)
-    dist_to_out = {n: float('inf') for n in node_names}
-    if 'out' in node_names:
-        dist_to_out['out'] = 0
-        q = deque(['out'])
-        while q:
-            u = q.popleft()
-            for prev in reverse_adj[u]:
-                if dist_to_out[prev] > dist_to_out[u] + 1:
-                    dist_to_out[prev] = dist_to_out[u] + 1
-                    q.append(prev)
-    for n in node_names:
-        if dist_to_out[n] == float('inf'):
-            dist_to_out[n] = len(node_names)
-
     # 将特征转换为张量（使用 log1p 平滑）
     fanout_feat = torch.tensor([[np.log1p(out_degree[n])] for n in node_names], dtype=torch.float)
     depth_feat  = torch.tensor([[np.log1p(depth[n])] for n in node_names], dtype=torch.float)
     drive_feat  = torch.tensor([[ds] for ds in drive_strength], dtype=torch.float)
-    dist_feat   = torch.tensor([[np.log1p(dist_to_out[n])] for n in node_names], dtype=torch.float)
-
-    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 输出距离
-    node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat,
-                              dist_feat], dim=1)
-
+    
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动强度
+    node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat], dim=1)
+    
     return node_names, node_static, edge_index
