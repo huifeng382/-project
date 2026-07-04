@@ -97,40 +97,32 @@ def simulate_circuit(node_names, node_types, edge_index, input_values):
 
 def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, switching_pin):
     """
-    通过逻辑仿真确定信号路径上的门。
-    方法：比较 switching_pin 翻转前后的门输出变化。
+    通过 BFS 确定信号路径上的门。
+    从 switching_pin 沿向边遍历，所有可达门均标记为在路径上。
 
     返回: dict, 门名->state (1=在路径上, 0=不在)
     """
-    # 从 vector 解析输入值
-    input_values = {}
-    for i, p in enumerate(pins):
-        if i < len(vector_str):
-            input_values[p] = int(vector_str[i])
-        else:
-            input_values[p] = 0
+    # 构建正向邻接表
+    forward_adj = {n: [] for n in node_names}
+    for i in range(edge_index.shape[1]):
+        u = node_names[edge_index[0, i].item()]
+        v = node_names[edge_index[1, i].item()]
+        forward_adj[u].append(v)
 
-    # 基准仿真
-    baseline = simulate_circuit(node_names, node_types, edge_index, input_values)
+    # BFS 从 switching_pin 出发
+    gate_states = {n: 0 for n in node_names}
+    gate_states['out'] = 1  # 输出始终在路径上
 
-    # 翻转 switching_pin 的值再仿真
-    toggled = dict(input_values)
-    if switching_pin in toggled:
-        toggled[switching_pin] = 1 - toggled[switching_pin]
-
-    after_toggle = simulate_circuit(node_names, node_types, edge_index, toggled)
-
-    # 输出变化的门 = 在信号路径上
-    gate_states = {}
-    for n in node_names:
-        if n in input_values:
-            # 输入引脚：不标记
-            gate_states[n] = 0
-        elif n == 'out':
-            gate_states[n] = 1  # 输出始终在路径上
-        else:
-            b = baseline.get(n, 0)
-            a = after_toggle.get(n, 0)
-            gate_states[n] = 1 if b != a else 0
+    from collections import deque
+    q = deque([switching_pin])
+    visited = {switching_pin}
+    while q:
+        u = q.popleft()
+        if u not in pins and u != 'out' and u != switching_pin:
+            gate_states[u] = 1  # 中间门节点标记
+        for v in forward_adj.get(u, []):
+            if v not in visited:
+                visited.add(v)
+                q.append(v)
 
     return gate_states
