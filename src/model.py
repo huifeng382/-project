@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GraphConv, global_add_pool
-from torch_geometric.utils import softmax
 
 
 class DelayGNN(nn.Module):
@@ -28,9 +27,6 @@ class DelayGNN(nn.Module):
             self.convs.append(GraphConv(hidden_dim, hidden_dim))
             self.norms.append(nn.LayerNorm(hidden_dim))
 
-        # 注意力读出层
-        self.readout_attn = nn.Linear(hidden_dim, 1)
-
         # Corner 条件编码
         self.corner_encoder = nn.Sequential(
             nn.Linear(2, hidden_dim // 4),
@@ -55,6 +51,9 @@ class DelayGNN(nn.Module):
         gate_emb = self.gate_embed(gate_idx)
         x = torch.cat([gate_emb, struct_dyn], dim=1)
 
+        # 保存 gate_state 掩码（GNN 前），用于路径累加读出
+        gate_mask = x[:, -1].clone()  # (N,)
+
         for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
             residual = x
             x = conv(x, edge_index)
@@ -64,9 +63,9 @@ class DelayGNN(nn.Module):
             if i > 0 and residual.shape == x.shape:
                 x = x + residual
 
-        attn_scores = self.readout_attn(x)
-        attn_weights = softmax(attn_scores, batch)
-        x_pooled = global_add_pool(attn_weights * x, batch)  # (B, H)
+        # 路径累加读出：只取信号路径上的节点求和，符合延迟物理公式
+        x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H) → 清零非路径节点
+        x_pooled = global_add_pool(x, batch)  # (B, H)
 
         # 注入 corner 条件
         if corner_cond is not None:
