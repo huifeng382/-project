@@ -357,11 +357,6 @@ class DelayDataset(Dataset):
         vector = str(row.get('vector', '00000')).zfill(5)
         for bit in vector:
             features.append(float(bit))
-        # vector 数值归一化（0~31 → 0~1）
-        try:
-            features.append(int(vector) / 31.0)
-        except ValueError:
-            features.append(0.0)
 
         # ----- 3. 各引脚的 slew/load 的统计量 -----
         slew_vals = []

@@ -620,10 +620,12 @@ def main():
         print(f"  Best corner: {best_c} = {corner_errs[best_c]:.1f}%")
         print(f"  Worst corner: {worst_c} = {corner_errs[worst_c]:.1f}%")
         print(f"  Corner spread: {corner_errs[worst_c] - corner_errs[best_c]:.1f}%")
-    for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
-        if mask.sum() > 0:
-            err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
-            print(f"  {label}: {err:.1f}%")
+    # 批次误差（安全的，处理 expr 不存在的情况）
+    if 'expr' in test_dyn.columns:
+        for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
+            if mask.sum() > 0:
+                err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
+                print(f"  {label}: {err:.1f}%")
     print(f"  Total samples: test={len(test_dyn)} train={len(train_dataset)} val={len(val_dataset)}")
     t_total = time.time() - t_total_start
     t_train = time.time() - t_train_start
