@@ -1,5 +1,6 @@
 import sys
 import os
+import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hashlib
 import shutil
@@ -183,6 +184,7 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
 
 
 def main():
+    t_total_start = time.time()
     set_seed(RANDOM_SEED)
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
@@ -481,6 +483,7 @@ def main():
     last_lr = LEARNING_RATE
     lr_decayed = False
     print("\nStart training...")
+    t_train_start = time.time()
     for epoch in range(EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
@@ -622,6 +625,11 @@ def main():
             err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
             print(f"  {label}: {err:.1f}%")
     print(f"  Total samples: test={len(test_dyn)} train={len(train_dataset)} val={len(val_dataset)}")
+    t_total = time.time() - t_total_start
+    t_train = time.time() - t_train_start
+    avg_epoch = t_train / (epoch + 1)
+    print(f"  Total time: {t_total/60:.1f} min | Train time: {t_train/60:.1f} min "
+          f"| Avg/epoch: {avg_epoch:.1f}s ({epoch+1} epochs)")
     print("=" * 60)
 
 if __name__ == "__main__":
