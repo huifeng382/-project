@@ -34,7 +34,8 @@ def get_train_residuals(model, dataset, device):
         for data in loader:
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
-            pred_log = model(data.x, data.edge_index, data.batch, corner)
+            csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
+            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -55,7 +56,8 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         data = data.to(device)
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
-        out = model(data.x, data.edge_index, data.batch, corner)
+        csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
+        out = model(data.x, data.edge_index, data.batch, corner, csig)
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -81,7 +83,8 @@ def evaluate(model, loader, device):
         for data in loader:
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
-            out = model(data.x, data.edge_index, data.batch, corner)
+            csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
+            out = model(data.x, data.edge_index, data.batch, corner, csig)
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
@@ -386,7 +389,40 @@ def main():
     print(f"  Sample y: {sample.y.item():.3e}")
     print("=" * 50)
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    # 电路分组 Sampler：每批包含2-4个电路的所有corner，梯度混合多样本
+    from torch.utils.data import Sampler
+    class CircuitGroupSampler(Sampler):
+        def __init__(self, dataset):
+            cids = dataset.dynamic_df['circuit_id'].values
+            self.circuit_groups = {}
+            for i, c in enumerate(cids):
+                self.circuit_groups.setdefault(c, []).append(i)
+            self.circuits = list(self.circuit_groups.keys())
+            self.n_samples = len(cids)
+        def __iter__(self):
+            np.random.shuffle(self.circuits)
+            batches = []
+            current = []
+            for c in self.circuits:
+                indices = self.circuit_groups[c]
+                if len(current) + len(indices) > BATCH_SIZE * 2 and len(current) >= BATCH_SIZE:
+                    batches.append(current)
+                    current = []
+                current.extend(indices)
+            if current:
+                batches.append(current)
+            # 截断到 BATCH_SIZE（最后一批可能较大）
+            result = []
+            for b in batches:
+                result.extend(b[:BATCH_SIZE * 2])  # 保留一些超额
+            # 确保总样本数正确（取模以适配多个epoch）
+            if len(result) < self.n_samples:
+                result = result * (self.n_samples // len(result) + 1)
+            return iter(result[:self.n_samples])
+        def __len__(self):
+            return self.n_samples
+    sampler = CircuitGroupSampler(train_dataset)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
 

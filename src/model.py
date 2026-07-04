@@ -31,19 +31,25 @@ class DelayGNN(nn.Module):
         # 注意力读出层
         self.readout_attn = nn.Linear(hidden_dim, 1)
 
-        # Corner 条件编码：将 corner S/L 映射到与 pooled 同维度
+        # Corner 条件编码
         self.corner_encoder = nn.Sequential(
             nn.Linear(2, hidden_dim // 4),
             nn.ReLU(),
             nn.Linear(hidden_dim // 4, hidden_dim),
         )
 
-        # 最终预测层（pooled + corner_encoded）
-        self.lin = nn.Linear(hidden_dim * 2, 1)
+        # 电路签名编码
+        self.sig_encoder = nn.Sequential(
+            nn.Linear(3, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, hidden_dim),
+        )
+
+        # 最终预测层（pooled + corner + circuit_sig）
+        self.lin = nn.Linear(hidden_dim * 3, 1)
         self.dropout = dropout
 
-    def forward(self, x, edge_index, batch, corner_cond=None):
-        # x[:, 0] 是门类型索引，x[:, 1:] 是结构+动态特征
+    def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None):
         gate_idx = x[:, 0].long()
         struct_dyn = x[:, 1:]
         gate_emb = self.gate_embed(gate_idx)
@@ -58,20 +64,22 @@ class DelayGNN(nn.Module):
             if i > 0 and residual.shape == x.shape:
                 x = x + residual
 
-        # 注意力读出
         attn_scores = self.readout_attn(x)
         attn_weights = softmax(attn_scores, batch)
         x_pooled = global_add_pool(attn_weights * x, batch)  # (B, H)
 
-        # Corner 条件从节点特征中分离，在读出后注入
+        # 注入 corner 条件
         if corner_cond is not None:
-            corner_emb = self.corner_encoder(corner_cond)  # (B, H)
-            x_pooled = torch.cat([x_pooled, corner_emb], dim=-1)  # (B, 2H)
+            corner_emb = self.corner_encoder(corner_cond)
         else:
-            # 无 corner 时用零填充，保持维度兼容
-            corner_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1],
-                                      device=x_pooled.device)
-            x_pooled = torch.cat([x_pooled, corner_emb], dim=-1)
+            corner_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1], device=x_pooled.device)
 
+        # 注入电路签名
+        if circuit_sig is not None:
+            sig_emb = self.sig_encoder(circuit_sig)
+        else:
+            sig_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1], device=x_pooled.device)
+
+        x_pooled = torch.cat([x_pooled, corner_emb, sig_emb], dim=-1)
         x = self.lin(x_pooled)
         return x.squeeze(-1)

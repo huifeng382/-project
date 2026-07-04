@@ -147,6 +147,20 @@ class DelayDataset(Dataset):
         self._gate_cache_dir = os.path.join(cache_dir, 'gate')
         os.makedirs(self._graph_cache_dir, exist_ok=True)
         os.makedirs(self._gate_cache_dir, exist_ok=True)
+
+        # 电路签名：从静态数据提取，训练/推理一致
+        self._circuit_sig = {}
+        for cid in self.static_df.index:
+            row = self.static_df.loc[cid]
+            nl = row['gate_level_netlist']
+            n_gates = len([l for l in str(nl).split('\n') if l.strip().startswith('X_')])
+            sig = [
+                float(n_gates),
+                float(row.get('transistor_count', 0)),
+                float(len(json.loads(row['input_pins_json']))),
+            ]
+            self._circuit_sig[cid] = np.array(sig, dtype=np.float32)
+
         self._prepare_static_graphs()
 
     def _prepare_static_graphs(self):
@@ -318,6 +332,8 @@ class DelayDataset(Dataset):
         data = Data(x=x, edge_index=edge_index, y=y)
         data.switching_pin = row['switching_pin']
         data.corner_cond = torch.tensor(corner_cond, dtype=torch.float).unsqueeze(0)
+        data.circuit_sig = torch.tensor(self._circuit_sig.get(cid, [0,0,0]),
+                                         dtype=torch.float).unsqueeze(0)
         return data
     def extract_features(self, idx):
         """
