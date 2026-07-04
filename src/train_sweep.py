@@ -32,7 +32,8 @@ def get_train_residuals(model, dataset, device):
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
-            pred_log = model(data.x, data.edge_index, data.batch)
+            corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
+            pred_log = model(data.x, data.edge_index, data.batch, corner)
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -52,7 +53,8 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
     for i, data in enumerate(loader):
         data = data.to(device)
         optimizer.zero_grad()
-        out = model(data.x, data.edge_index, data.batch)
+        corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
+        out = model(data.x, data.edge_index, data.batch, corner)
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -77,7 +79,8 @@ def evaluate(model, loader, device):
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
-            out = model(data.x, data.edge_index, data.batch)
+            corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
+            out = model(data.x, data.edge_index, data.batch, corner)
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
@@ -152,6 +155,7 @@ def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
     # 离群点缓存自管理：hash key 含 train_ids + config + data mtime
     _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
                       data_hash, "Gate cache")
+    sys.stdout.flush()
 
 
 def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
@@ -238,11 +242,7 @@ def main():
     dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
     print(f"清洗后样本数: {len(dynamic_df)}, 电路数: {dynamic_df['circuit_id'].nunique()}")
 
-    circuit_ids = dynamic_df['circuit_id'].unique().tolist()
-    train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
-    print(f"划分: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
-
-    # ---------- 可选：只保留4引脚标准电路 ----------
+    # ---------- 可选：只保留4引脚标准电路（在划分前过滤，避免空split）----------
     if FOUR_PIN_ONLY:
         static_check = pd.concat([pd.read_parquet(p) for p in static_parquets])
         for col in ['candidate', 'candidate_id']:
@@ -256,12 +256,15 @@ def main():
                 if sorted(pins) == ['a', 'b', 'c', 'd']:
                     four_pin_ids.add(row['circuit_id'])
             except: pass
-        train_ids = [c for c in train_ids if c in four_pin_ids]
-        val_ids = [c for c in val_ids if c in four_pin_ids]
-        test_ids = [c for c in test_ids if c in four_pin_ids]
+        old_n = len(dynamic_df)
         dynamic_df = dynamic_df[dynamic_df['circuit_id'].isin(four_pin_ids)]
-        print(f"4-pin only: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路, "
-              f"samples={len(dynamic_df)} (removed {100*(1-len(four_pin_ids)/len(circuit_ids)):.0f}% circuits)")
+        removed = 100 * (1 - len(four_pin_ids) / dynamic_df['circuit_id'].nunique())
+        print(f"4-pin only: {dynamic_df['circuit_id'].nunique()} circuits, "
+              f"samples={len(dynamic_df)} ({len(dynamic_df)/old_n*100:.0f}% of total)")
+
+    circuit_ids = dynamic_df['circuit_id'].unique().tolist()
+    train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
+    print(f"划分: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
 
     # ---------- 读取静态数据用于 scaler ----------
     static_dfs_raw = [pd.read_parquet(p) for p in static_parquets]
@@ -301,17 +304,6 @@ def main():
         out_load = row.get('output_load_f', 0.0)
         loads_dict = pin_loads_map.get(row['circuit_id'], {})
 
-        # 解析 corner 条件
-        corner_str = str(row.get('corner', 's05p0_l10p0'))
-        try:
-            s_part = corner_str.split('_')[0]
-            l_part = corner_str.split('_')[1]
-            corner_slew = float(s_part[1:].replace('p', '.'))
-            corner_load = float(l_part[1:].replace('p', '.'))
-        except (IndexError, ValueError):
-            corner_slew = 5.0
-            corner_load = 10.0
-
         for pin in pins:
             # 匹配 data_loader 逻辑：优先 per-pin slew 列，否则只有切换引脚用全局 slew
             slew_col = f'slew_{pin}'
@@ -336,8 +328,7 @@ def main():
                     arrival_val = row.get('arrival_time_s', 0.0)
             else:
                 arrival_val = 0.0
-            all_cont_features.append([slew_val, load_val, out_load, arrival_val,
-                                       corner_slew, corner_load])
+            all_cont_features.append([slew_val, load_val, out_load, arrival_val])
     scaler = StandardScaler(with_std=True)
     scaler.fit(all_cont_features)
     print("=" * 50)
@@ -590,16 +581,16 @@ def main():
 
     # Per-batch breakdown
     if 'expr' in test_dyn.columns:
-        # batch1 circuits have expr in range expr0000-expr0039, batch2 in expr0200-expr0352
         def _expr_num(e):
             try:
                 return int(str(e).replace('expr', ''))
             except:
                 return -1
         expr_nums = test_dyn['expr'].apply(_expr_num).values
-        batch1_mask = (expr_nums >= 0) & (expr_nums <= 199)
-        batch2_mask = expr_nums >= 200
-        for label, mask in [('Batch1 (handpicked)', batch1_mask), ('Batch2 (egraph)', batch2_mask)]:
+        b1_mask = (expr_nums >= 0) & (expr_nums <= 199)     # batch1 + batch1b
+        b2_mask = (expr_nums >= 200) & (expr_nums <= 999)   # batch2
+        b3_mask = expr_nums >= 1000                           # batch3
+        for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
             if mask.sum() > 0:
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
@@ -626,7 +617,7 @@ def main():
         print(f"  Best corner: {best_c} = {corner_errs[best_c]:.1f}%")
         print(f"  Worst corner: {worst_c} = {corner_errs[worst_c]:.1f}%")
         print(f"  Corner spread: {corner_errs[worst_c] - corner_errs[best_c]:.1f}%")
-    for label, mask in [('Batch1', batch1_mask), ('Batch2', batch2_mask)]:
+    for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
         if mask.sum() > 0:
             err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
             print(f"  {label}: {err:.1f}%")

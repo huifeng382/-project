@@ -244,20 +244,19 @@ class DelayDataset(Dataset):
                 load_val,
                 global_out_load,
                 arrival_val,
-                corner_slew_cond,   # corner的S条件（ps），所有引脚相同
-                corner_load_cond,   # corner的L条件（fF），所有引脚相同
                 0.0,  # gate_state: 输入引脚固定为0，门节点在 __getitem__ 中设置
             ]
             if self.scaler is not None:
-                # 缩放连续值特征: slew, load, out_load, arrival, corner_slew, corner_load
-                continuous = np.array([feat[2], feat[3], feat[4], feat[5],
-                                       feat[6], feat[7]]).reshape(1, -1)
+                # 缩放连续值特征: slew, load, out_load, arrival
+                continuous = np.array([feat[2], feat[3], feat[4], feat[5]]).reshape(1, -1)
                 scaled_cont = self.scaler.transform(continuous)[0]
-                feat[2], feat[3], feat[4], feat[5], feat[6], feat[7] = (
-                    scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3],
-                    scaled_cont[4], scaled_cont[5])
+                feat[2], feat[3], feat[4], feat[5] = (
+                    scaled_cont[0], scaled_cont[1], scaled_cont[2], scaled_cont[3])
             dyn_feats[pin] = feat
-        return dyn_feats
+
+        # corner 条件作为图级特征，不混入节点特征
+        corner_cond = np.array([corner_slew_cond, corner_load_cond], dtype=np.float32)
+        return dyn_feats, corner_cond
 
     def __getitem__(self, idx):
         if torch.is_tensor(idx):
@@ -268,10 +267,10 @@ class DelayDataset(Dataset):
         cid = row['circuit_id']
         node_names, node_static, edge_index = self._get_static(cid)
         pin_loads_dict = self.static_df.loc[cid, 'pin_loads_dict']
-        dyn_feats = self._get_dynamic_features(row, pin_loads_dict)
+        dyn_feats, corner_cond = self._get_dynamic_features(row, pin_loads_dict)
 
         num_nodes = len(node_names)
-        num_dyn_feats = 9
+        num_dyn_feats = 7
         node_feat_dim = node_static.shape[1] + num_dyn_feats
         x = torch.zeros((num_nodes, node_feat_dim), dtype=torch.float)
         x[:, :node_static.shape[1]] = node_static
@@ -318,6 +317,7 @@ class DelayDataset(Dataset):
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)
         data.switching_pin = row['switching_pin']
+        data.corner_cond = torch.tensor(corner_cond, dtype=torch.float).unsqueeze(0)
         return data
     def extract_features(self, idx):
         """

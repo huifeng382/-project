@@ -28,14 +28,21 @@ class DelayGNN(nn.Module):
             self.convs.append(GraphConv(hidden_dim, hidden_dim))
             self.norms.append(nn.LayerNorm(hidden_dim))
 
-        # 注意力读出层：让模型学会聚焦于关键节点（如切换引脚），替代 mean_pool
+        # 注意力读出层
         self.readout_attn = nn.Linear(hidden_dim, 1)
 
-        # 最终预测层
-        self.lin = nn.Linear(hidden_dim, 1)
+        # Corner 条件编码：将 corner S/L 映射到与 pooled 同维度
+        self.corner_encoder = nn.Sequential(
+            nn.Linear(2, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, hidden_dim),
+        )
+
+        # 最终预测层（pooled + corner_encoded）
+        self.lin = nn.Linear(hidden_dim * 2, 1)
         self.dropout = dropout
 
-    def forward(self, x, edge_index, batch):
+    def forward(self, x, edge_index, batch, corner_cond=None):
         # x[:, 0] 是门类型索引，x[:, 1:] 是结构+动态特征
         gate_idx = x[:, 0].long()
         struct_dyn = x[:, 1:]
@@ -48,14 +55,23 @@ class DelayGNN(nn.Module):
             x = norm(x)
             x = F.relu(x)
             x = F.dropout(x, p=self.dropout, training=self.training)
-            # 残差连接（第一层维度可能不同，跳过）
             if i > 0 and residual.shape == x.shape:
                 x = x + residual
 
-        # 注意力读出：模型学习每个节点的重要性权重
-        attn_scores = self.readout_attn(x)  # (N, 1)
-        attn_weights = softmax(attn_scores, batch)  # softmax within each graph → sum=1
-        x_pooled = global_add_pool(attn_weights * x, batch)  # 加权求和
+        # 注意力读出
+        attn_scores = self.readout_attn(x)
+        attn_weights = softmax(attn_scores, batch)
+        x_pooled = global_add_pool(attn_weights * x, batch)  # (B, H)
+
+        # Corner 条件从节点特征中分离，在读出后注入
+        if corner_cond is not None:
+            corner_emb = self.corner_encoder(corner_cond)  # (B, H)
+            x_pooled = torch.cat([x_pooled, corner_emb], dim=-1)  # (B, 2H)
+        else:
+            # 无 corner 时用零填充，保持维度兼容
+            corner_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1],
+                                      device=x_pooled.device)
+            x_pooled = torch.cat([x_pooled, corner_emb], dim=-1)
 
         x = self.lin(x_pooled)
         return x.squeeze(-1)
