@@ -638,6 +638,15 @@ def main():
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
+    import subprocess
+    try:
+        ver = subprocess.check_output(
+            ['git', 'log', '--oneline', '-1'],
+            cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+            text=True, stderr=subprocess.DEVNULL).strip()
+    except:
+        ver = 'unknown'
+    print(f"  Version: {ver}")
     print(f"  Config: HIDDEN_DIM={HIDDEN_DIM} NUM_LAYERS={NUM_LAYERS} "
           f"DROPOUT={DROPOUT} WEIGHT_DECAY={WEIGHT_DECAY}")
     print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
