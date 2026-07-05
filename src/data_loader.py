@@ -310,7 +310,8 @@ class DelayDataset(Dataset):
             gate_cache_path = os.path.join(self._gate_cache_dir,
                                             f"{cid}_{vector_str}_{sw}_gate.pt")
             if os.path.exists(gate_cache_path):
-                gate_states = torch.load(gate_cache_path, weights_only=False)
+                with open(gate_cache_path, 'r') as f:
+                    gate_states = json.load(f)
             else:
                 from src.logic_sim import compute_gate_states
                 from src.graph_builder import GATE_TYPES
@@ -320,7 +321,8 @@ class DelayDataset(Dataset):
                     node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
                 gate_states = compute_gate_states(node_names, node_types, edge_index,
                                                    vector_str, self.pins, sw)
-                torch.save(gate_states, gate_cache_path)
+                with open(gate_cache_path, 'w') as f:
+                    json.dump(gate_states, f)
 
         for i, n in enumerate(node_names):
             if n in gate_states:
