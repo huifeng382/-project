@@ -36,16 +36,44 @@ GATE_TYPES = [
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
 
+def _normalize_gate_type(gt):
+    """将长hash名归一化为基础门类型，让每种门有足够样本学习embedding"""
+    base = str(gt)
+    # 保留特殊类型
+    if base in ('INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE'):
+        return base
+    # ASAP7标准单元：提取基础门类型 AND/OR/INV/NAND/NOR/BUF
+    if 'ASAP7' in base:
+        for kw in ['NAND', 'NOR', 'XOR', 'AND', 'OR', 'INV', 'BUF', 'TIEHI', 'TIELO']:
+            if kw in base:
+                return kw
+        return 'OTHER'
+    # SC_系列：提取最后一个有意义的门类型关键词
+    if base.startswith('SC_'):
+        # 基础门类型（短名，不转换）
+        simple = {'SC_AND', 'SC_OR', 'SC_NAND', 'SC_NOR', 'SC_INV', 'SC_XOR',
+                  'SC_BUF', 'SC_JOIN', 'SC_BRIDGE', 'SC_INV_WIRE',
+                  'SC_AND_v1', 'SC_OR_v1', 'SC_BRIDGE_v1', 'SC_JOIN_v1'}
+        if base in simple:
+            return base
+        # 长hash名：提取最后的门功能关键词
+        for kw in ['NAND', 'NOR', 'XOR', 'AND', 'OR', 'INV', 'BUF']:
+            if kw in base:
+                return f'SC_{kw}'
+        # JOIN/BRIDGE/WIRE类：归为JOIN
+        if 'JOIN' in base or 'BRIDGE' in base or 'WIRE' in base:
+            return 'SC_JOIN'
+    return base
+
+
 def rebuild_gate_types(cell_types):
     """
     从实际数据中动态构建门类型映射。
-    cell_types: 所有出现的 cell 类型字符串的可迭代集合。
-    调用后 GATE_TYPES 和 GATE_TO_IDX 会被重建，包含所有 found types +
-    INPUT_PIN / OUTPUT_PIN / UNKNOWN_GATE。
+    长hash门名归一化为基础类型，让每种门有足够样本学习embedding。
     """
     global GATE_TYPES, GATE_TO_IDX
     reserved = ['INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE']
-    GATE_TYPES = sorted(set(cell_types)) + reserved
+    GATE_TYPES = sorted(set(_normalize_gate_type(ct) for ct in cell_types)) + reserved
     GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
 def parse_netlist(netlist_str):
@@ -128,7 +156,7 @@ def build_static_graph(circuit_id, netlist_str):
     node_type_idx = []
     for n in node_names:
         gt = nodes[n]['type']
-        idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
+        idx = GATE_TO_IDX.get(_normalize_gate_type(gt), GATE_TO_IDX['UNKNOWN_GATE'])
         node_type_idx.append([float(idx)])
     node_type_idx = torch.tensor(node_type_idx, dtype=torch.float)
     

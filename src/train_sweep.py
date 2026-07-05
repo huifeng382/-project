@@ -150,15 +150,16 @@ def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
     src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     gb_hash = _file_hash(os.path.join(src_dir, 'src/graph_builder.py'))
     model_hash = _file_hash(os.path.join(src_dir, 'src/model.py'))
+    sim_hash = _file_hash(os.path.join(src_dir, 'src/logic_sim.py'))
     data_hash = _data_mtime_hash(static_parquets, dynamic_parquets)
 
     print("Cache check:")
     _check_cache_dir(os.path.join(CACHE_DIR, 'graphs'),
                       gb_hash + data_hash, "Graph cache")
     os.makedirs(os.path.join(CACHE_DIR, 'outlier'), exist_ok=True)
-    # 离群点缓存自管理：hash key 含 train_ids + config + data mtime
+    # 离群点缓存自管理
     _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
-                      data_hash, "Gate cache")
+                      sim_hash + data_hash, "Gate cache")
     sys.stdout.flush()
 
 
