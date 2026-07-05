@@ -309,10 +309,17 @@ class DelayDataset(Dataset):
             sw = row['switching_pin']
             gate_cache_path = os.path.join(self._gate_cache_dir,
                                             f"{cid}_{vector_str}_{sw}_gate.pt")
+            compute_gate = True
             if os.path.exists(gate_cache_path):
-                with open(gate_cache_path, 'r') as f:
-                    gate_states = json.load(f)
-            else:
+                try:
+                    with open(gate_cache_path, 'r') as f:
+                        gate_states = json.load(f)
+                    # json.load 可能返回空（文件损坏），加检查
+                    if gate_states and isinstance(gate_states, dict) and len(gate_states) > 0:
+                        compute_gate = False
+                except (json.JSONDecodeError, IOError):
+                    pass
+            if compute_gate:
                 from src.logic_sim import compute_gate_states
                 from src.graph_builder import GATE_TYPES
                 node_types = {}
@@ -321,8 +328,11 @@ class DelayDataset(Dataset):
                     node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
                 gate_states = compute_gate_states(node_names, node_types, edge_index,
                                                    vector_str, self.pins, sw)
-                with open(gate_cache_path, 'w') as f:
-                    json.dump(gate_states, f)
+                try:
+                    with open(gate_cache_path, 'w') as f:
+                        json.dump(gate_states, f)
+                except IOError:
+                    pass
 
         for i, n in enumerate(node_names):
             if n in gate_states:
