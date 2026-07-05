@@ -28,7 +28,7 @@ def log_mse_loss(pred_log, target):
 
 def get_train_residuals(model, dataset, device):
     model.eval()
-    loader = DataLoader(dataset, batch_size=512, shuffle=False)
+    loader = DataLoader(dataset, batch_size=512, shuffle=False, num_workers=2)
     residuals = []
     with torch.no_grad():
         for data in loader:
@@ -422,9 +422,9 @@ def main():
         def __len__(self):
             return self.n_samples
     sampler = CircuitGroupSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
-    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=2)
 
     sample_data = next(iter(train_loader))
     in_dim = sample_data.x.shape[1]
@@ -454,7 +454,7 @@ def main():
                                   gate_embed_dim=GATE_EMBED_DIM).to(device)
             base_optimizer = Adam(base_model.parameters(), lr=LEARNING_RATE,
                                   weight_decay=WEIGHT_DECAY)
-            base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+            base_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
             print(f"  Training base model on {len(train_dataset)} samples "
                   f"({len(base_loader)} batches/epoch, may take several minutes per epoch on CPU)...")
             best_base_loss = float('inf')
@@ -488,7 +488,7 @@ def main():
             print("========== 清洗完成 ==========\n")
 
         train_subset = torch.utils.data.Subset(train_dataset, keep_indices)
-        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True)
+        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 
