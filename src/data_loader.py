@@ -168,7 +168,7 @@ class DelayDataset(Dataset):
             cache_path = os.path.join(self._graph_cache_dir, f"{cid}_graph.pt")
             if os.path.exists(cache_path):
                 # 加载缓存
-                node_names, node_static, edge_index = torch.load(cache_path)
+                node_names, node_static, edge_index = torch.load(cache_path, weights_only=False)
             else:
                 netlist = self.static_df.loc[cid, 'gate_level_netlist']
                 node_names, node_static, edge_index = build_static_graph(cid, netlist)
@@ -310,7 +310,7 @@ class DelayDataset(Dataset):
             gate_cache_path = os.path.join(self._gate_cache_dir,
                                             f"{cid}_{vector_str}_{sw}_gate.pt")
             if os.path.exists(gate_cache_path):
-                gate_states = torch.load(gate_cache_path)
+                gate_states = torch.load(gate_cache_path, weights_only=False)
             else:
                 from src.logic_sim import compute_gate_states
                 from src.graph_builder import GATE_TYPES
