@@ -97,32 +97,53 @@ def simulate_circuit(node_names, node_types, edge_index, input_values):
 
 def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, switching_pin):
     """
-    通过 BFS 确定信号路径上的门。
-    从 switching_pin 沿向边遍历，所有可达门均标记为在路径上。
+    通过正反两向 BFS 取交集确定信号路径上的门。
+    - 正向：从 switching_pin 可达（信号源）
+    - 反向：可达 output（信号宿）
+    - 交集 = 实际信号路径（排除死分支）
 
     返回: dict, 门名->state (1=在路径上, 0=不在)
     """
-    # 构建正向邻接表
+    # 构建正向和反向邻接表
     forward_adj = {n: [] for n in node_names}
+    reverse_adj = {n: [] for n in node_names}
     for i in range(edge_index.shape[1]):
         u = node_names[edge_index[0, i].item()]
         v = node_names[edge_index[1, i].item()]
         forward_adj[u].append(v)
-
-    # BFS 从 switching_pin 出发
-    gate_states = {n: 0 for n in node_names}
-    gate_states['out'] = 1  # 输出始终在路径上
+        reverse_adj[v].append(u)
 
     from collections import deque
+
+    # 正向 BFS：从 switching_pin 可达的节点
+    fwd_visited = {switching_pin}
     q = deque([switching_pin])
-    visited = {switching_pin}
     while q:
         u = q.popleft()
-        if u not in pins and u != 'out' and u != switching_pin:
-            gate_states[u] = 1  # 中间门节点标记
         for v in forward_adj.get(u, []):
-            if v not in visited:
-                visited.add(v)
+            if v not in fwd_visited:
+                fwd_visited.add(v)
                 q.append(v)
+
+    # 反向 BFS：可达 output 的节点
+    rev_visited = set()
+    if 'out' in node_names:
+        rev_visited.add('out')
+        q = deque(['out'])
+        while q:
+            u = q.popleft()
+            for v in reverse_adj.get(u, []):
+                if v not in rev_visited:
+                    rev_visited.add(v)
+                    q.append(v)
+
+    # 交集 = 信号路径
+    gate_states = {n: 0 for n in node_names}
+    gate_states['out'] = 1
+    for n in node_names:
+        if n in pins:
+            gate_states[n] = 0  # 输入引脚不参与 sum
+        elif n != 'out' and n in fwd_visited and n in rev_visited:
+            gate_states[n] = 1  # 在信号路径上的门
 
     return gate_states
