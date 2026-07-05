@@ -2,23 +2,23 @@
 
 ## 输出文件
 
-生成6个Parquet文件（三批数据合并使用）：
+生成8个Parquet文件：
 
 ```
-# 第一批：手选电路全 sweep（已有，保留不变）
-data/batch1/circuit_static.parquet
+# 第一批：手选电路全 sweep
+data/batch1/circuit_static.parquet    # 150个电路
 data/batch1/timing_arcs.parquet
 
-# 第一批追加：手选电路全 sweep（新增，独立文件）
-data/batch1b/circuit_static.parquet
+# 第一批追加：手选电路全 sweep
+data/batch1b/circuit_static.parquet   # 50个电路
 data/batch1b/timing_arcs.parquet
 
-# 第二批：e-graph 稀疏 sweep（已有，保留不变）
-data/batch2/circuit_static.parquet
+# 第二批：e-graph 稀疏 sweep
+data/batch2/circuit_static.parquet    # 325个电路
 data/batch2/timing_arcs.parquet
 
-# 第三批：e-graph 稀疏 sweep（新增）
-data/batch3/circuit_static.parquet
+# 第三批：e-graph 稀疏 sweep
+data/batch3/circuit_static.parquet    # 480个电路
 data/batch3/timing_arcs.parquet
 ```
 
@@ -106,7 +106,26 @@ X_4 wire_1 wire_2 SC_INV_WIRE
 | `arrival_time_b` | float | `5.0e-12` | 引脚b信号到达时间（秒）。相对于最早到达引脚的偏移量 |
 | `arrival_time_c` | float | `0.0` | 引脚c信号到达时间（秒） |
 | `arrival_time_d` | float | `8.0e-12` | 引脚d信号到达时间（秒） |
-| `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | （可选）该vector下各门实例翻转状态，1=翻转，0=静态 |
+| `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | 该vector下各门实例翻转状态，1=翻转，0=静态（SPICE实测，推理时缺失可BFS推算） |
+| `per_gate_timing_json` | str | `{"X_1":{"delay_ps":3.2,"out_slew_ps":5.1,"in_slew_ps":2.8}}` | 每门过渡时间。key为门实例名，value含delay_ps/out_slew_ps/in_slew_ps |
+
+### `per_gate_timing_json` 编码规则
+
+JSON对象，key为网表中门实例名（`X_1`, `X_2`, ...），value为对象：
+
+| 子字段 | 类型 | 含义 | 测量标准 |
+|--------|------|------|------|
+| `delay_ps` | float | 该门自身延迟（ps） | 输入 50%VDD → 输出 50%VDD |
+| `out_slew_ps` | float | 输出过渡时间（ps） | 输出 20%VDD → 80%VDD |
+| `in_slew_ps` | float | 输入过渡时间（ps） | 输入 20%VDD → 80%VDD |
+
+示例：
+```json
+{"X_1": {"delay_ps": 3.2, "out_slew_ps": 5.1, "in_slew_ps": 2.8},
+ "X_2": {"delay_ps": 8.7, "out_slew_ps": 12.3, "in_slew_ps": 5.1}}
+```
+
+推理时不需要该字段。仿真时顺便记录，零额外成本。
 
 ### `corner` 命名规则
 
@@ -177,19 +196,20 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 ```
 含义：a=1, b=0, c=1, d=0。b从0翻到1（rise），信号经X_2→X_3/X_4传到out。X_1输入a保持1不变，未翻转。
 
-要求（该字段为可选，不提供不影响基础训练）：
+要求：
 - key集合必须与网表中所有门实例名完全一致（不含输入/输出引脚）
-- 若提供，每个vector行必须提供对应的gate_states_json，不得部分行有、部分行无
+- 每个vector行必须提供对应的gate_states_json，不得部分行有、部分行无
 - 翻转状态通过SPICE仿真中的节点电压波形判定：输出电压摆幅超过VDD的20%即视为翻转
+- 推理时缺失可BFS推算
 
 ---
 
-## 四、第一批电路要求（已有，约6万样本）
+## 四、第一批电路要求（约6万样本）
 
 | 项目 | 规格 |
 |------|------|
-| 电路数量 | 已有150个 + **追加30-50个**（合计180-200） |
-| 电路来源 | 手选。已有电路保留不变，新增电路与原有规格一致 |
+| 电路数量 | 180-200个 |
+| 电路来源 | 手选 |
 | expr编号范围 | `expr0000` ~ `expr0149`，不得与第二批重叠 |
 | 门类型覆盖 | AND、OR、NAND、NOR、INV、BUF、XOR等，每种门至少5个不同拓扑结构的电路 |
 | 拓扑深度 | 浅（2-4级门）、中（5-8级）、深（9+级）各占约1/3 |
@@ -199,11 +219,11 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | 每电路总行数 | 30 × 16 = 480行 |
 | 第一批总行数 | 约57,600-72,000行 |
 
-## 五、第二批电路要求（已有，约4万样本）
+## 五、第二批电路要求（约4万样本）
 
 | 项目 | 规格 |
 |------|------|
-| 电路数量 | 306个（已有，保留不变） |
+| 电路数量 | 325个 |
 | 电路来源 | TransiLog e-graph枚举 |
 | expr编号范围 | `expr0200` ~ `expr0549` |
 | 筛选要求 | 按结构特征去重 |
@@ -213,7 +233,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | 每电路总行数 | 9 × 16 = 144行 |
 | 第二批总行数 | 约44,000行 |
 
-## 六、第三批电路要求（新增，约3.5万样本）
+## 六、第三批电路要求（约3.5万样本）
 
 | 项目 | 规格 |
 |------|------|
@@ -229,7 +249,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | 第三批总行数 | 约30,800-38,500行 |
 | 增强corner选择 | 优先极端 corner（s80p0_l00p2、s80p0_l00p5），这些 corner 模型误差最大 |
 
-### 三批合计：约 160,800-172,500 行 ≈ 16-17万样本
+### 三批合计：约 164,000-181,300 行 ≈ 17万样本
 
 ## 七、数据质量规则
 
@@ -245,78 +265,27 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 10. `input_pins_json` 统一为 `["a","b","c","d"]`
 11. `pin_loads_json` 必须包含 a, b, c, d, out 五个引脚的负载值
 12. `slew_s` 和 `output_load_f` 是 SPICE 仿真测得的**实际值**，corner 标签中的 S/L 是设定的**测试条件**，两者可能不同。不要用 corner 条件值直接填充实测值列
-13. `gate_states_json` 为**可选字段**。若提供，必须覆盖网表中所有门实例，不得遗漏。翻转判定阈值：输出摆幅 > VDD × 20%。不提供不影响基础训练
+13. `gate_states_json` 必须覆盖网表中所有门实例，不得遗漏。翻转判定阈值：输出摆幅 > VDD × 20%
+14. `per_gate_timing_json` 必须覆盖网表中所有门实例，每个门含 delay_ps/out_slew_ps/in_slew_ps 三项，值 > 0。推理时不需要该字段
 
-## 八、本次生成任务
+## 八、验证顺序
 
-> 已有 `data/batch1/` 和 `data/batch2/` 共4个文件保留不变。本次只生成以下4个新文件，格式与已有数据完全一致。
-
-### 需要生成的文件
-
-```
-data/batch1b/circuit_static.parquet  # 新建
-data/batch1b/timing_arcs.parquet     # 新建
-data/batch3/circuit_static.parquet   # 新建
-data/batch3/timing_arcs.parquet      # 新建
-```
-
-### 格式要求
-
-batch1b 的列和格式**与 batch1 完全相同**（参见第二节静态数据、第三节动态数据）。
-batch3 的列和格式**与 batch2 完全相同**（同上）。
-
-重点确认：
-- 列名、类型、单位与已有文件一致
-- corner 命名遵循第三节 corner 命名规则（如 `s05p0_l10p0`）
-- vector 编码遵循第三节 vector 编码规则（5位，第1位→a，取值0/1）
-- 数据质量符合第七节全部13条规则
-- circuit_id 格式 `candidate_{expr}_{idx}`，expr 不与已有数据重复
-
-### 一批追加（batch1b，约1.5-2.4万样本）
-
-| 项目 | 规格 |
-|------|------|
-| 电路数 | 30-50个 |
-| 来源 | 手选，4引脚（a,b,c,d），与已有150个互补门类型和拓扑 |
-| expr范围 | 避免与已有 batch1（expr0000~expr0149）、batch2（expr0200~expr0549）重复 |
-| corner | 30个（slew 3/5/10/20/40/80 ps × load 0.2/0.5/1/3/10 fF 全交叉） |
-| 每电路行数 | 4引脚 × 2方向 × 30corner × 2vector = 480行 |
-| 输入引脚 | a, b, c, d（全部4个） |
-| 字段 | 静态含 gate_level_netlist、cell_types_json、input_pins_json、output_pins_json、pin_loads_json；动态含全部 per-pin 列（slew_a~d、load_a~d、arrival_time_a~d）及 gate_states_json（可选） |
-
-### 三批新建（batch3，约3.1-3.9万样本）
-
-| 项目 | 规格 |
-|------|------|
-| 电路数 | 400-500个 |
-| 来源 | TransiLog e-graph枚举，4引脚（a,b,c,d），与二批拓扑互补 |
-| expr范围 | `expr1000` ~ `expr1499` |
-| corner | 9个（slew 5/20/80 ps × load 0.2/1/10 fF 全交叉），完整列表见第三节 |
-| 基础行数 | 4引脚 × 2方向 × 9corner × 1vector = 72行/电路 |
-| 增强行数 | 额外5行：随机选5个corner各增加1个vector（优先 s80p0_l00p2、s80p0_l00p5） |
-| 每电路总行数 | 72 + 5 = 77行 |
-| 字段 | 与 batch2 完全一致（含全部 per-pin 列及 gate_states_json 可选） |
-
-### 生成后验证
-
-1. 静态文件和已有 batch1/batch2 的列完全一致
-2. 动态文件和已有 batch1/batch2 的列完全一致
-3. 无重复 circuit_id
-4. 全部13条质量规则通过
+1. 全部数据重新生成，包含 `per_gate_timing_json` 字段
+2. 训练代码需适配新字段（辅助 loss），其余逻辑不变
 
 ---
 
-## 九、验证顺序（已有数据+新数据合并后）
+## 九、版本记录
 
-1. 已有数据（一批+二批）继续训练，确保第一批 corner 响应曲线和二批输入模式覆盖
-2. 生成第三批数据，三批合并训练，验证拓扑多样性对泛化的提升
-3. 训练代码需添加三批数据路径，其余逻辑不变
+### v4（当前版本）
 
----
+| 项目 | v3 | v4 | 原因 |
+|------|------|------|------|
+| gate_states_json | 可选 | **必须** | SPICE实测，精度提高 |
+| 动态字段 | — | **新增** per_gate_timing_json | 门级延迟分解信号，辅助训练 |
+| 数据生成 | 增量追加 | **全部重新生成** | 结构简化，所有字段统一规格 |
 
-## 十、版本记录
-
-### v3（当前版本）
+### v3
 
 | 项目 | v2 | v3 | 原因 |
 |------|------|------|------|
