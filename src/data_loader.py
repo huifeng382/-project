@@ -198,8 +198,8 @@ class DelayDataset(Dataset):
         try:
             s_part = corner_str.split('_')[0]  # s05p0
             l_part = corner_str.split('_')[1]  # l10p0
-            corner_slew_cond = np.log10(float(s_part[1:].replace('p', '.')))   # 5.0 → 0.70
-            corner_load_cond = np.log10(float(l_part[1:].replace('p', '.')))   # 10.0 → 1.0
+            corner_slew_cond = float(s_part[1:].replace('p', '.'))   # 05p0 → 5.0
+            corner_load_cond = float(l_part[1:].replace('p', '.'))   # 10p0 → 10.0
         except (IndexError, ValueError):
             pass
 
