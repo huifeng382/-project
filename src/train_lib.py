@@ -234,11 +234,11 @@ def main():
     # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
-        os.path.join(data_dir, "data/batch1_v4/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch1/circuit_static.parquet"),
         os.path.join(data_dir, "data/batch2_v4/circuit_static.parquet"),
     ]
     dynamic_parquets = [
-        os.path.join(data_dir, "data/batch1_v4/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch1/timing_arcs.parquet"),
         os.path.join(data_dir, "data/batch2_v4/timing_arcs.parquet"),
     ]
     # 可选追加数据（存在则加载，不存在则跳过）
