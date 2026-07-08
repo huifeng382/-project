@@ -301,6 +301,31 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 - Liberty 标准格式，含 `cell()` 条目和 `timing()` 表
 - 至少覆盖 INV, NAND, NOR, AND, OR, BUF, XOR 七种基础门类型
 
+**同时需要提供 SC_→ASAP7 映射表：**
+
+网表中的门类型名（如 `SC_AND`、`SC_INV_WIRE`、`SC_JOIN`）与 LIB 中的标准单元名（如 `AND2x2_ASAP7_75t_R`、`INVx1_ASAP7_75t_R`）命名体系不同，训练时无法匹配。
+
+需要提供映射文件 `data/sc_to_asap7.json`，格式如下：
+
+```json
+{"SC_AND": "AND2x2_ASAP7_75t_R",
+ "SC_INV": "INVx1_ASAP7_75t_R",
+ "SC_INV_WIRE": "INVx1_ASAP7_75t_R",
+ "SC_OR": "OR2x2_ASAP7_75t_R",
+ "SC_NAND": "NAND2x1_ASAP7_75t_R",
+ "SC_NOR": "NOR2x1_ASAP7_75t_R",
+ "SC_BUF": "BUFx1_ASAP7_75t_R",
+ "SC_JOIN": null,
+ "SC_BRIDGE": null,
+ "SC_JOIN_WIRE_WIRE": null}
+```
+
+规则：
+- key：网表中出现的 SC_ 门类型名（来自 `cell_types_json`）
+- value：LIB 中对应的标准单元名（`cell()` 条目名），为一对一映射
+- 非标准门（SC_JOIN、SC_BRIDGE、WIRE 系列）填 `null`，表示无对应 LIB 条目，模型用 GNN 预测
+- 必须覆盖 `cell_types_json` 中全部 SC_ 门类型
+
 **如果无法提供 LIB 文件，使用下方方案 B。**
 
 ---
