@@ -4,7 +4,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hashlib
 import torch
-from src.lib_lookup import parse_lib, load_mapping, lookup_delay
+from src.lib_lookup import parse_lib, load_mapping, lookup_delay, build_lib_tensors
 import shutil
 import torch.utils.data
 from config import *
