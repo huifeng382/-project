@@ -4,7 +4,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hashlib
 import torch
-from src.lib_lookup import parse_lib, load_mapping, lookup_delay, build_lib_tensors
+# LIB removed: using per_gate direct supervision instead
 import shutil
 import torch.utils.data
 from config import *
@@ -50,8 +50,7 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
     print(f"清洗前样本数: {len(dataset)}, 清洗后: {len(keep_indices)}, 剔除比例: {100 - len(keep_indices)/len(dataset)*100:.1f}%")
     return torch.utils.data.Subset(dataset, keep_indices)
 
-def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False,
-                     lib_data=None):
+def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False):
     model.train()
     total_loss = 0
     total_batches = len(loader)
@@ -60,7 +59,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
         csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-        scalar_pred, node_sl = model(data.x, data.edge_index, data.batch, corner, csig)
+        scalar_pred, node_pred = model(data.x, data.edge_index, data.batch, corner, csig)
         target_log = torch.log10(data.y + 1e-12)
 
         # 主 loss：GNN 标量预测
@@ -72,12 +71,9 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
 
-        # 辅助 LIB loss：每节点 (slew, load) → 查表 → 和
-        if lib_data is not None:
-            gate_list, idx1_t, idx2_t, tables_t, mapping, gate_types_list = lib_data
-            lib_loss = _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t,
-                                          tables_t, mapping, gate_types_list, device)
-            loss = loss + 0.01 * lib_loss  # LIB 辅助权重
+        # 辅助 per_gate loss：每节点实测监督
+        pg_loss = _compute_per_gate_loss(data, node_pred, device)
+        loss = loss + 0.5 * pg_loss
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -88,52 +84,27 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
     return total_loss / len(loader)
 
 
-def _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t, tables_t,
-                       mapping, gate_types_list, device):
-    """计算 LIB 查表延迟 vs 实测值的 MSE（总延迟 + 每门延迟）"""
-    from src.lib_lookup import lib_batch_lookup
+def _compute_per_gate_loss(data, node_pred, device):
+    """直接监督：模型每节点预测 (delay_ps, out_slew_ps, in_slew_ps)"""
     gate_mask = data.x[:, -1]
-    total_lib_delay = torch.zeros(len(data.y), device=device)
-    per_gate_loss = torch.tensor(0.0, device=device)
+    total_loss = torch.tensor(0.0, device=device)
+    fields = [('per_gate_delay', 0), ('per_gate_out_slew', 1), ('per_gate_in_slew', 2)]
+    n_valid = 0
 
-    for gi in range(len(data.y)):
-        g_mask = (data.batch == gi) & (gate_mask > 0.5)
-        if g_mask.sum() == 0:
+    for field_name, pred_idx in fields:
+        if not hasattr(data, field_name) or getattr(data, field_name) is None:
             continue
-        idxs = g_mask.nonzero(as_tuple=True)[0]
-        gate_names = [gate_types_list[int(data.x[idx, 0].item())] for idx in idxs]
-        slew_pred = node_sl[g_mask, 0] * 50.0
-        load_pred = node_sl[g_mask, 1] * 50.0
-        d = lib_batch_lookup(gate_names, slew_pred, load_pred,
-                              gate_list, idx1_t, idx2_t, tables_t, mapping)
-        total_lib_delay[gi] = torch.sum(d) * 1e-12
+        gt = getattr(data, field_name)
+        valid = (gate_mask > 0.5) & (gt > 0)
+        if valid.sum() == 0:
+            continue
+        pred = F.softplus(node_pred[valid, pred_idx])
+        target = gt[valid]
+        total_loss = total_loss + torch.nn.functional.mse_loss(
+            torch.log1p(pred), torch.log1p(target))
+        n_valid += 1
 
-        # 每门实测监督（跳过 null=-1）
-        if hasattr(data, 'per_gate_delay') and data.per_gate_delay is not None:
-            pgd = data.per_gate_delay[g_mask]
-            pgo = data.per_gate_out_slew[g_mask] if hasattr(data, 'per_gate_out_slew') else None
-            pgi = data.per_gate_in_slew[g_mask] if hasattr(data, 'per_gate_in_slew') else None
-            # delay_ps
-            valid_d = pgd > 0
-            if valid_d.any():
-                per_gate_loss = per_gate_loss + ((d[valid_d] - pgd[valid_d]) ** 2).mean()
-            # out_slew_ps: 应与查表 delay 正相关，用 log 比
-            if pgo is not None:
-                valid_o = pgo > 0
-                if valid_o.any():
-                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(d[valid_o]) - torch.log1p(pgo[valid_o])) ** 2).mean()
-            # in_slew_ps: 模型预测的 slew 应匹配
-            if pgi is not None:
-                valid_i = pgi > 0
-                if valid_i.any():
-                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(slew_pred[valid_i]) - torch.log1p(pgi[valid_i])) ** 2).mean()
-
-    lib_log = torch.log10(total_lib_delay.clamp(1e-15))
-    target_log = torch.log10(data.y + 1e-12)
-    total_loss = torch.nn.functional.mse_loss(lib_log, target_log)
-    if per_gate_loss.item() > 0:
-        total_loss = total_loss + 0.5 * per_gate_loss
-    return total_loss
+    return total_loss / max(n_valid, 1)
 
 def evaluate(model, loader, device):
     model.eval()
@@ -554,21 +525,6 @@ def main():
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 
-    # ---------- 加载 LIB 数据 ----------
-    lib_data = None
-    lib_path = os.path.join(data_dir, "data/std_cells.lib")
-    map_path = os.path.join(data_dir, "data/sc_to_asap7.json")
-    if os.path.exists(lib_path) and os.path.exists(map_path):
-        lib = parse_lib(lib_path)
-        mapping = load_mapping(map_path)
-        gate_list, idx1_t, idx2_t, tables_t = build_lib_tensors(lib, mapping)
-        gate_types_list = [gb.GATE_TYPES[i] if i < len(gb.GATE_TYPES) else 'OTHER'
-                           for i in range(num_gate_types)]
-        lib_data = (gate_list, idx1_t, idx2_t, tables_t, mapping, gate_types_list)
-        print(f"LIB loaded: {len(gate_list)} cell types, {sum(1 for v in mapping.values() if v)} SC mapped")
-    else:
-        print("LIB or mapping not found, using GNN-only mode")
-
     model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT,
                      num_gate_types=num_gate_types,
                      gate_embed_dim=GATE_EMBED_DIM).to(device)
@@ -598,8 +554,7 @@ def main():
     print("\nStart training...")
     t_train_start = time.time()
     for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA,
-                                      lib_data=lib_data)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
 
         current_lr = optimizer.param_groups[0]['lr']
