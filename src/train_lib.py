@@ -90,25 +90,50 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
 
 def _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t, tables_t,
                        mapping, gate_types_list, device):
-    """计算 LIB 查表延迟与真实延迟的 MSE"""
+    """计算 LIB 查表延迟 vs 实测值的 MSE（总延迟 + 每门延迟）"""
     from src.lib_lookup import lib_batch_lookup
     gate_mask = data.x[:, -1]
     total_lib_delay = torch.zeros(len(data.y), device=device)
+    per_gate_loss = torch.tensor(0.0, device=device)
+
     for gi in range(len(data.y)):
         g_mask = (data.batch == gi) & (gate_mask > 0.5)
         if g_mask.sum() == 0:
             continue
-        gate_names = [gate_types_list[int(data.x[idx, 0].item())]
-                      for idx in g_mask.nonzero(as_tuple=True)[0]]
-        slew_pred = node_sl[g_mask, 0] * 50.0  # 缩放到 ps
-        load_pred = node_sl[g_mask, 1] * 50.0  # 缩放到 fF
+        idxs = g_mask.nonzero(as_tuple=True)[0]
+        gate_names = [gate_types_list[int(data.x[idx, 0].item())] for idx in idxs]
+        slew_pred = node_sl[g_mask, 0] * 50.0
+        load_pred = node_sl[g_mask, 1] * 50.0
         d = lib_batch_lookup(gate_names, slew_pred, load_pred,
                               gate_list, idx1_t, idx2_t, tables_t, mapping)
-        total_lib_delay[gi] = torch.sum(d) * 1e-12  # ps → s
+        total_lib_delay[gi] = torch.sum(d) * 1e-12
+
+        # 每门实测监督（跳过 null=-1）
+        if hasattr(data, 'per_gate_delay') and data.per_gate_delay is not None:
+            pgd = data.per_gate_delay[g_mask]
+            pgo = data.per_gate_out_slew[g_mask] if hasattr(data, 'per_gate_out_slew') else None
+            pgi = data.per_gate_in_slew[g_mask] if hasattr(data, 'per_gate_in_slew') else None
+            # delay_ps
+            valid_d = pgd > 0
+            if valid_d.any():
+                per_gate_loss = per_gate_loss + ((d[valid_d] - pgd[valid_d]) ** 2).mean()
+            # out_slew_ps: 应与查表 delay 正相关，用 log 比
+            if pgo is not None:
+                valid_o = pgo > 0
+                if valid_o.any():
+                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(d[valid_o]) - torch.log1p(pgo[valid_o])) ** 2).mean()
+            # in_slew_ps: 模型预测的 slew 应匹配
+            if pgi is not None:
+                valid_i = pgi > 0
+                if valid_i.any():
+                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(slew_pred[valid_i]) - torch.log1p(pgi[valid_i])) ** 2).mean()
 
     lib_log = torch.log10(total_lib_delay.clamp(1e-15))
     target_log = torch.log10(data.y + 1e-12)
-    return torch.nn.functional.mse_loss(lib_log, target_log)
+    total_loss = torch.nn.functional.mse_loss(lib_log, target_log)
+    if per_gate_loss.item() > 0:
+        total_loss = total_loss + 0.5 * per_gate_loss
+    return total_loss
 
 def evaluate(model, loader, device):
     model.eval()
@@ -235,14 +260,14 @@ def main():
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
         os.path.join(data_dir, "data/batch1/circuit_static.parquet"),
-        os.path.join(data_dir, "data/batch2_v4/circuit_static.parquet"),
+        os.path.join(data_dir, "data/batch2/circuit_static.parquet"),
     ]
     dynamic_parquets = [
         os.path.join(data_dir, "data/batch1/timing_arcs.parquet"),
-        os.path.join(data_dir, "data/batch2_v4/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/batch2/timing_arcs.parquet"),
     ]
     # 可选追加数据（存在则加载，不存在则跳过）
-    for batch in ['batch1b_v4', 'batch3_v4']:
+    for batch in ['batch1b', 'batch3']:
         sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
         dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
         if os.path.exists(sp) and os.path.exists(dp):
