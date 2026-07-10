@@ -206,7 +206,7 @@ def main():
         os.path.join(data_dir, "data/batch2/timing_arcs.parquet"),
     ]
     # 可选追加数据（存在则加载，不存在则跳过）
-    for batch in ['batch1b', 'batch3']:
+    for batch in ['batch1b', 'batch3', 'batch_wave']:
         sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
         dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
         if os.path.exists(sp) and os.path.exists(dp):
