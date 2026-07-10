@@ -35,7 +35,7 @@ def get_train_residuals(model, dataset, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)
+            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)[0]
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -57,7 +57,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
         csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-        out = model(data.x, data.edge_index, data.batch, corner, csig)
+        out = model(data.x, data.edge_index, data.batch, corner, csig)[0]
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -84,7 +84,7 @@ def evaluate(model, loader, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            out = model(data.x, data.edge_index, data.batch, corner, csig)
+            out = model(data.x, data.edge_index, data.batch, corner, csig)[0]
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
