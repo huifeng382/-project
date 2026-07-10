@@ -368,6 +368,30 @@ class DelayDataset(Dataset):
         data.per_gate_delay = per_gate_delay
         data.per_gate_out_slew = per_gate_out_slew
         data.per_gate_in_slew = per_gate_in_slew
+
+        # transistor_wave → 每门聚合（ids_avg, ids_peak, vds_swing），无数据=-1
+        gate_tw = torch.full((num_nodes, 3), -1.0, dtype=torch.float)
+        try:
+            tw = row.get('transistor_wave_json')
+            if tw is not None and pd.notna(tw) and str(tw).strip() not in ('', '{}'):
+                raw = json.loads(tw) if isinstance(tw, str) else tw
+                gate_vals = {}  # gate_name → [[ids, peak, vds], ...]
+                for tname, tv in raw.items():
+                    if not isinstance(tv, dict):
+                        continue
+                    # M_x_N_M1 → gate is x_N
+                    parts = tname.split('_')
+                    if len(parts) >= 3:
+                        gate = '_'.join(parts[1:-1])  # x_N
+                        gate_vals.setdefault(gate, []).append([
+                            tv.get('ids_avg', 0), tv.get('ids_peak', 0), tv.get('vds_swing', 0)])
+                for i, n in enumerate(node_names):
+                    if n in gate_vals:
+                        arr = np.array(gate_vals[n])
+                        gate_tw[i] = torch.tensor(arr.mean(axis=0), dtype=torch.float)
+        except Exception:
+            pass
+        data.gate_tw = gate_tw
         return data
     def extract_features(self, idx):
         """

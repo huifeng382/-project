@@ -43,8 +43,10 @@ class DelayGNN(nn.Module):
 
         # 最终预测层（pooled + corner + circuit_sig）
         self.lin = nn.Linear(hidden_dim * 3, 1)
-        # LIB 模式：每节点预测 (input_slew_ps, output_load_ff)
-        self.node_pred = nn.Linear(hidden_dim, 2)
+        # 每节点预测：(slew, load, spare) — LIB 模式
+        self.node_pred = nn.Linear(hidden_dim, 3)
+        # transistor 波形预测：(ids_avg, ids_peak, vds_swing) — 方案 B
+        self.tw_pred = nn.Linear(hidden_dim, 3)
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None):
@@ -70,8 +72,9 @@ class DelayGNN(nn.Module):
         x = gate_mask.unsqueeze(-1) * x  # 清零非路径节点
         x_pooled = global_add_pool(x, batch)  # (B, H)
 
-        # 每节点 LIB 延迟预测：(slew_ps, load_ff) → 仅路径节点有效
-        node_sl = F.softplus(self.node_pred(node_feat))  # (N, 2)，正值
+        # 每节点预测
+        node_sl = F.softplus(self.node_pred(node_feat))  # (N, 3)，LIB 模式
+        tw_out = F.softplus(self.tw_pred(node_feat))     # (N, 3)，transistor 模式
 
         # 注入 corner 条件
         if corner_cond is not None:
@@ -87,4 +90,4 @@ class DelayGNN(nn.Module):
 
         x_pooled = torch.cat([x_pooled, corner_emb, sig_emb], dim=-1)
         x = self.lin(x_pooled)
-        return x.squeeze(-1), node_sl
+        return x.squeeze(-1), node_sl, tw_out
