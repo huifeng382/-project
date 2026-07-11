@@ -35,7 +35,7 @@ def get_train_residuals(model, dataset, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)
+            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)[0]
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -57,7 +57,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
         csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-        out = model(data.x, data.edge_index, data.batch, corner, csig)
+        out, node_pred = model(data.x, data.edge_index, data.batch, corner, csig)
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -66,6 +66,16 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
                                   delta * (abs_res - 0.5 * delta))
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
+
+        # 浅层逐门 per_gate aux loss
+        if node_pred is not None and hasattr(data, 'per_gate_delay') and data.per_gate_delay is not None:
+            pgd = data.per_gate_delay.to(device)
+            gate_mask = data.x[:, -1].to(device)
+            valid = (gate_mask > 0.5) & (pgd > 0)
+            if valid.sum() > 10:
+                pred_d = node_pred[valid, 0]
+                loss = loss + 0.5 * F.mse_loss(torch.log1p(pred_d), torch.log1p(pgd[valid]))
+
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -84,7 +94,7 @@ def evaluate(model, loader, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            out = model(data.x, data.edge_index, data.batch, corner, csig)
+            out = model(data.x, data.edge_index, data.batch, corner, csig)[0]
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())

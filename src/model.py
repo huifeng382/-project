@@ -43,6 +43,8 @@ class DelayGNN(nn.Module):
 
         # 最终预测层（pooled + corner + circuit_sig）
         self.lin = nn.Linear(hidden_dim * 3, 1)
+        # 浅层节点预测头：从 Layer 2 接出，逐门预测延迟
+        self.node_pred = nn.Linear(hidden_dim, 3)
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None):
@@ -51,8 +53,8 @@ class DelayGNN(nn.Module):
         gate_emb = self.gate_embed(gate_idx)
         x = torch.cat([gate_emb, struct_dyn], dim=1)
 
-        # 保存 gate_state 掩码（GNN 前），用于路径累加读出
-        gate_mask = x[:, -1].clone()  # (N,)
+        gate_mask = x[:, -1].clone()
+        shallow_feat = None
 
         for i, (conv, norm) in enumerate(zip(self.convs, self.norms)):
             residual = x
@@ -62,6 +64,9 @@ class DelayGNN(nn.Module):
             x = F.dropout(x, p=self.dropout, training=self.training)
             if i > 0 and residual.shape == x.shape:
                 x = x + residual
+            # 保存 Layer 2 的特征用于逐门预测
+            if i == 1:
+                shallow_feat = x.clone()
 
         # 路径累加读出：只取信号路径上的节点求和，符合延迟物理公式
         x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H) → 清零非路径节点
@@ -80,5 +85,8 @@ class DelayGNN(nn.Module):
             sig_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1], device=x_pooled.device)
 
         x_pooled = torch.cat([x_pooled, corner_emb, sig_emb], dim=-1)
+        # 逐门预测：从浅层特征接出，保留节点自身信息
+        node_pred = F.softplus(self.node_pred(shallow_feat)) if shallow_feat is not None else None
+
         x = self.lin(x_pooled)
-        return x.squeeze(-1)
+        return x.squeeze(-1), node_pred
