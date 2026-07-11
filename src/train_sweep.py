@@ -35,7 +35,7 @@ def get_train_residuals(model, dataset, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)[0]
+            pred_log = model(data.x, data.edge_index, data.batch, corner, csig)
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -57,7 +57,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
         csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-        out, node_pred, tw_out = model(data.x, data.edge_index, data.batch, corner, csig)
+        out = model(data.x, data.edge_index, data.batch, corner, csig)
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -66,20 +66,6 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
                                   delta * (abs_res - 0.5 * delta))
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
-
-        # transistor aux loss（仅 batch_wave 样本有数据）
-        if hasattr(data, 'gate_tw') and data.gate_tw is not None:
-            tw_data = data.gate_tw.to(device)
-            gate_mask = data.x[:, -1].to(device)
-            valid = (gate_mask > 0.5) & (tw_data[:, 0] >= 0)
-            if valid.sum() > 10:
-                tw_pred = tw_out[valid]
-                tw_target = tw_data[valid]
-                tw_loss = torch.nn.functional.mse_loss(
-                    torch.log1p(F.softplus(tw_pred)),
-                    torch.log1p(tw_target))
-                loss = loss + 5.0 * tw_loss
-
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -98,7 +84,7 @@ def evaluate(model, loader, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            out = model(data.x, data.edge_index, data.batch, corner, csig)[0]
+            out = model(data.x, data.edge_index, data.batch, corner, csig)
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
