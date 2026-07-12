@@ -1,5 +1,5 @@
 #!/bin/bash
-# 用法: bash setup_exp.sh <base|pgd|pgs|pgs2>
+# 用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2>
 # 基于 10.7 分支起一个 per_gate 实验，noWave + 独立缓存，后台训练。
 set -e
 V="$1"
@@ -7,7 +7,7 @@ URL="https://github.com/huifeng382/-project.git"
 BR="10.3.3-fix-earlystop"
 D="$HOME/project-107-$V"
 
-if [ -z "$V" ]; then echo "用法: bash setup_exp.sh <base|pgd|pgs|pgs2>"; exit 1; fi
+if [ -z "$V" ]; then echo "用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2>"; exit 1; fi
 
 rm -rf "$D"
 git clone -b "$BR" "$URL" "$D"
@@ -24,8 +24,8 @@ if [ "$V" = "lib" ]; then
   exit 0
 fi
 
-# per_gate 变体：先在干净树上 cherry-pick 10.4（浅层逐门 loss + node_pred 头）
-if [ "$V" != "base" ]; then
+# per_gate 变体（pgd/pgs/pgs2）：先在干净树上 cherry-pick 10.4（浅层逐门 loss + node_pred 头）
+if [ "$V" = "pgd" ] || [ "$V" = "pgs" ] || [ "$V" = "pgs2" ]; then
   git cherry-pick --no-commit ed49d20
 fi
 
