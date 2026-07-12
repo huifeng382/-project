@@ -13,13 +13,14 @@ rm -rf "$D"
 git clone -b "$BR" "$URL" "$D"
 cd "$D"
 
-# noWave（去掉加载列表里的 batch_wave）
-sed -i "s/, 'batch_wave'//" src/train_sweep.py
-
-# per_gate 变体：叠加 10.4 的浅层逐门 loss + node_pred 头
+# per_gate 变体：先在干净树上 cherry-pick 10.4（浅层逐门 loss + node_pred 头）
 if [ "$V" != "base" ]; then
   git cherry-pick --no-commit ed49d20
 fi
+
+# noWave（去掉加载列表里的 batch_wave）—— 必须在 cherry-pick 之后
+sed -i "s/, 'batch_wave'//" src/train_sweep.py
+
 # out_slew 变体：把监督目标从 delay 换成 out_slew（100% 密）
 if [ "$V" = "pgs" ] || [ "$V" = "pgs2" ]; then
   sed -i 's/per_gate_delay/per_gate_out_slew/g' src/train_sweep.py
