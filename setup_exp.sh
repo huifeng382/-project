@@ -13,6 +13,17 @@ rm -rf "$D"
 git clone -b "$BR" "$URL" "$D"
 cd "$D"
 
+# lib 变体：Scheme A（train_lib + SC展开LIB链），QUICK_TEST 先测速
+if [ "$V" = "lib" ]; then
+  sed -i 's/from src.train_sweep import main/from src.train_lib import main/' main.py
+  sed -i "s/, 'batch_wave'//" src/train_lib.py
+  sed -i 's/^QUICK_TEST = .*/QUICK_TEST = True/' config.py
+  sed -i 's/CACHE_DIR = .*/CACHE_DIR = "cache107lib"/' config.py
+  OMP_NUM_THREADS=6 nohup python3 -u main.py > "train107lib.log" 2>&1 &
+  echo "launched 107-lib QUICK_TEST  pid=$!  dir=$D"
+  exit 0
+fi
+
 # per_gate 变体：先在干净树上 cherry-pick 10.4（浅层逐门 loss + node_pred 头）
 if [ "$V" != "base" ]; then
   git cherry-pick --no-commit ed49d20
