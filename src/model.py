@@ -43,6 +43,8 @@ class DelayGNN(nn.Module):
 
         # 最终预测层（pooled + corner + circuit_sig）
         self.lin = nn.Linear(hidden_dim * 3, 1)
+        # per-node 头（LIB 模式用）：从节点特征预测 (slew, load, spare)，softplus 保正
+        self.node_pred = nn.Linear(hidden_dim, 3)
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None):
@@ -63,6 +65,9 @@ class DelayGNN(nn.Module):
             if i > 0 and residual.shape == x.shape:
                 x = x + residual
 
+        # per-node 头（LIB 模式用）：在路径掩码清零前，从节点特征预测 (slew, load, spare)
+        node_sl = F.softplus(self.node_pred(x))  # (N, 3)
+
         # 路径累加读出：只取信号路径上的节点求和，符合延迟物理公式
         x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H) → 清零非路径节点
         x_pooled = global_add_pool(x, batch)  # (B, H)
@@ -81,4 +86,4 @@ class DelayGNN(nn.Module):
 
         x_pooled = torch.cat([x_pooled, corner_emb, sig_emb], dim=-1)
         x = self.lin(x_pooled)
-        return x.squeeze(-1)
+        return x.squeeze(-1), node_sl

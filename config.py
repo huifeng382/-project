@@ -56,3 +56,10 @@ QUICK_MIN_DELTA = 1.0      # best err 在窗口内至少下降这么多百分点
 
 # 数据筛选：只保留标准4引脚（a,b,c,d）电路，去除图结构不一致的电路
 FOUR_PIN_ONLY = True       # True=只保留4引脚电路（去掉~12%），False=保留全部
+
+# LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
+LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
+LIB_TOTAL_W = 0.1         # 总延迟（展开求和 vs 实测 DELAY）项
+PG_DELAY_W = 0.5          # 逐门 delay 监督（per_gate_delay, 60%）
+PG_OUTSLEW_W = 0.1        # 逐门输出 slew 监督（per_gate_out_slew, 100%）
+PG_INSLEW_W = 0.1         # 逐门输入 slew 监督（per_gate_in_slew, 60%）

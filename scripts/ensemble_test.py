@@ -21,7 +21,7 @@ def ensemble_predict(models, data_loader, device):
             preds = []
             for model in models:
                 model.eval()
-                out = model(data.x, data.edge_index, data.batch)
+                out = model(data.x, data.edge_index, data.batch)[0]
                 preds.append(out.cpu().numpy())
             avg_pred = np.mean(preds, axis=0)  # shape: (batch_size,)
             all_preds.append(avg_pred)

@@ -72,12 +72,11 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
 
-        # 辅助 LIB loss：每节点 (slew, load) → 查表 → 和
+        # 辅助 LIB loss：每节点 (slew, load) → SC 宏展开链查表 → 求和
         if lib_data is not None:
-            gate_list, idx1_t, idx2_t, tables_t, mapping, gate_types_list = lib_data
-            lib_loss = _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t,
-                                          tables_t, mapping, gate_types_list, device)
-            loss = loss + 0.01 * lib_loss  # LIB 辅助权重
+            plans, gate_types_list = lib_data
+            lib_loss = _compute_lib_loss(data, node_sl, plans, gate_types_list, device)
+            loss = loss + LIB_AUX_W * lib_loss
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -88,13 +87,17 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
     return total_loss / len(loader)
 
 
-def _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t, tables_t,
-                       mapping, gate_types_list, device):
-    """计算 LIB 查表延迟 vs 实测值的 MSE（总延迟 + 每门延迟）"""
-    from src.lib_lookup import lib_batch_lookup
+def _compute_lib_loss(data, node_sl, plans, gate_types_list, device):
+    """SC 宏展开链查表延迟 vs 实测：总延迟 + 逐门(delay/out_slew/in_slew)监督。"""
+    from src.lib_lookup import macro_batch_delay
     gate_mask = data.x[:, -1]
     total_lib_delay = torch.zeros(len(data.y), device=device)
-    per_gate_loss = torch.tensor(0.0, device=device)
+    pg_delay_loss = torch.tensor(0.0, device=device)
+    pg_oslew_loss = torch.tensor(0.0, device=device)
+    pg_islew_loss = torch.tensor(0.0, device=device)
+    has_pgd = hasattr(data, 'per_gate_delay') and data.per_gate_delay is not None
+    has_pgo = hasattr(data, 'per_gate_out_slew') and data.per_gate_out_slew is not None
+    has_pgi = hasattr(data, 'per_gate_in_slew') and data.per_gate_in_slew is not None
 
     for gi in range(len(data.y)):
         g_mask = (data.batch == gi) & (gate_mask > 0.5)
@@ -102,38 +105,33 @@ def _compute_lib_loss(data, node_sl, gate_list, idx1_t, idx2_t, tables_t,
             continue
         idxs = g_mask.nonzero(as_tuple=True)[0]
         gate_names = [gate_types_list[int(data.x[idx, 0].item())] for idx in idxs]
-        slew_pred = node_sl[g_mask, 0] * 50.0
-        load_pred = node_sl[g_mask, 1] * 50.0
-        d = lib_batch_lookup(gate_names, slew_pred, load_pred,
-                              gate_list, idx1_t, idx2_t, tables_t, mapping)
-        total_lib_delay[gi] = torch.sum(d) * 1e-12
+        in_slew = node_sl[g_mask, 0] * 50.0
+        ext_load = node_sl[g_mask, 1] * 50.0
+        d, out_slew, valid = macro_batch_delay(gate_names, in_slew, ext_load, plans)
+        total_lib_delay[gi] = torch.sum(d) * 1e-12          # ps -> s
 
-        # 每门实测监督（跳过 null=-1）
-        if hasattr(data, 'per_gate_delay') and data.per_gate_delay is not None:
-            pgd = data.per_gate_delay[g_mask]
-            pgo = data.per_gate_out_slew[g_mask] if hasattr(data, 'per_gate_out_slew') else None
-            pgi = data.per_gate_in_slew[g_mask] if hasattr(data, 'per_gate_in_slew') else None
-            # delay_ps
-            valid_d = pgd > 0
-            if valid_d.any():
-                per_gate_loss = per_gate_loss + ((d[valid_d] - pgd[valid_d]) ** 2).mean()
-            # out_slew_ps: 应与查表 delay 正相关，用 log 比
-            if pgo is not None:
-                valid_o = pgo > 0
-                if valid_o.any():
-                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(d[valid_o]) - torch.log1p(pgo[valid_o])) ** 2).mean()
-            # in_slew_ps: 模型预测的 slew 应匹配
-            if pgi is not None:
-                valid_i = pgi > 0
-                if valid_i.any():
-                    per_gate_loss = per_gate_loss + 0.1 * ((torch.log1p(slew_pred[valid_i]) - torch.log1p(pgi[valid_i])) ** 2).mean()
+        if has_pgd:                                          # 逐门 delay(ps)：仅已展开宏，log 空间
+            pgd = data.per_gate_delay[g_mask].to(device)
+            v = (pgd > 0) & valid
+            if v.any():
+                pg_delay_loss = pg_delay_loss + ((torch.log1p(d[v]) - torch.log1p(pgd[v])) ** 2).mean()
+        if has_pgo:                                          # 逐门输出 slew(ps)：仅已展开宏
+            pgo = data.per_gate_out_slew[g_mask].to(device)
+            v = (pgo > 0) & valid
+            if v.any():
+                pg_oslew_loss = pg_oslew_loss + ((torch.log1p(out_slew[v]) - torch.log1p(pgo[v])) ** 2).mean()
+        if has_pgi:                                          # 逐门输入 slew(ps)：监督模型预测(与展开无关)
+            pgi = data.per_gate_in_slew[g_mask].to(device)
+            v = pgi > 0
+            if v.any():
+                pg_islew_loss = pg_islew_loss + ((torch.log1p(in_slew[v]) - torch.log1p(pgi[v])) ** 2).mean()
 
-    # PG mode: zero LIB total delay loss, keep only per_gate
+    # 总延迟 loss（解除 PG-mode 的 0.0 置零，真正参与训练）
     lib_log = torch.log10(total_lib_delay.clamp(1e-15))
     target_log = torch.log10(data.y + 1e-12)
-    total_loss = 0.0 * torch.nn.functional.mse_loss(lib_log, target_log)
-    if per_gate_loss.item() > 0:
-        total_loss = total_loss + 0.5 * per_gate_loss
+    total_loss = LIB_TOTAL_W * torch.nn.functional.mse_loss(lib_log, target_log)
+    total_loss = (total_loss + PG_DELAY_W * pg_delay_loss
+                  + PG_OUTSLEW_W * pg_oslew_loss + PG_INSLEW_W * pg_islew_loss)
     return total_loss
 
 def evaluate(model, loader, device):
@@ -211,17 +209,18 @@ def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
     """
     src_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     gb_hash = _file_hash(os.path.join(src_dir, 'src/graph_builder.py'))
-    model_hash = _file_hash(os.path.join(src_dir, 'src/model.py'))
+    dl_hash = _file_hash(os.path.join(src_dir, 'src/data_loader.py'))
     sim_hash = _file_hash(os.path.join(src_dir, 'src/logic_sim.py'))
     data_hash = _data_mtime_hash(static_parquets, dynamic_parquets)
 
     print("Cache check:")
+    # data_loader.py 塑造节点特征 x[:,-1]/per_gate，纳入图与 gate 缓存 key，改动即失效
     _check_cache_dir(os.path.join(CACHE_DIR, 'graphs'),
-                      gb_hash + data_hash, "Graph cache")
+                      gb_hash + dl_hash + data_hash, "Graph cache")
     os.makedirs(os.path.join(CACHE_DIR, 'outlier'), exist_ok=True)
-    # 离群点缓存自管理
+    # 离群点缓存自管理（见 get_outlier_cache_path，含 model.py + data_loader.py 哈希）
     _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
-                      sim_hash + data_hash, "Gate cache")
+                      sim_hash + dl_hash + data_hash, "Gate cache")
     sys.stdout.flush()
 
 
@@ -236,6 +235,10 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"hdim{HIDDEN_DIM}",
         f"nlay{NUM_LAYERS}",
     ]
+    # 离群点由 base 模型算出，依赖模型架构与特征构建逻辑 → 纳入 model.py / data_loader.py 哈希
+    _sd = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    key_parts.append(_file_hash(os.path.join(_sd, 'src/model.py')))
+    key_parts.append(_file_hash(os.path.join(_sd, 'src/data_loader.py')))
     # 加入数据文件的修改时间，数据变了缓存自动失效
     for p in sorted(static_parquets + dynamic_parquets):
         try:
@@ -555,20 +558,21 @@ def main():
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 
-    # ---------- 加载 LIB 数据 ----------
+    # ---------- 加载 LIB 数据（SC 宏展开 → 标准单元延迟链） ----------
     lib_data = None
     lib_path = os.path.join(data_dir, "data/std_cells.lib")
-    map_path = os.path.join(data_dir, "data/sc_to_asap7.json")
-    if os.path.exists(lib_path) and os.path.exists(map_path):
+    exp_path = os.path.join(data_dir, "data/sc_expansion.json")
+    if os.path.exists(lib_path) and os.path.exists(exp_path):
+        from src.lib_lookup import load_expansion, precompute_macro_chains
         lib = parse_lib(lib_path)
-        mapping = load_mapping(map_path)
-        gate_list, idx1_t, idx2_t, tables_t = build_lib_tensors(lib, mapping)
+        expansion = load_expansion(exp_path)
+        plans = precompute_macro_chains(expansion, lib)
         gate_types_list = [gb.GATE_TYPES[i] if i < len(gb.GATE_TYPES) else 'OTHER'
                            for i in range(num_gate_types)]
-        lib_data = (gate_list, idx1_t, idx2_t, tables_t, mapping, gate_types_list)
-        print(f"LIB loaded: {len(gate_list)} cell types, {sum(1 for v in mapping.values() if v)} SC mapped")
+        lib_data = (plans, gate_types_list)
+        print(f"LIB loaded: {len(lib)} cells, {len(plans)}/{len(expansion)} SC macros expanded")
     else:
-        print("LIB or mapping not found, using GNN-only mode")
+        print("LIB or expansion not found, using GNN-only mode")
 
     model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS, dropout=DROPOUT,
                      num_gate_types=num_gate_types,
@@ -589,9 +593,11 @@ def main():
         )
 
     best_val_rel = float('inf')
+    best_val_loss = float('inf')
     patience_counter = 0
     plateau_counter = 0
     val_err_history = []
+    val_loss_history = []
     train_loss_history = []
     plateau_triggered = False
     last_lr = LEARNING_RATE
@@ -613,6 +619,7 @@ def main():
                 scheduler.step()
 
         val_err_history.append(val_rel_err)
+        val_loss_history.append(val_loss)
         train_loss_history.append(train_loss)
 
         # 检测 LR 是否已衰减（LR 降低是突破平台期的契机，在此之前不早停）
@@ -620,12 +627,17 @@ def main():
             lr_decayed = True
         last_lr = current_lr
 
+        # 保存最优 checkpoint：仍按报告指标 val_rel_err
         if val_rel_err < best_val_rel:
             best_val_rel = val_rel_err
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
+            print(f"  >>> New best model saved (Val Rel Err: {val_rel_err:.2f}%)")
+
+        # 早停判据：改用稳定的 val_loss（val_rel_err 被极端 corner 主导、逐 epoch 剧烈震荡会误停）
+        if val_loss < best_val_loss - 1e-5:
+            best_val_loss = val_loss
             patience_counter = 0
             plateau_counter = 0
-            print(f"  >>> New best model saved (Val Rel Err: {val_rel_err:.2f}%)")
         else:
             patience_counter += 1
             plateau_counter += 1
@@ -640,40 +652,26 @@ def main():
                               f"only improved {improved:.1f} pts in last {QUICK_WINDOW} epochs")
                         break
 
-            # ---- 智能早停：检测过拟合平台期 ----
-            # 仅当 LR 已衰减过 + train 还在降 + val 不再改善 → 过拟合，提前终止
+            # ---- 智能早停：LR 已衰减 + train 还在降 + val_loss 也停止下降 → 真过拟合 ----
             if (plateau_counter >= PLATEAU_WINDOW
                     and epoch + 1 >= PLATEAU_MIN_EPOCHS
                     and lr_decayed
                     and not plateau_triggered):
-                recent_val = val_err_history[-PLATEAU_WINDOW:]
                 recent_train = train_loss_history[-PLATEAU_WINDOW:]
-                # 与更早的窗口比较
                 prev_start = max(0, len(train_loss_history) - 2 * PLATEAU_WINDOW)
                 prev_train = train_loss_history[prev_start:len(train_loss_history) - PLATEAU_WINDOW]
-
-                val_range = max(recent_val) - min(recent_val)
-                val_best_recent = min(recent_val)
                 train_mean_recent = np.mean(recent_train)
                 train_mean_prev = np.mean(prev_train) if prev_train else train_mean_recent
-
-                # 条件1: train loss 在持续下降（比前一窗口明显更低）
                 train_still_improving = train_mean_recent < train_mean_prev - 0.0005
-                # 条件2: val err 没有破新低（比全局最优差超过 PLATEAU_MIN_DELTA 个百分点）
-                val_not_improving = val_best_recent > best_val_rel + PLATEAU_MIN_DELTA
-                # 条件3: val err 在窗口内震荡（没有明显下降趋势）
-                val_first_half = np.mean(recent_val[:PLATEAU_WINDOW//2])
-                val_second_half = np.mean(recent_val[PLATEAU_WINDOW//2:])
-                val_no_trend = val_second_half > val_first_half - PLATEAU_MIN_DELTA
 
-                if train_still_improving and val_not_improving and val_no_trend:
+                if train_still_improving:
                     plateau_triggered = True
                     print(f"  >>> Plateau detected: train still improving ({train_mean_prev:.4f}→{train_mean_recent:.4f}) "
-                          f"but val oscillating in [{min(recent_val):.1f}%~{max(recent_val):.1f}%], best={best_val_rel:.1f}%")
+                          f"but val_loss stalled {plateau_counter} epochs (best_val_loss={best_val_loss:.4f}), stop.")
                     break
 
             if patience_counter >= PATIENCE:
-                print("Early stopping")
+                print(f"Early stopping (val_loss 连续 {PATIENCE} epoch 无改善)")
                 break
 
     model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, 'best_model.pt')))

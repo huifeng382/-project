@@ -35,7 +35,7 @@ def get_train_residuals(model, dataset, device):
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
-            pred_log = model(data.x, data.edge_index, data.batch)
+            pred_log = model(data.x, data.edge_index, data.batch)[0]
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -58,9 +58,9 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0):
     for data in loader:
         data = data.to(device)
         optimizer.zero_grad()
-        out = model(data.x, data.edge_index, data.batch)
+        out = model(data.x, data.edge_index, data.batch)[0]
         target_log = torch.log10(data.y + 1e-12)
-        
+
         # 计算残差
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -88,7 +88,7 @@ def evaluate(model, loader, device):
     with torch.no_grad():
         for data in loader:
             data = data.to(device)
-            out = model(data.x, data.edge_index, data.batch)   # out 是 log10(delay)
+            out = model(data.x, data.edge_index, data.batch)[0]   # out 是 log10(delay)
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
