@@ -29,9 +29,9 @@ HUBER_DELTA = 0.3   # 可调整，建议从 0.2 开始尝试
 LR_SCHEDULER = 'ReduceLROnPlateau'     # 小数据集用 plateau，避免余弦周期震荡
 LR_T_MAX = 50                          # 半个周期长度（epoch数）
 LR_ETA_MIN = 1e-6                      # 最小学习率
-LR_FACTOR = 0.7                        # 每次降低的倍数
+LR_FACTOR = 0.5                        # 每次降低的倍数（10.6 深退火：更陡）
 LR_PATIENCE = 15                       # 验证损失连续多少epoch不下降时降低学习率
-LR_MIN = 5e-6                          # 学习率下限
+LR_MIN = 1e-6                          # 学习率下限（10.6 深退火：更低）
 LR_COOLDOWN = 5                        # 降低后等待几个epoch再重新检测
 
 # 离群点清洗（降低剔除比例）
