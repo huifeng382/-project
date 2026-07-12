@@ -170,7 +170,7 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"top{OUTLIER_TOP_PERCENT}",
         f"base{BASE_EPOCHS}",
         f"huber{HUBER_DELTA}",
-        f"seed{RANDOM_SEED}",
+        f"seed{TRAIN_SEED}",
         f"hdim{HIDDEN_DIM}",
         f"nlay{NUM_LAYERS}",
     ]
@@ -272,8 +272,10 @@ def main():
     # 按 expr 分组划分：同一 expr 的等价变体整组进同一 split（下游择优任务的正确切分，无泄漏）
     id_to_expr = (dict(zip(dynamic_df['circuit_id'].astype(str), dynamic_df['expr'].astype(str)))
                   if 'expr' in dynamic_df.columns else None)
-    train_ids, val_ids, test_ids = split_by_expr(circuit_ids, id_to_expr, seed=RANDOM_SEED)
-    print(f"划分(按expr): train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
+    train_ids, val_ids, test_ids = split_by_expr(circuit_ids, id_to_expr, seed=SPLIT_SEED)
+    print(f"划分(按expr, SPLIT_SEED={SPLIT_SEED}): train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
+    # 切分固定后，用 TRAIN_SEED 独立控制模型初始化/训练随机性（便于同切分多seed集成）
+    set_seed(TRAIN_SEED)
 
     # ---------- 读取静态数据用于 scaler ----------
     static_dfs_raw = [pd.read_parquet(p) for p in static_parquets]
@@ -516,6 +518,7 @@ def main():
 
     best_val_rel = float('inf')
     best_val_loss = float('inf')
+    best_sel = float('inf')
     patience_counter = 0
     plateau_counter = 0
     val_err_history = []
@@ -548,11 +551,20 @@ def main():
             lr_decayed = True
         last_lr = current_lr
 
-        # 保存最优 checkpoint：仍按报告指标 val_rel_err（沿用 9.7 行为，不引入新选择风险）
+        # 报告指标：始终追踪最小 val_rel_err
         if val_rel_err < best_val_rel:
             best_val_rel = val_rel_err
+        # 保存 checkpoint：按 BEST_MODEL_METRIC 选点（默认 val_rel_err；可选 val_loss / smoothed_rel_err）
+        if BEST_MODEL_METRIC == 'val_loss':
+            sel = val_loss
+        elif BEST_MODEL_METRIC == 'smoothed_rel_err':
+            sel = float(np.mean(val_err_history[-BEST_SMOOTH_WINDOW:]))
+        else:
+            sel = val_rel_err
+        if sel < best_sel:
+            best_sel = sel
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
-            print(f"  >>> New best model saved (Val Rel Err: {val_rel_err:.2f}%)")
+            print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
 
         # 早停判据：改用稳定的 val_loss。val_rel_err 被极端 corner 主导、逐 epoch 剧烈震荡，
         # 会在 val_loss 仍在下降时误判过拟合、提前砍断训练（10.3.3 即在 val_loss 0.0227→0.0200

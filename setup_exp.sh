@@ -41,6 +41,18 @@ if [ "$V" = "pgs2" ]; then
   sed -i 's/+ 0.5 \* F.mse_loss/+ 2.0 * F.mse_loss/' src/train_sweep.py
 fi
 
+# 优化探索变体（同一 expr 切分，仅改 config，互相可比）
+if [ "$V" = "anneal" ]; then          # 更深退火
+  sed -i 's/^LR_MIN = .*/LR_MIN = 1e-7/' config.py
+  sed -i 's/^LR_FACTOR = .*/LR_FACTOR = 0.4/' config.py
+fi
+if [ "$V" = "bmvl" ]; then             # best_model 按 val_loss 选点
+  sed -i "s/^BEST_MODEL_METRIC = .*/BEST_MODEL_METRIC = 'val_loss'/" config.py
+fi
+if [ "$V" = "bmsm" ]; then             # best_model 按平滑 rel_err 选点
+  sed -i "s/^BEST_MODEL_METRIC = .*/BEST_MODEL_METRIC = 'smoothed_rel_err'/" config.py
+fi
+
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
 OMP_NUM_THREADS=6 nohup python3 -u main.py > "train107$V.log" 2>&1 &
