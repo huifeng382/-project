@@ -17,7 +17,7 @@ from torch_geometric.loader import DataLoader
 from sklearn.preprocessing import StandardScaler
 import numpy as np
 from config import HUBER_DELTA
-from src.utils import set_seed, split_by_circuit, save_scaler, create_dir
+from src.utils import set_seed, split_by_circuit, split_by_expr, ranking_metrics, save_scaler, create_dir
 from src.data_loader import DelayDataset
 from src.model import DelayGNN
 from src.graph_builder import rebuild_gate_types
@@ -334,8 +334,11 @@ def main():
               f"samples={len(dynamic_df)} ({len(dynamic_df)/old_n*100:.0f}% of total)")
 
     circuit_ids = dynamic_df['circuit_id'].unique().tolist()
-    train_ids, val_ids, test_ids = split_by_circuit(circuit_ids, seed=RANDOM_SEED)
-    print(f"划分: train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
+    # 按 expr 分组划分：同一 expr 的等价变体整组进同一 split（下游择优任务的正确切分）
+    id_to_expr = (dict(zip(dynamic_df['circuit_id'].astype(str), dynamic_df['expr'].astype(str)))
+                  if 'expr' in dynamic_df.columns else None)
+    train_ids, val_ids, test_ids = split_by_expr(circuit_ids, id_to_expr, seed=RANDOM_SEED)
+    print(f"划分(按expr): train={len(train_ids)}, val={len(val_ids)}, test={len(test_ids)} 电路")
 
     # ---------- 读取静态数据用于 scaler ----------
     static_dfs_raw = [pd.read_parquet(p) for p in static_parquets]
@@ -691,7 +694,10 @@ def main():
                 mask = corners == c
                 if mask.sum() > 0:
                     err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
-                    print(f"  {c}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
+                    abs_err_ps = np.mean(np.abs(preds[mask] - targets[mask])) * 1e12
+                    delay_ps = np.mean(targets[mask]) * 1e12
+                    print(f"  {c}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%  "
+                          f"abs_err={abs_err_ps:.2f}ps  mean_delay={delay_ps:.2f}ps")
         else:
             print(f"  WARNING: row mismatch (test_dyn={len(test_dyn)}, preds={len(preds)})")
 
@@ -730,6 +736,14 @@ def main():
     print(f"  Device: {device}")
     print(f"  Best Val Rel Err: {best_val_rel:.2f}%")
     print(f"  Test Rel Err: {test_rel_err:.2f}%")
+    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%  (稳健,不被小延迟放大)")
+    try:
+        if len(test_dyn) == len(preds):
+            rk = ranking_metrics(test_dyn, preds, targets)
+            print(f"  [排序] 变体组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}  "
+                  f"选择遗憾={rk['regret_pct']:.2f}%  top1命中={rk['top1_acc']*100:.1f}%")
+    except Exception as _e:
+        print(f"  [排序] 计算失败: {_e}")
     if 'corner' in test_dyn.columns:
         corners = test_dyn['corner'].values
         corner_errs = {}

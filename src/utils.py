@@ -26,6 +26,80 @@ def split_by_circuit(circuit_ids, train_ratio=0.7, val_ratio=0.15, test_ratio=0.
     test_ids = ids[val_end:]
     return train_ids, val_ids, test_ids
 
+
+def _expr_of(cid):
+    """从 circuit_id (candidate_expr{N}_{idx}) 提取 expr 组键 (candidate_expr{N})。"""
+    s = str(cid)
+    return s.rsplit('_', 1)[0] if '_' in s else s
+
+
+def split_by_expr(circuit_ids, id_to_expr=None, train_ratio=0.7, val_ratio=0.15,
+                  test_ratio=0.15, seed=42):
+    """按 expr 分组划分：同一 expr 的所有等价变体候选整组进同一 split。
+    这是下游「等价变体择优」任务的正确切分——保证 test 有完整变体组、且无 expr 级泄漏。
+    先 sorted 再 shuffle，切分与 parquet 行序无关（顺序稳定）。
+    id_to_expr: dict[circuit_id -> expr]；缺省则从 circuit_id 解析。"""
+    set_seed(seed)
+    if id_to_expr is None:
+        id_to_expr = {c: _expr_of(c) for c in circuit_ids}
+    exprs = sorted(set(id_to_expr.get(c, _expr_of(c)) for c in circuit_ids))
+    random.shuffle(exprs)
+    n = len(exprs)
+    tr_end = int(n * train_ratio)
+    va_end = int(n * (train_ratio + val_ratio))
+    train_e = set(exprs[:tr_end]); val_e = set(exprs[tr_end:va_end]); test_e = set(exprs[va_end:])
+    def _pick(eset):
+        return [c for c in circuit_ids if id_to_expr.get(c, _expr_of(c)) in eset]
+    return _pick(train_e), _pick(val_e), _pick(test_e)
+
+
+def _spearman(pred, true):
+    """秩相关（无 scipy 依赖）：ranks 的 Pearson 相关。"""
+    n = len(pred)
+    if n < 2:
+        return np.nan
+    rp = np.argsort(np.argsort(pred)).astype(float)
+    rt = np.argsort(np.argsort(true)).astype(float)
+    if rp.std() == 0 or rt.std() == 0:
+        return np.nan
+    return float(np.corrcoef(rp, rt)[0, 1])
+
+
+def ranking_metrics(test_dyn, preds, targets):
+    """等价变体择优任务的排序评估。
+    按 (expr, corner) 分组，每个变体取「最坏情况延迟」= max over (pin/dir/vector)。
+    组内(≥2 变体)算：Spearman 秩相关、选择遗憾、top-1 命中。返回聚合结果 dict。"""
+    import pandas as pd
+    df = test_dyn.copy().reset_index(drop=True)
+    df['_pred'] = np.asarray(preds)
+    df['_true'] = np.asarray(targets)
+    df['_expr'] = df['expr'].astype(str) if 'expr' in df.columns \
+        else df['circuit_id'].astype(str).map(_expr_of)
+    if 'corner' not in df.columns:
+        df['corner'] = 'x'
+    # 每 (expr, corner, 变体) 的最坏情况延迟
+    wc = df.groupby(['_expr', 'corner', 'circuit_id']).agg(
+        pred=('_pred', 'max'), true=('_true', 'max')).reset_index()
+    sps, regrets, top1s = [], [], []
+    for (_e, _c), grp in wc.groupby(['_expr', 'corner']):
+        if len(grp) < 2:
+            continue
+        pr = grp['pred'].values; tr = grp['true'].values
+        sp = _spearman(pr, tr)
+        if not np.isnan(sp):
+            sps.append(sp)
+        pick = int(np.argmin(pr))           # 模型选的最快变体
+        best = int(np.argmin(tr))           # 真正最快变体
+        top1s.append(1.0 if pick == best else 0.0)
+        regrets.append((tr[pick] - tr[best]) / max(tr[best], 1e-15) * 100)
+    return {
+        'n_groups': len(top1s),
+        'spearman': float(np.mean(sps)) if sps else float('nan'),
+        'regret_pct': float(np.mean(regrets)) if regrets else float('nan'),
+        'top1_acc': float(np.mean(top1s)) if top1s else float('nan'),
+    }
+
+
 def save_scaler(scaler, path):
     joblib.dump(scaler, path)
 
