@@ -334,9 +334,11 @@ class DelayDataset(Dataset):
                 except IOError:
                     pass
 
+        gate_states_lc = {str(k).lower(): v for k, v in gate_states.items()} if isinstance(gate_states, dict) else {}
         for i, n in enumerate(node_names):
-            if n in gate_states:
-                x[i, -1] = float(gate_states[n])
+            key = str(n).lower()
+            if key in gate_states_lc:
+                x[i, -1] = float(gate_states_lc[key])
             elif n == 'out':
                 x[i, -1] = 1.0
 
@@ -346,6 +348,30 @@ class DelayDataset(Dataset):
         data.corner_cond = torch.tensor(corner_cond, dtype=torch.float).unsqueeze(0)
         data.circuit_sig = torch.tensor(self._circuit_sig.get(cid, [0,0,0]),
                                          dtype=torch.float).unsqueeze(0)
+
+        # 逐门监督标签（per_gate_timing_json，按节点名对齐，与 gate_states 同一套 node_names 顺序）
+        # 缺失字段填 -1（哨兵值，loss 侧用 >0 过滤）。单位为 ps。
+        pg_delay = torch.full((num_nodes,), -1.0, dtype=torch.float)
+        pg_out_slew = torch.full((num_nodes,), -1.0, dtype=torch.float)
+        pg_in_slew = torch.full((num_nodes,), -1.0, dtype=torch.float)
+        pgt = row.get('per_gate_timing_json')
+        if isinstance(pgt, str):
+            try:
+                pgt = json.loads(pgt)
+            except Exception:
+                pgt = None
+        if isinstance(pgt, dict):
+            pgt_lc = {str(k).lower(): v for k, v in pgt.items()}
+            for i, n in enumerate(node_names):
+                v = pgt_lc.get(str(n).lower())
+                if isinstance(v, dict):
+                    d, o, s = v.get('delay_ps'), v.get('out_slew_ps'), v.get('in_slew_ps')
+                    if d is not None: pg_delay[i] = float(d)
+                    if o is not None: pg_out_slew[i] = float(o)
+                    if s is not None: pg_in_slew[i] = float(s)
+        data.per_gate_delay = pg_delay
+        data.per_gate_out_slew = pg_out_slew
+        data.per_gate_in_slew = pg_in_slew
         return data
     def extract_features(self, idx):
         """
