@@ -51,6 +51,8 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
 def _pairwise_rank_loss(pred_log, target_log, grp):
     """成对排序损失：pred_log/target_log=(B,),grp=(B,)int组ID。
     同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。"""
+    if not torch.isfinite(pred_log).all() or not torch.isfinite(target_log).all():
+        return torch.zeros((), device=pred_log.device)
     loss = torch.tensor(0.0, device=pred_log.device)
     n = 0
     for g in grp.unique():
@@ -60,13 +62,12 @@ def _pairwise_rank_loss(pred_log, target_log, grp):
         p = pred_log[m]; t = target_log[m]
         dp = p.unsqueeze(0) - p.unsqueeze(1)              # (k,k): dp[i,j]=p_i-p_j
         dt = t.unsqueeze(0) - t.unsqueeze(1)              # dt[i,j]=t_i-t_j
-        # t_i < t_j 时要求 p_i < p_j（即 p_i-p_j < 0, 即 -(p_i-p_j) > 0）
-        # dp = p_i-p_j; 若 t_i<t_j 要求 p_i-p_j <= -margin
-        margin = RANK_MARGIN
-        viol = torch.relu(dp + margin)                    # p_i-p_j + margin >0 → 惩罚
+        viol = torch.relu(dp + RANK_MARGIN)               # p_i-p_j + margin >0 → 惩罚
         mask = dt < 0
-        loss = loss + viol[mask].mean()
-        n += 1
+        v = viol[mask]
+        if v.numel() > 0:
+            loss = loss + v.mean()
+            n += 1
     return loss / max(n, 1)
 
 
