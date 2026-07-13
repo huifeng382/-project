@@ -56,6 +56,12 @@ if [ "$V" = "es" ]; then               # 早停放宽（练更久，防欠训）
   sed -i 's/^PATIENCE = .*/PATIENCE = 100/' config.py
   sed -i 's/^PLATEAU_MIN_EPOCHS = .*/PLATEAU_MIN_EPOCHS = 200/' config.py
 fi
+if [ "$V" = "rankloss1" ]; then         # 成对排序损失 w=0.5
+  sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/' config.py
+fi
+if [ "$V" = "rankloss2" ]; then         # 成对排序损失 w=2.0
+  sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 2.0/' config.py
+fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 

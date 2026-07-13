@@ -48,6 +48,28 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
     print(f"清洗前样本数: {len(dataset)}, 清洗后: {len(keep_indices)}, 剔除比例: {100 - len(keep_indices)/len(dataset)*100:.1f}%")
     return torch.utils.data.Subset(dataset, keep_indices)
 
+def _pairwise_rank_loss(pred_log, target_log, grp):
+    """成对排序损失：pred_log/target_log=(B,),grp=(B,)int组ID。
+    同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。"""
+    loss = torch.tensor(0.0, device=pred_log.device)
+    n = 0
+    for g in grp.unique():
+        m = (grp == g)
+        if m.sum() < 2:
+            continue
+        p = pred_log[m]; t = target_log[m]
+        dp = p.unsqueeze(0) - p.unsqueeze(1)              # (k,k): dp[i,j]=p_i-p_j
+        dt = t.unsqueeze(0) - t.unsqueeze(1)              # dt[i,j]=t_i-t_j
+        # t_i < t_j 时要求 p_i < p_j（即 p_i-p_j < 0, 即 -(p_i-p_j) > 0）
+        # dp = p_i-p_j; 若 t_i<t_j 要求 p_i-p_j <= -margin
+        margin = RANK_MARGIN
+        viol = torch.relu(dp + margin)                    # p_i-p_j + margin >0 → 惩罚
+        mask = dt < 0
+        loss = loss + viol[mask].mean()
+        n += 1
+    return loss / max(n, 1)
+
+
 def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False):
     model.train()
     total_loss = 0
@@ -66,6 +88,9 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
                                   delta * (abs_res - 0.5 * delta))
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
+        # 组内成对排序损失：同组变体真实 t_i<t_j 时，推动 pred_i<pred_j（间隔 margin）
+        if RANK_LOSS_W > 0 and hasattr(data, 'grp'):
+            loss = loss + RANK_LOSS_W * _pairwise_rank_loss(out, target_log, data.grp)
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
@@ -427,7 +452,11 @@ def main():
             return iter(result[:self.n_samples])
         def __len__(self):
             return self.n_samples
-    sampler = CircuitGroupSampler(train_dataset)
+    if RANK_LOSS_W > 0:
+        from src.utils import GroupedBatchSampler
+        sampler = GroupedBatchSampler(train_dataset.group_ids, BATCH_SIZE, shuffle=True)
+    else:
+        sampler = CircuitGroupSampler(train_dataset)
     train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=2)
@@ -494,7 +523,13 @@ def main():
             print("========== 清洗完成 ==========\n")
 
         train_subset = torch.utils.data.Subset(train_dataset, keep_indices)
-        train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
+        if RANK_LOSS_W > 0:
+            from src.utils import GroupedBatchSampler
+            sub_gids = [train_dataset.group_ids[i] for i in keep_indices]
+            sampler = GroupedBatchSampler(sub_gids, BATCH_SIZE, shuffle=True)
+            train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
+        else:
+            train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
     else:
         print("\n跳过离群点清洗（未启用或样本量过少）\n")
 

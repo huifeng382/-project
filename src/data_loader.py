@@ -112,6 +112,14 @@ class DelayDataset(Dataset):
         if 'vector' in self.dynamic_df.columns:
             self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
 
+        # 组ID：同 (expr,corner,switching_pin,direction,vector) = 同功能同激励下的不同变体（成对排序用）
+        def _col(name):
+            return self.dynamic_df[name].astype(str) if name in self.dynamic_df.columns \
+                else pd.Series([''] * len(self.dynamic_df))
+        _gk = (_col('expr') + '|' + _col('corner') + '|' + _col('switching_pin')
+               + '|' + _col('direction') + '|' + _col('vector'))
+        self.group_ids = pd.factorize(_gk)[0].tolist()
+
         # 从静态数据中动态推断输入引脚（替代硬编码）
         if 'input_pins_json' in self.static_df.columns:
             all_pins = set()
@@ -372,6 +380,8 @@ class DelayDataset(Dataset):
         data.per_gate_delay = pg_delay
         data.per_gate_out_slew = pg_out_slew
         data.per_gate_in_slew = pg_in_slew
+        # 组ID（成对排序损失用）：同组=同功能同激励的不同变体
+        data.grp = torch.tensor([self.group_ids[idx]], dtype=torch.long)
         return data
     def extract_features(self, idx):
         """

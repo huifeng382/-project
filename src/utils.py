@@ -127,9 +127,45 @@ def ranking_metrics(test_dyn, preds, targets):
     }
 
 
+class GroupedBatchSampler:
+    """把同组样本打包进同一 batch（保证 batch 内有变体对，供成对排序损失）。
+    group_ids: 长度=数据集(或子集)大小，group_ids[i]=第 i 个样本的组ID。
+    每次 __iter__ 用全局 random(已被 set_seed 播种) 重新洗牌 → 每 epoch 不同且可复现。"""
+    def __init__(self, group_ids, batch_size, shuffle=True):
+        from collections import defaultdict
+        self.batch_size = int(batch_size)
+        self.shuffle = shuffle
+        groups = defaultdict(list)
+        for i, g in enumerate(group_ids):
+            groups[int(g)].append(i)
+        self.groups = list(groups.values())
+        self._n = len(group_ids)
+
+    def __iter__(self):
+        order = list(range(len(self.groups)))
+        if self.shuffle:
+            random.shuffle(order)
+        batch = []
+        for gi in order:
+            members = self.groups[gi]
+            if len(members) > self.batch_size:
+                if batch:
+                    yield batch; batch = []
+                yield members
+                continue
+            if batch and len(batch) + len(members) > self.batch_size:
+                yield batch; batch = []
+            batch.extend(members)
+        if batch:
+            yield batch
+
+    def __len__(self):
+        import math
+        return max(1, math.ceil(self._n / self.batch_size))
+
+
 def save_scaler(scaler, path):
     joblib.dump(scaler, path)
-
 def load_scaler(path):
     return joblib.load(path)
 
