@@ -68,7 +68,8 @@ def _spearman(pred, true):
 def ranking_metrics(test_dyn, preds, targets):
     """等价变体择优任务的排序评估。
     按 (expr, corner) 分组，每个变体取「最坏情况延迟」= max over (pin/dir/vector)。
-    组内(≥2 变体)算：Spearman 秩相关、选择遗憾、top-1 命中。返回聚合结果 dict。"""
+    组内(≥2 变体)算：Spearman、选择遗憾、top-1、捕获率、变体延迟差；
+    并做「成对分辨准确率(按真实相对差分档)」——贪心细粒度重写成败的关键。"""
     import pandas as pd
     df = test_dyn.copy().reset_index(drop=True)
     df['_pred'] = np.asarray(preds)
@@ -77,10 +78,12 @@ def ranking_metrics(test_dyn, preds, targets):
         else df['circuit_id'].astype(str).map(_expr_of)
     if 'corner' not in df.columns:
         df['corner'] = 'x'
-    # 每 (expr, corner, 变体) 的最坏情况延迟
     wc = df.groupby(['_expr', 'corner', 'circuit_id']).agg(
         pred=('_pred', 'max'), true=('_true', 'max')).reset_index()
-    sps, regrets, top1s = [], [], []
+    sps, regrets, top1s, spreads, captured = [], [], [], [], []
+    bins = [(0.0, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, np.inf)]
+    labels = ['<2%', '2-5%', '5-10%', '>10%']
+    pair_ok = [0] * len(bins); pair_n = [0] * len(bins)
     for (_e, _c), grp in wc.groupby(['_expr', 'corner']):
         if len(grp) < 2:
             continue
@@ -89,14 +92,38 @@ def ranking_metrics(test_dyn, preds, targets):
         if not np.isnan(sp):
             sps.append(sp)
         pick = int(np.argmin(pr))           # 模型选的最快变体
-        best = int(np.argmin(tr))           # 真正最快变体
+        best = int(np.argmin(tr))           # 真正最快
+        worst = int(np.argmax(tr))          # 真正最慢
         top1s.append(1.0 if pick == best else 0.0)
         regrets.append((tr[pick] - tr[best]) / max(tr[best], 1e-15) * 100)
+        rng = tr[worst] - tr[best]
+        if rng > 1e-18:
+            spreads.append(rng / max(tr[best], 1e-15) * 100)      # 变体延迟差(相对最优)
+            captured.append((tr[worst] - tr[pick]) / rng * 100)   # 捕获率: 抓住最差→最优差距的%
+        # 成对分辨（按真实相对差分档）
+        m = len(tr)
+        for i in range(m):
+            for j in range(i + 1, m):
+                if abs(tr[i] - tr[j]) < 1e-18:
+                    continue
+                d = abs(tr[i] - tr[j]) / min(tr[i], tr[j])
+                correct = (pr[i] < pr[j]) == (tr[i] < tr[j])
+                for bi, (lo, hi) in enumerate(bins):
+                    if lo <= d < hi:
+                        pair_n[bi] += 1
+                        if correct:
+                            pair_ok[bi] += 1
+                        break
+    pair_acc = {labels[bi]: (pair_ok[bi] / pair_n[bi] * 100 if pair_n[bi] else float('nan'),
+                             pair_n[bi]) for bi in range(len(bins))}
     return {
         'n_groups': len(top1s),
         'spearman': float(np.mean(sps)) if sps else float('nan'),
         'regret_pct': float(np.mean(regrets)) if regrets else float('nan'),
         'top1_acc': float(np.mean(top1s)) if top1s else float('nan'),
+        'spread_pct': float(np.median(spreads)) if spreads else float('nan'),
+        'captured_pct': float(np.mean(captured)) if captured else float('nan'),
+        'pair_acc': pair_acc,
     }
 
 

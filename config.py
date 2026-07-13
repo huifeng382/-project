@@ -27,8 +27,9 @@ RANDOM_SEED = 42
 SPLIT_SEED = 42            # 只控制 train/val/test 切分（固定→测试集不变，可集成）
 TRAIN_SEED = 42            # 只控制模型初始化+训练shuffle（变它→不同模型，同切分）
 
-# best_model 选点指标：val_rel_err(默认,原行为) / val_loss(稳定) / smoothed_rel_err(滑动平均去噪)
-BEST_MODEL_METRIC = 'val_rel_err'
+# best_model 选点指标：val_rel_err / val_loss / smoothed_rel_err(滑动平均去噪)
+# 12.x 实测 smoothed_rel_err(bmsm) 排序全指标最好、无短板 → 设为默认
+BEST_MODEL_METRIC = 'smoothed_rel_err'
 BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 
 HUBER_DELTA = 0.3   # 可调整，建议从 0.2 开始尝试

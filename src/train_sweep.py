@@ -665,33 +665,31 @@ def main():
     except:
         ver = 'unknown'
     print(f"  Version: {ver}")
-    print(f"  Config: HIDDEN_DIM={HIDDEN_DIM} NUM_LAYERS={NUM_LAYERS} "
-          f"DROPOUT={DROPOUT} WEIGHT_DECAY={WEIGHT_DECAY}")
-    print(f"  Model params: {sum(p.numel() for p in model.parameters()):,}")
-    print(f"  Device: {device}")
-    print(f"  Best Val Rel Err: {best_val_rel:.2f}%")
-    print(f"  Test Rel Err: {test_rel_err:.2f}%")
-    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%  (稳健,不被小延迟放大)")
-    # 排序评估（等价变体择优任务的核心指标：组内按最坏情况延迟排序）
+    if epoch + 1 >= EPOCHS:
+        stop_reason = 'max_epochs(跑满)'
+    elif plateau_triggered:
+        stop_reason = 'plateau(train降但val_loss平→过拟合)'
+    else:
+        stop_reason = 'early_stop(val_loss连续无改善)'
+    print(f"  Config: LR={LEARNING_RATE} LR_MIN={LR_MIN} LR_FACTOR={LR_FACTOR} HUBER={HUBER_DELTA} "
+          f"BATCH={BATCH_SIZE} BEST_METRIC={BEST_MODEL_METRIC} SPLIT_SEED={SPLIT_SEED} TRAIN_SEED={TRAIN_SEED}")
+    print(f"  停止: {stop_reason} @ epoch {epoch + 1}  (Best Val Rel Err {best_val_rel:.2f}%)")
+    # ---- 点精度 ----
+    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%   "
+          f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f} ps   "
+          f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
+    # ---- 排序（真实任务：等价变体择优，组内按最坏情况延迟排序）----
     try:
         if len(test_dyn) == len(preds):
             rk = ranking_metrics(test_dyn, preds, targets)
-            print(f"  [排序] 变体组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}  "
-                  f"选择遗憾={rk['regret_pct']:.2f}%  top1命中={rk['top1_acc']*100:.1f}%")
+            print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}  "
+                  f"选择遗憾={rk['regret_pct']:.2f}%  top1={rk['top1_acc']*100:.1f}%  "
+                  f"捕获率={rk['captured_pct']:.1f}%  变体差中位={rk['spread_pct']:.1f}%")
+            pa = rk['pair_acc']
+            print("  [成对分辨(按真实延迟差)] " + "  ".join(
+                f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
     except Exception as _e:
         print(f"  [排序] 计算失败: {_e}")
-    if 'corner' in test_dyn.columns:
-        corners = test_dyn['corner'].values
-        corner_errs = {}
-        for c in sorted(set(corners)):
-            mask = corners == c
-            if mask.sum() > 0:
-                corner_errs[c] = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
-        best_c = min(corner_errs, key=corner_errs.get)
-        worst_c = max(corner_errs, key=corner_errs.get)
-        print(f"  Best corner: {best_c} = {corner_errs[best_c]:.1f}%")
-        print(f"  Worst corner: {worst_c} = {corner_errs[worst_c]:.1f}%")
-        print(f"  Corner spread: {corner_errs[worst_c] - corner_errs[best_c]:.1f}%")
     # 批次误差（安全的，处理 expr 不存在的情况）
     if 'expr' in test_dyn.columns:
         for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
