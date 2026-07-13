@@ -612,12 +612,13 @@ def main():
         if BEST_RANK_METRIC != 'none' and (epoch + 1) % RANK_EVAL_INTERVAL == 0:
             model.eval()
             rp, rt = [], []
-            for data in val_loader:
-                data = data.to(device)
-                corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
-                csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-                out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
-                rp.append(out.cpu().numpy()); rt.append(data.y.cpu().numpy())
+            with torch.no_grad():
+                for data in val_loader:
+                    data = data.to(device)
+                    corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
+                    csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
+                    out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+                    rp.append(out.cpu().numpy()); rt.append(data.y.cpu().numpy())
             model.train()
             try:
                 rk = ranking_metrics(val_dataset.dynamic_df.reset_index(drop=True),
