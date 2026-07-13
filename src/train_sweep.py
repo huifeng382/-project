@@ -455,9 +455,10 @@ def main():
     if RANK_LOSS_W > 0:
         from src.utils import GroupedBatchSampler
         sampler = GroupedBatchSampler(train_dataset.group_ids, BATCH_SIZE, shuffle=True)
+        train_loader = DataLoader(train_dataset, batch_sampler=sampler, num_workers=2)
     else:
         sampler = CircuitGroupSampler(train_dataset)
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
+        train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, num_workers=2)
     test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, num_workers=2)
 
@@ -527,7 +528,7 @@ def main():
             from src.utils import GroupedBatchSampler
             sub_gids = [train_dataset.group_ids[i] for i in keep_indices]
             sampler = GroupedBatchSampler(sub_gids, BATCH_SIZE, shuffle=True)
-            train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, sampler=sampler, num_workers=2)
+            train_loader = DataLoader(train_subset, batch_sampler=sampler, num_workers=2)
         else:
             train_loader = DataLoader(train_subset, batch_size=BATCH_SIZE, shuffle=True, num_workers=2)
     else:
