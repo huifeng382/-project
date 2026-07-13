@@ -751,19 +751,19 @@ def main():
           f"BATCH={BATCH_SIZE} BEST_METRIC={BEST_MODEL_METRIC} SPLIT_SEED={SPLIT_SEED} TRAIN_SEED={TRAIN_SEED} "
           f"LIB_AUX_W={LIB_AUX_W}")
     print(f"  停止: {stop_reason} @ epoch {epoch + 1}  (Best Val Rel Err {best_val_rel:.2f}%)")
-    # ---- 点精度 ----
-    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%   "
-          f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f} ps   "
+    # ---- 点精度（目标: 越小越好, 理想0）----
+    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
+          f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "
           f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
-    # ---- 排序（真实任务：等价变体择优，组内按最坏情况延迟排序）----
+    # ---- 排序（真实任务：等价变体择优。目标: Spearman→1, 遗憾→0%, top1/捕获/成对分辨→100%）----
     try:
         if len(test_dyn) == len(preds):
             rk = ranking_metrics(test_dyn, preds, targets)
-            print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}  "
-                  f"选择遗憾={rk['regret_pct']:.2f}%  top1={rk['top1_acc']*100:.1f}%  "
-                  f"捕获率={rk['captured_pct']:.1f}%  变体差中位={rk['spread_pct']:.1f}%")
+            print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
+                  f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
+                  f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
             pa = rk['pair_acc']
-            print("  [成对分辨(按真实延迟差)] " + "  ".join(
+            print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
                 f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
     except Exception as _e:
         print(f"  [排序] 计算失败: {_e}")

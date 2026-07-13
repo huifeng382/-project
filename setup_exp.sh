@@ -52,6 +52,10 @@ fi
 if [ "$V" = "bmsm" ]; then             # best_model 按平滑 rel_err 选点
   sed -i "s/^BEST_MODEL_METRIC = .*/BEST_MODEL_METRIC = 'smoothed_rel_err'/" config.py
 fi
+if [ "$V" = "es" ]; then               # 早停放宽（练更久，防欠训）
+  sed -i 's/^PATIENCE = .*/PATIENCE = 100/' config.py
+  sed -i 's/^PLATEAU_MIN_EPOCHS = .*/PLATEAU_MIN_EPOCHS = 200/' config.py
+fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
