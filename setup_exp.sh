@@ -62,6 +62,9 @@ fi
 if [ "$V" = "rankloss2" ]; then         # 成对排序损失 w=2.0
   sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 2.0/' config.py
 fi
+if [ "$V" = "bestrank" ]; then          # checkpoint 按 val 选择遗憾选
+  sed -i "s/^BEST_RANK_METRIC = .*/BEST_RANK_METRIC = 'regret'/" config.py
+fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 

@@ -563,6 +563,11 @@ def main():
     plateau_triggered = False
     last_lr = LEARNING_RATE
     lr_decayed = False
+    # 排序选点初始化
+    if BEST_RANK_METRIC != 'none':
+        best_rank_val = float('inf') if BEST_RANK_METRIC == 'regret' else float('-inf')
+        rank_model_path = os.path.join(OUTPUT_DIR, 'best_rank_model.pt')
+
     print("\nStart training...")
     t_train_start = time.time()
     for epoch in range(EPOCHS):
@@ -601,6 +606,29 @@ def main():
             best_sel = sel
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
+
+        # 排序选点：每隔 N epoch 在 val 上评估排序，按 BEST_RANK_METRIC 保存最优 checkpoint
+        if BEST_RANK_METRIC != 'none' and (epoch + 1) % RANK_EVAL_INTERVAL == 0:
+            model.eval()
+            rp, rt = [], []
+            for data in val_loader:
+                data = data.to(device)
+                corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
+                csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
+                out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+                rp.append(out.cpu().numpy()); rt.append(data.y.cpu().numpy())
+            model.train()
+            try:
+                rk = ranking_metrics(val_dataset.dynamic_df.reset_index(drop=True),
+                                     np.concatenate(rp), np.concatenate(rt))
+                vr = rk['regret_pct'] if BEST_RANK_METRIC == 'regret' else rk['spearman']
+                better = (vr < best_rank_val) if BEST_RANK_METRIC == 'regret' else (vr > best_rank_val)
+                if not np.isnan(vr) and better:
+                    best_rank_val = vr
+                    torch.save(model.state_dict(), rank_model_path)
+                    print(f"  >>> Rank checkpoint saved @ ep{epoch+1} ({BEST_RANK_METRIC}={vr:.4f})")
+            except Exception:
+                pass
 
         # 早停判据：改用稳定的 val_loss。val_rel_err 被极端 corner 主导、逐 epoch 剧烈震荡，
         # 会在 val_loss 仍在下降时误判过拟合、提前砍断训练（10.3.3 即在 val_loss 0.0227→0.0200
@@ -648,7 +676,12 @@ def main():
                 print(f"Early stopping (val_loss 连续 {PATIENCE} epoch 无改善)")
                 break
 
-    model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, 'best_model.pt')))
+    # 排序选点优先；fallback 回原 best_model
+    rp = os.path.join(OUTPUT_DIR, 'best_rank_model.pt')
+    if BEST_RANK_METRIC != 'none' and os.path.exists(rp):
+        model.load_state_dict(torch.load(rp))
+    else:
+        model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, 'best_model.pt')))
     val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
     print(f"Best model on Val: Loss = {val_loss:.4f} | Rel Err = {val_rel_err:.2f}%")
     test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
