@@ -6,6 +6,7 @@ import os
 from torch_geometric.data import Data, Dataset
 from src.graph_builder import build_static_graph, GATE_TYPES
 from src.utils import load_scaler
+import config
 
 class DelayDataset(Dataset):
     def __init__(self, static_parquets, dynamic_parquets, circuit_ids=None, scaler=None, cache_dir="cache"):
@@ -349,6 +350,63 @@ class DelayDataset(Dataset):
                 x[i, -1] = float(gate_states_lc[key])
             elif n == 'out':
                 x[i, -1] = 1.0
+
+        # ---- 新物理特征（delivery1 提供，config 开关控制，均作为额外节点特征）----
+        extra_feats = []
+        # Parasitic caps: 每门总寄生电容(fF) -> 1 特征
+        if config.USE_PARASITIC_CAPS:
+            pc_feat = torch.zeros(num_nodes, 1)
+            try:
+                pc_json = self.static_df.loc[cid, 'parasitic_caps_json']
+                pc = json.loads(pc_json) if isinstance(pc_json, str) else pc_json
+                pc = {str(k).lower(): v for k, v in pc.items()} if isinstance(pc, dict) else {}
+                for i, n in enumerate(node_names):
+                    v = pc.get(str(n).lower())
+                    if isinstance(v, dict):
+                        pc_feat[i, 0] = sum(float(x) for x in v.values() if x is not None)
+            except Exception:
+                pass
+            extra_feats.append(pc_feat)
+        # Transistor wave: ids_avg/ids_peak/vds_swing 按 gate 聚合均值 -> 3 特征
+        if config.USE_TRANSISTOR_WAVE:
+            tw_feat = torch.zeros(num_nodes, 3)
+            try:
+                tw = row.get('transistor_wave_json')
+                tw = json.loads(tw) if isinstance(tw, str) else tw
+                gate_agg = {}
+                if isinstance(tw, dict):
+                    for _, td in tw.items():
+                        if not isinstance(td, dict): continue
+                        g = str(td.get('gate', '')).lower()
+                        if not g: continue
+                        if g not in gate_agg:
+                            gate_agg[g] = {'ids_avg':[], 'ids_peak':[], 'vds_swing':[]}
+                        for f in ['ids_avg','ids_peak','vds_swing']:
+                            v = td.get(f)
+                            if v is not None: gate_agg[g][f].append(float(v))
+                for i, n in enumerate(node_names):
+                    gkey = str(n).lower()
+                    if gkey in gate_agg:
+                        for fi, f in enumerate(['ids_avg','ids_peak','vds_swing']):
+                            vals = gate_agg[gkey][f]
+                            tw_feat[i, fi] = sum(vals)/len(vals) if vals else 0.0
+            except Exception:
+                pass
+            extra_feats.append(tw_feat)
+        # Supply noise: vdd_droop_mV / gnd_bounce_mV 广播到所有节点 -> 2 特征
+        if config.USE_SUPPLY_NOISE:
+            sn_feat = torch.zeros(num_nodes, 2)
+            try:
+                sn = row.get('supply_noise_json')
+                sn = json.loads(sn) if isinstance(sn, str) else sn
+                if isinstance(sn, dict):
+                    sn_feat[:, 0] = float(sn.get('vdd_droop_mV', 0))
+                    sn_feat[:, 1] = float(sn.get('gnd_bounce_mV', 0))
+            except Exception:
+                pass
+            extra_feats.append(sn_feat)
+        if extra_feats:
+            x = torch.cat([x] + extra_feats, dim=1)
 
         y = torch.tensor([row['DELAY']], dtype=torch.float)
         data = Data(x=x, edge_index=edge_index, y=y)

@@ -263,15 +263,17 @@ def main():
     # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     static_parquets = [
-        os.path.join(data_dir, "data/batch1/circuit_static.parquet"),
-        os.path.join(data_dir, "data/batch2/circuit_static.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch1/circuit_static.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch2/circuit_static.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch3/circuit_static.parquet"),
     ]
     dynamic_parquets = [
-        os.path.join(data_dir, "data/batch1/timing_arcs.parquet"),
-        os.path.join(data_dir, "data/batch2/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch1/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch2/timing_arcs.parquet"),
+        os.path.join(data_dir, "data/delivery1/batch3/timing_arcs.parquet"),
     ]
     # 可选追加数据（存在则加载，不存在则跳过）
-    for batch in ['batch1b', 'batch3', 'batch_wave']:
+    for batch in []:
         sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
         dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
         if os.path.exists(sp) and os.path.exists(dp):

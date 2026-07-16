@@ -74,6 +74,11 @@ QUICK_MIN_DELTA = 1.0      # best err 在窗口内至少下降这么多百分点
 # 数据筛选：只保留标准4引脚（a,b,c,d）电路，去除图结构不一致的电路
 FOUR_PIN_ONLY = True       # True=只保留4引脚电路（去掉~12%），False=保留全部
 
+# 新物理特征开关（delivery1 数据已提供，独立控制，默认全关=纯基线）
+USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
+USE_TRANSISTOR_WAVE = False    # 晶体管波形 -> 3 个节点特征(ids_avg/ids_peak/vds_swing 按门聚合均值)
+USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
+
 # LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
 LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
 LIB_TOTAL_W = 0.1         # 总延迟（展开求和 vs 实测 DELAY）项

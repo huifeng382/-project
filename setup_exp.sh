@@ -65,6 +65,16 @@ fi
 if [ "$V" = "bestrank" ]; then          # checkpoint 按 val 选择遗憾选
   sed -i "s/^BEST_RANK_METRIC = .*/BEST_RANK_METRIC = 'regret'/" config.py
 fi
+# delivery1 新物理特征消融实验（独立控制，默认全关=纯基线）
+if [ "$V" = "newcaps" ]; then           # +parasitic_caps 每门寄生电容
+  sed -i 's/^USE_PARASITIC_CAPS = .*/USE_PARASITIC_CAPS = True/' config.py
+fi
+if [ "$V" = "newwave" ]; then           # +transistor_wave 晶体管波形
+  sed -i 's/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = True/' config.py
+fi
+if [ "$V" = "newnoise" ]; then          # +supply_noise 电源噪声
+  sed -i 's/^USE_SUPPLY_NOISE = .*/USE_SUPPLY_NOISE = True/' config.py
+fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
