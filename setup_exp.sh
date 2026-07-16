@@ -29,7 +29,7 @@ if [ "$V" = "pgd" ] || [ "$V" = "pgs" ] || [ "$V" = "pgs2" ]; then
   git cherry-pick --no-commit ed49d20
 fi
 
-# noWave（去掉加载列表里的 batch_wave）—— 必须在 cherry-pick 之后
+# noWave（去掉加载列表里的 batch_wave）。旧数据在 archive_v13.1/，delivery1 在 data/delivery1/
 sed -i "s/, 'batch_wave'//" src/train_sweep.py
 
 # out_slew 变体：把监督目标从 delay 换成 out_slew（100% 密）
