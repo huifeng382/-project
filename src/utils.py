@@ -116,6 +116,17 @@ def ranking_metrics(test_dyn, preds, targets):
                         break
     pair_acc = {labels[bi]: (pair_ok[bi] / pair_n[bi] * 100 if pair_n[bi] else float('nan'),
                              pair_n[bi]) for bi in range(len(bins))}
+    # spread 分档（>10% 高差异组 vs 其余）：模型在这两组上的排序能力是否不同
+    hi_sps, hi_reg, hi_t1, hi_cap = [], [], [], []
+    lo_sps, lo_reg, lo_t1, lo_cap = [], [], [], []
+    for i in range(len(spreads)):
+        s = spreads[i]
+        (hi_sps if s > 10 else lo_sps).append(sps[i] if i < len(sps) else float('nan'))
+        (hi_reg if s > 10 else lo_reg).append(regrets[i] if i < len(regrets) else float('nan'))
+        (hi_t1 if s > 10 else lo_t1).append(top1s[i] if i < len(top1s) else float('nan'))
+        (hi_cap if s > 10 else lo_cap).append(captured[i] if i < len(captured) else float('nan'))
+    def _m(lst, nan_val=float('nan')):
+        return float(np.mean([x for x in lst if not np.isnan(x)])) if lst else nan_val
     return {
         'n_groups': len(top1s),
         'spearman': float(np.mean(sps)) if sps else float('nan'),
@@ -124,6 +135,8 @@ def ranking_metrics(test_dyn, preds, targets):
         'spread_pct': float(np.median(spreads)) if spreads else float('nan'),
         'captured_pct': float(np.mean(captured)) if captured else float('nan'),
         'pair_acc': pair_acc,
+        'hi_spread': {'n': len(hi_sps), 'spearman': _m(hi_sps), 'regret_pct': _m(hi_reg),
+                      'top1_acc': _m(hi_t1), 'captured_pct': _m(hi_cap)},
     }
 
 

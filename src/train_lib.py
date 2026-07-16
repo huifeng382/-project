@@ -764,6 +764,11 @@ def main():
                   f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
                   f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
             pa = rk['pair_acc']
+            hi = rk.get('hi_spread', {})
+            if hi.get('n', 0) > 0:
+                print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
+                      f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
+                      f"捕获率={hi['captured_pct']:.1f}%(→100)")
             print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
                 f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
     except Exception as _e:
