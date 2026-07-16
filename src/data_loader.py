@@ -414,6 +414,19 @@ class DelayDataset(Dataset):
         data.corner_cond = torch.tensor(corner_cond, dtype=torch.float).unsqueeze(0)
         data.circuit_sig = torch.tensor(self._circuit_sig.get(cid, [0,0,0]),
                                          dtype=torch.float).unsqueeze(0)
+        # 结构先验（transistor_count + 门类型计数）
+        if config.USE_STRUCT_PRIOR:
+            try:
+                ct_json = self.static_df.loc[cid, 'cell_types_json']
+                ct = json.loads(ct_json) if isinstance(ct_json, str) else ct_json
+                ct = ct if isinstance(ct, list) else []
+                data.struct_prior = torch.tensor([
+                    float(self.static_df.loc[cid, 'transistor_count']),
+                    float(sum(1 for g in ct if 'SC_AND' in str(g) and 'SC_AND_' not in str(g))),
+                    float(sum(1 for g in ct if 'SC_INV_WIRE' in str(g))),
+                ], dtype=torch.float).unsqueeze(0)
+            except Exception:
+                data.struct_prior = torch.zeros(1, 3)
 
         # 逐门监督标签（per_gate_timing_json，按节点名对齐，与 gate_states 同一套 node_names 顺序）
         # 缺失字段填 -1（哨兵值，loss 侧用 >0 过滤）。单位为 ps。

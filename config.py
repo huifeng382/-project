@@ -79,6 +79,9 @@ USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
 USE_TRANSISTOR_WAVE = False    # 晶体管波形 -> 3 个节点特征(ids_avg/ids_peak/vds_swing 按门聚合均值)
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
+# 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
+USE_STRUCT_PRIOR = False       # 分析发现的全局结构信号，以残差形式注入 pooling 后
+
 # LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
 LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
 LIB_TOTAL_W = 0.1         # 总延迟（展开求和 vs 实测 DELAY）项

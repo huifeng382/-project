@@ -35,7 +35,7 @@ def get_train_residuals(model, dataset, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            pred_log, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+            pred_log, _ = model(data.x, data.edge_index, data.batch, corner, csig, getattr(data, 'struct_prior', None))
             target_log = torch.log10(data.y + 1e-12)
             res = torch.abs(pred_log - target_log).cpu().numpy()
             residuals.extend(res)
@@ -80,7 +80,7 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
         optimizer.zero_grad()
         corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
         csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-        out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+        out, _ = model(data.x, data.edge_index, data.batch, corner, csig, getattr(data, 'struct_prior', None))
         target_log = torch.log10(data.y + 1e-12)
         residual = out - target_log
         abs_res = torch.abs(residual)
@@ -110,7 +110,7 @@ def evaluate(model, loader, device):
             data = data.to(device)
             corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
             csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-            out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+            out, _ = model(data.x, data.edge_index, data.batch, corner, csig, getattr(data, 'struct_prior', None))
             loss = log_mse_loss(out, data.y)
             total_loss += loss.item()
             preds_log.append(out.cpu().numpy())
@@ -618,7 +618,7 @@ def main():
                     data = data.to(device)
                     corner = data.corner_cond.to(device) if hasattr(data, 'corner_cond') else None
                     csig = data.circuit_sig.to(device) if hasattr(data, 'circuit_sig') else None
-                    out, _ = model(data.x, data.edge_index, data.batch, corner, csig)
+                    out, _ = model(data.x, data.edge_index, data.batch, corner, csig, getattr(data, 'struct_prior', None))
                     rp.append(out.cpu().numpy()); rt.append(data.y.cpu().numpy())
             model.train()
             try:

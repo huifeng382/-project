@@ -45,9 +45,15 @@ class DelayGNN(nn.Module):
         self.lin = nn.Linear(hidden_dim * 3, 1)
         # per-node 头（LIB 模式用）：从节点特征预测 (slew, load, spare)，softplus 保正
         self.node_pred = nn.Linear(hidden_dim, 3)
+        # 结构先验编码器（transistor_count + SC_AND/SC_INV_WIRE 计数 → hidden_dim 残差）
+        self.struct_encoder = nn.Sequential(
+            nn.Linear(3, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, hidden_dim),
+        )
         self.dropout = dropout
 
-    def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None):
+    def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None, struct_prior=None):
         gate_idx = x[:, 0].long()
         struct_dyn = x[:, 1:]
         gate_emb = self.gate_embed(gate_idx)
@@ -83,6 +89,10 @@ class DelayGNN(nn.Module):
             sig_emb = self.sig_encoder(circuit_sig)
         else:
             sig_emb = torch.zeros(x_pooled.shape[0], x_pooled.shape[1], device=x_pooled.device)
+
+        # 结构先验残差（transistor_count + 门类型计数 → 加 bias）
+        if struct_prior is not None:
+            x_pooled = x_pooled + self.struct_encoder(struct_prior)
 
         x_pooled = torch.cat([x_pooled, corner_emb, sig_emb], dim=-1)
         x = self.lin(x_pooled)
