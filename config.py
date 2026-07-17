@@ -80,7 +80,7 @@ USE_TRANSISTOR_WAVE = False    # 晶体管波形 -> 3 个节点特征(ids_avg/id
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
 # 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
-USE_STRUCT_PRIOR = False       # 分析发现的全局结构信号，以残差形式注入 pooling 后
+USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差形式注入 pooling 后（13.4 采纳为默认）
 
 # LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
 LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
