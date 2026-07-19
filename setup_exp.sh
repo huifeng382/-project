@@ -19,7 +19,8 @@ if [ "$V" = "lib" ]; then
   sed -i "s/, 'batch_wave'//" src/train_lib.py
   sed -i 's/^QUICK_TEST = .*/QUICK_TEST = True/' config.py
   sed -i 's/CACHE_DIR = .*/CACHE_DIR = "cache107lib"/' config.py
-  OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107lib.log" 2>&1 &
+  ulimit -n 8192
+OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107lib.log" 2>&1 &
   echo "launched 107-lib QUICK_TEST  pid=$!  dir=$D"
   exit 0
 fi
@@ -84,5 +85,6 @@ fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
+ulimit -n 8192
 OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
 echo "launched 107-$V  pid=$!  dir=$D"
