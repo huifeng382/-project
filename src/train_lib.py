@@ -263,6 +263,7 @@ def main():
     # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     # delivery1 + delivery2 合并（~54 万行，1,437 电路）
+    import glob
     static_parquets = []
     dynamic_parquets = []
     for prefix in ['data/delivery1', 'data/delivery2']:
@@ -271,6 +272,11 @@ def main():
             dp = os.path.join(data_dir, f"{prefix}/{b}/timing_arcs.parquet")
             if os.path.exists(sp) and os.path.exists(dp):
                 static_parquets.append(sp); dynamic_parquets.append(dp)
+                continue
+            sparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/circuit_static_part*.parquet")))
+            dparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/timing_arcs_part*.parquet")))
+            if sparts and dparts:
+                static_parquets.extend(sparts); dynamic_parquets.extend(dparts)
     for batch in []:
         sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
         dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
