@@ -262,17 +262,16 @@ def main():
     # batch1: 手选电路全sweep (150电路, 30 corners) → ~58K
     # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # 旧数据（archive_v13.1，v13.1 及之前版本使用。delivery1 新数据在 data/delivery1/）
-    static_parquets = [
-        os.path.join(data_dir, "data/archive_v13.1/batch1/circuit_static.parquet"),
-        os.path.join(data_dir, "data/archive_v13.1/batch2/circuit_static.parquet"),
-    ]
-    dynamic_parquets = [
-        os.path.join(data_dir, "data/archive_v13.1/batch1/timing_arcs.parquet"),
-        os.path.join(data_dir, "data/archive_v13.1/batch2/timing_arcs.parquet"),
-    ]
-    # 可选追加数据（存在则加载，不存在则跳过）
-    for batch in ['batch1b', 'batch3', 'batch_wave']:
+    # delivery1 + delivery2 合并（~54 万行，1,437 电路）
+    static_parquets = []
+    dynamic_parquets = []
+    for prefix in ['data/delivery1', 'data/delivery2']:
+        for b in ['batch1', 'batch2', 'batch3']:
+            sp = os.path.join(data_dir, f"{prefix}/{b}/circuit_static.parquet")
+            dp = os.path.join(data_dir, f"{prefix}/{b}/timing_arcs.parquet")
+            if os.path.exists(sp) and os.path.exists(dp):
+                static_parquets.append(sp); dynamic_parquets.append(dp)
+    for batch in []:
         sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
         dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
         if os.path.exists(sp) and os.path.exists(dp):
