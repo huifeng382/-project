@@ -167,3 +167,64 @@ These are intended as **transformation priorities** for a greedy optimization
 loop — the algorithm should attempt transformations in this order, use a delay
 model (or SPICE simulation) to verify the result, and keep the transformation
 only if it actually reduces delay.
+
+---
+
+## New Data Update (delivery1+2, 2026-07-20)
+
+> On the combined delivery1+2 dataset (1,437 circuits, ~543K rows, 300 exprs),
+> the structural patterns are **substantially different** from the old data.
+> The dataset contains far more diverse circuits with much larger variant spreads
+> (median 17.7% vs 6.6% on old data). Key findings:
+
+### Statistics
+- Groups: 4,320 (was 2,559 on old data). High-spread (>10%): 2,681 groups from 106 exprs.
+- Median spread: **17.7%** (was 6.6%). Median TC diff (worst − best): **0** (was 8).
+- Fewer TC in fastest: **30%** only (was 83% on old data).
+
+### Gate type preferences (high-spread groups, delivery1+2)
+
+**BEST+ (appearing more in fast variants):**
+| Gate Type | Best Count | Worst Count | Delta |
+|---|---|---|---|
+| SC_JOIN_OR_OR_AND_WIRE_AND_AND_WIRE_AND_AND_BRIDGE | 60 | 0 | +60 |
+| SC_JOIN_OR_BRIDGE | 115 | 56 | +59 |
+| SC_OR | 926 | 870 | +56 |
+| SC_JOIN | 2,028 | 1,982 | +46 |
+| SC_JOIN_OR_OR | 762 | 720 | +42 |
+| SC_AND | 260 | 218 | +42 |
+
+**WORST+ (appearing more in slow variants):**
+| Gate Type | Best Count | Worst Count | Delta |
+|---|---|---|---|
+| SC_JOIN_OR_OR_AND_WIRE_AND_AND_WIRE_AND_AND_WIRE_B | 3 | 68 | −65 |
+| SC_JOIN_BRIDGE | 12 | 59 | −47 |
+| SC_BRIDGE | 784 | 817 | −33 |
+
+### Cross-dataset comparison: what changed and what stayed
+
+| Pattern | Old Data (1,005 circuits) | New Data (1,437 circuits) | Transfer? |
+|---|---|---|---|
+| Transistor count | **83%** fewer = faster | **30%** fewer = faster | **Broke** — not reliable |
+| SC_INV_WIRE | Strong BEST+ (+100) | Not in top 8 | **Broke** |
+| SC_AND | Strong WORST+ (−167) | NOW in BEST+ (+42) | **Reversed!** |
+| SC_JOIN_OR_OR | BEST+ (+52) | Still BEST+ (+42) | **Transferred** |
+| Complex chained JOIN | WORST+ | Still WORST+ | **Transferred** |
+| SC_BRIDGE | WORST+ (−63) | Still WORST+ (−33, + −47 for JOIN_BRIDGE) | **Transferred** |
+
+### Interpretation of cross-dataset differences
+1. **The new data has fundamentally different circuit topologies.** Old data was
+   dominated by small manual designs with clear transistor-count signals. New
+   data includes much more complex e-graph-generated circuits where transistor
+   count alone is not a reliable predictor.
+2. **SC_AND reversed**: In old data, SC_AND was consistently slow. In new data,
+   it appears more in fast variants — likely because in the new dataset context,
+   SC_AND implementations are well-optimized by the synthesis tool, and the
+   real bottleneck is elsewhere (bridging structures, chain complexity).
+3. **What consistently matters across both datasets**: simpler JOIN structures
+   are faster; complex chained JOINs and bridging structures are slower. These
+   are the most robust, transferable patterns.
+4. **The new data validates the transistor-wave finding** (delivery1+2 ablation):
+   when structural patterns no longer provide a strong signal (TC diff=0, few
+   gate-type signals), transistor-level physical data becomes the decisive
+   differentiator.
