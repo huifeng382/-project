@@ -367,9 +367,10 @@ class DelayDataset(Dataset):
             except Exception:
                 pass
             extra_feats.append(pc_feat)
-        # Transistor wave: ids_avg/ids_peak/vds_swing 按 gate 聚合均值 -> 3 特征
+        # Transistor wave: ids_avg/ids_peak/vds_swing 按 gate 聚合 -> 节点特征
         if config.USE_TRANSISTOR_WAVE:
-            tw_feat = torch.zeros(num_nodes, 3)
+            tw_dim = 9 if config.WAVE_AGG_RICH else 3
+            tw_feat = torch.zeros(num_nodes, tw_dim)
             try:
                 tw = row.get('transistor_wave_json')
                 tw = json.loads(tw) if isinstance(tw, str) else tw
@@ -384,12 +385,18 @@ class DelayDataset(Dataset):
                         for f in ['ids_avg','ids_peak','vds_swing']:
                             v = td.get(f)
                             if v is not None: gate_agg[g][f].append(float(v))
+                import numpy as np
                 for i, n in enumerate(node_names):
                     gkey = str(n).lower()
                     if gkey in gate_agg:
                         for fi, f in enumerate(['ids_avg','ids_peak','vds_swing']):
                             vals = gate_agg[gkey][f]
-                            tw_feat[i, fi] = sum(vals)/len(vals) if vals else 0.0
+                            if not vals: continue
+                            arr = np.array(vals)
+                            tw_feat[i, fi] = arr.mean()
+                            if config.WAVE_AGG_RICH:
+                                tw_feat[i, 3+fi] = arr.max()
+                                tw_feat[i, 6+fi] = arr.std()
             except Exception:
                 pass
             extra_feats.append(tw_feat)

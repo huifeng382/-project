@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import GraphConv, global_add_pool
+import config
 
 
 class DelayGNN(nn.Module):
@@ -51,6 +52,12 @@ class DelayGNN(nn.Module):
             nn.ReLU(),
             nn.Linear(hidden_dim // 4, hidden_dim),
         )
+        # Corner 感知注意力：corner_cond 调制每个节点的池化权重
+        self.corner_attn = nn.Sequential(
+            nn.Linear(hidden_dim + 2, hidden_dim // 4),
+            nn.ReLU(),
+            nn.Linear(hidden_dim // 4, 1),
+        )
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None, struct_prior=None):
@@ -74,8 +81,13 @@ class DelayGNN(nn.Module):
         # per-node 头（LIB 模式用）：在路径掩码清零前，从节点特征预测 (slew, load, spare)
         node_sl = F.softplus(self.node_pred(x))  # (N, 3)
 
-        # 路径累加读出：只取信号路径上的节点求和，符合延迟物理公式
-        x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H) → 清零非路径节点
+        # 路径累加读出：先用 gate_mask 清零非路径节点
+        x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H)
+        # Corner 注意力：corner_cond 调制每个节点在 pooling 中的权重
+        if corner_cond is not None and config.USE_CORNER_ATTN:
+            attn_input = torch.cat([x, corner_cond[batch]], dim=-1)  # (N, H+2)
+            attn_w = torch.sigmoid(self.corner_attn(attn_input))      # (N, 1)
+            x = x * attn_w
         x_pooled = global_add_pool(x, batch)  # (B, H)
 
         # 注入 corner 条件

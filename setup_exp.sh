@@ -82,6 +82,12 @@ fi
 if [ "$V" = "struct" ]; then            # 结构先验特征(transistor_count+门类型计数)
   sed -i 's/^USE_STRUCT_PRIOR = .*/USE_STRUCT_PRIOR = True/' config.py
 fi
+if [ "$V" = "waverich" ]; then          # 晶体管波形丰富聚合(mean+max+std)
+  sed -i 's/^WAVE_AGG_RICH = .*/WAVE_AGG_RICH = True/' config.py
+fi
+if [ "$V" = "cornerattn" ]; then        # Corner注意力池化
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = True/' config.py
+fi
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 

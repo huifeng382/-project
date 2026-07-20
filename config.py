@@ -82,6 +82,10 @@ USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/
 # 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
 USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差形式注入 pooling 后（13.4 采纳为默认）
 
+# 新探索：基于 delivery1+2 全量数据的进一步改进
+WAVE_AGG_RICH = False          # 晶体管波形聚合: mean → (mean, max, std)（in_dim 17→23）
+USE_CORNER_ATTN = False        # Corner 感知注意力池化: corner_cond 调制节点权重
+
 # LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
 LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
 LIB_TOTAL_W = 0.1         # 总延迟（展开求和 vs 实测 DELAY）项
