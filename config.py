@@ -76,7 +76,7 @@ FOUR_PIN_ONLY = True       # True=只保留4引脚电路（去掉~12%），False
 
 # 新物理特征开关（delivery1 数据已提供，独立控制，默认全关=纯基线）
 USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
-USE_TRANSISTOR_WAVE = False    # 晶体管波形 -> 3 个节点特征(ids_avg/ids_peak/vds_swing 按门聚合均值)
+USE_TRANSISTOR_WAVE = True     # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认）
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
 # 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
