@@ -76,8 +76,14 @@ fi
 if [ "$V" = "newnoise" ]; then          # +supply_noise 电源噪声
   sed -i 's/^USE_SUPPLY_NOISE = .*/USE_SUPPLY_NOISE = True/' config.py
 fi
-if [ "$V" = "seed123" ]; then           # TRAIN_SEED=123 测方差
+if [ "$V" = "seed123" ]; then           # TRAIN_SEED=123 集成
   sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 123/' config.py
+fi
+if [ "$V" = "seed2024" ]; then          # TRAIN_SEED=2024 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 2024/' config.py
+fi
+if [ "$V" = "seed456" ]; then           # TRAIN_SEED=456 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 456/' config.py
 fi
 if [ "$V" = "struct" ]; then            # 结构先验特征(transistor_count+门类型计数)
   sed -i 's/^USE_STRUCT_PRIOR = .*/USE_STRUCT_PRIOR = True/' config.py
