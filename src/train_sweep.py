@@ -50,9 +50,12 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
 
 def _pairwise_rank_loss(pred_log, target_log, grp):
     """成对排序损失：pred_log/target_log=(B,),grp=(B,)int组ID。
-    同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。"""
+    同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。
+    可选 HARD_PAIR_MODE 对小差异对加权(聚焦难分辨对,把梯度花在刀刃上)。"""
     if not torch.isfinite(pred_log).all() or not torch.isfinite(target_log).all():
         return torch.zeros((), device=pred_log.device)
+    hard_mode = HARD_PAIR_MODE != 'none'
+    hard_thresh = 0.05 if HARD_PAIR_MODE == 'hard5' else 0.10 if HARD_PAIR_MODE == 'hard10' else None
     loss = torch.tensor(0.0, device=pred_log.device)
     n = 0
     for g in grp.unique():
@@ -61,13 +64,20 @@ def _pairwise_rank_loss(pred_log, target_log, grp):
             continue
         p = pred_log[m]; t = target_log[m]
         dp = p.unsqueeze(0) - p.unsqueeze(1)              # (k,k): dp[i,j]=p_i-p_j
-        dt = t.unsqueeze(0) - t.unsqueeze(1)              # dt[i,j]=t_i-t_j
-        viol = torch.relu(dp + RANK_MARGIN)               # p_i-p_j + margin >0 → 惩罚
-        mask = dt < 0
+        dt_lin = t.unsqueeze(0) - t.unsqueeze(1)          # 线性差(用于加权)
+        dt_log = dt_lin / (t.unsqueeze(1) + 1e-12)        # log-space ≈ 线性差/真实值(近似相对)
+        viol = torch.relu(dp + RANK_MARGIN)
+        mask = dt_lin < 0                                  # 真实 t_i < t_j
         v = viol[mask]
-        if v.numel() > 0:
-            loss = loss + v.mean()
-            n += 1
+        if v.numel() == 0:
+            continue
+        if hard_mode and hard_thresh is not None:
+            # 权重 = 1/(1 + 相对差/阈值), 差越小权重越大(最大≈1, 差大→权重→0)
+            abs_diff = torch.abs(dt_lin[mask])
+            w = 1.0 / (1.0 + abs_diff / (hard_thresh * t.mean()))
+            v = v * w
+        loss = loss + v.mean()
+        n += 1
     return loss / max(n, 1)
 
 

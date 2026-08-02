@@ -36,6 +36,10 @@ BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 RANK_LOSS_W = 0.0          # 0=关(默认,不改现有行为)；>0 启用，用 GroupedBatchSampler
 RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 
+# 成对对比训练：聚焦 hard pairs（真实差异小的对），加权强化
+HARD_PAIR_MODE = 'none'    # 'none'(取消) | 'hard5'(<5%差加权) | 'hard10'(<10%差加权)
+HARD_PAIR_W = 0.5          # hard-pair 损失的额外权重系数
+
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序
