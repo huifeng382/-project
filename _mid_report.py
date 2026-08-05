@@ -89,8 +89,8 @@ for d in ['hard5','hard5w2','hard10','hard10w2']:
     # Eval on test set — use a mini DataLoader
     from src.data_loader import DelayDataset
     from torch_geometric.loader import DataLoader
-    print(f"  Building test dataset ({len(test_ids)} circuits)...", flush=True)
-    ds_test=DelayDataset(static_p,dynamic_p,test_ids,scaler=None,cache_dir='cache_mid')
+    print(f"  Building test dataset ({len(test_ids)} circuits, reusing cache)...", flush=True)
+    ds_test=DelayDataset(static_p,dynamic_p,test_ids,scaler=None,cache_dir=f'{HOME}/project-107-{d}/cache107{d}')
     print(f"  Dataset ready, loading predictions...", flush=True)
     loader=DataLoader(ds_test,batch_size=80,shuffle=False)
     preds=[]; targets=[]
