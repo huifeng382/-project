@@ -81,12 +81,10 @@ for d in ['hard5','hard5w2','hard10','hard10w2']:
     if not os.path.exists(mp):
         print(f"\n{d}: best_model.pt not found")
         continue
-    # Load config from the run's config.py
-    import importlib, config
-    importlib.reload(config)
-    # Build model (in_dim=17: 14 base + 3 wave)
-    model=DelayGNN(in_dim=17,hidden_dim=256,num_layers=6,dropout=0.3,num_gate_types=num_gt,gate_embed_dim=32)
-    model.load_state_dict(torch.load(mp,map_location='cpu',weights_only=False))
+    ckpt = torch.load(mp, map_location='cpu', weights_only=False)
+    num_gt_from_ckpt = ckpt['gate_embed.weight'].shape[0]
+    model=DelayGNN(in_dim=17,hidden_dim=256,num_layers=6,dropout=0.3,num_gate_types=num_gt_from_ckpt,gate_embed_dim=32)
+    model.load_state_dict(ckpt)
     model.eval()
     # Eval on test set — use a mini DataLoader
     from src.data_loader import DelayDataset
