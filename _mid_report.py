@@ -60,9 +60,19 @@ for p in static_all:
     for c in df['cell_types_json']:
         a=json.loads(c) if isinstance(c,str) else c
         if a: allct.update(a)
+print(f"Loading {len(static_all)} static files: {static_all}")
+allct=set()
+for p in static_all:
+    df=pd.read_parquet(p)
+    ct=set()
+    for c in df['cell_types_json']:
+        a=json.loads(c) if isinstance(c,str) else c
+        if a: ct.update(a)
+    print(f"  {p}: {len(df)} circuits, {len(ct)} gate types")
+    allct.update(ct)
 rebuild_gate_types(list(allct))
 num_gt=len(GATE_TYPES)
-print(f"gate_types: {num_gt}, test rows: {len(test_dyn)}")
+print(f"gate_types total: {num_gt}, test rows: {len(test_dyn)}")
 
 # Eval each variant (models in ~/project-107-X)
 HOME = os.path.expanduser('~')
