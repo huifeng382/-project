@@ -1,6 +1,11 @@
-"""Mid-training report: load best_model.pt from each run, evaluate on test set."""
+"""Mid-training report: load best_model.pt from each run, evaluate on test set.
+Run from a project directory that has data/ subdirectory (e.g., project-107-rank)."""
 import json, torch, pandas as pd, numpy as np, sys, os, glob as gb_mod
-sys.path.insert(0,'.')
+# Find project root: the directory containing data/delivery1
+_here = os.path.abspath(os.path.dirname(__file__))
+for _root in [_here, os.path.dirname(_here), os.path.expanduser('~/exp107')]:
+    if os.path.isdir(f'{_root}/data/delivery1'):
+        os.chdir(_root); sys.path.insert(0, _root); break
 import config
 config.USE_TRANSISTOR_WAVE=True; config.USE_STRUCT_PRIOR=True; config.USE_CORNER_ATTN=True
 config.USE_PARASITIC_CAPS=False; config.USE_SUPPLY_NOISE=False; config.WAVE_AGG_RICH=False
@@ -8,7 +13,6 @@ from src.model import DelayGNN
 from src.graph_builder import rebuild_gate_types, GATE_TYPES
 from src.utils import split_by_expr, ranking_metrics
 
-# Rebuild test_dyn (same as _ensemble.py)
 static_p = []; dynamic_p = []
 for prefix in ['data/delivery1','data/delivery2']:
     for b in ['batch1','batch2','batch3']:
@@ -60,9 +64,10 @@ rebuild_gate_types(list(allct))
 num_gt=len(GATE_TYPES)
 print(f"gate_types: {num_gt}, test rows: {len(test_dyn)}")
 
-# Eval each variant
+# Eval each variant (models in ~/project-107-X)
+HOME = os.path.expanduser('~')
 for d in ['hard5','hard5w2','hard10','hard10w2']:
-    mp=f'../project-107-{d}/outputs/best_model.pt'
+    mp=f'{HOME}/project-107-{d}/outputs/best_model.pt'
     if not os.path.exists(mp):
         print(f"\n{d}: best_model.pt not found")
         continue
