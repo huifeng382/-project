@@ -1,6 +1,9 @@
 """Mid-training report: load best_model.pt from each run, evaluate on test set."""
 import json, torch, pandas as pd, numpy as np, sys, os, glob as gb_mod
 sys.path.insert(0,'.')
+import config
+config.USE_TRANSISTOR_WAVE=True; config.USE_STRUCT_PRIOR=True; config.USE_CORNER_ATTN=True
+config.USE_PARASITIC_CAPS=False; config.USE_SUPPLY_NOISE=False; config.WAVE_AGG_RICH=False
 from src.model import DelayGNN
 from src.graph_builder import rebuild_gate_types, GATE_TYPES
 from src.utils import split_by_expr, ranking_metrics
@@ -39,14 +42,23 @@ id2e=dict(zip(dyn_all['circuit_id'].astype(str),dyn_all['expr'].astype(str))) if
 _,_,test_ids=split_by_expr(ids,id2e,seed=42)
 test_dyn=dyn_all[dyn_all['circuit_id'].isin(test_ids)].reset_index(drop=True)
 
-# Rebuild gate types
+# Rebuild gate types — must account for ALL deliveries (training sees all circuits)
 allct=set()
-for c in st['cell_types_json']:
-    a=json.loads(c) if isinstance(c,str) else c
-    if a: allct.update(a)
+static_all=[]
+for prefix in ['data/delivery1','data/delivery2']:
+    for b in ['batch1','batch2','batch3']:
+        sp=f'{prefix}/{b}/circuit_static.parquet'
+        if os.path.exists(sp): static_all.append(sp); continue
+        for p in gb_mod.glob(f'{prefix}/{b}/circuit_static_part*.parquet'):
+            static_all.append(p)
+for p in static_all:
+    df=pd.read_parquet(p)
+    for c in df['cell_types_json']:
+        a=json.loads(c) if isinstance(c,str) else c
+        if a: allct.update(a)
 rebuild_gate_types(list(allct))
 num_gt=len(GATE_TYPES)
-print(f"test rows: {len(test_dyn)}")
+print(f"gate_types: {num_gt}, test rows: {len(test_dyn)}")
 
 # Eval each variant
 for d in ['hard5','hard5w2','hard10','hard10w2']:
