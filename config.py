@@ -40,6 +40,10 @@ RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 HARD_PAIR_MODE = 'none'    # 'none'(取消) | 'hard5'(<5%差加权) | 'hard10'(<10%差加权)
 HARD_PAIR_W = 0.5          # hard-pair 损失的额外权重系数
 
+# 中途快照：每隔 N epoch 保存 checkpoint，用于事后回溯最佳排序 epoch
+SAVE_MIDPOINTS = False      # 是否保存中途 checkpoint
+MIDPOINT_INTERVAL = 50      # 每隔多少 epoch 保存一次
+
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序

@@ -625,6 +625,11 @@ def main():
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
 
+        # 中途快照：每隔 MIDPOINT_INTERVAL epoch 存一份 checkpoint（事后回溯最优排序 epoch）
+        if SAVE_MIDPOINTS and (epoch + 1) % MIDPOINT_INTERVAL == 0:
+            mp_path = os.path.join(OUTPUT_DIR, f'midpoint_ep{epoch+1}.pt')
+            torch.save(model.state_dict(), mp_path)
+
         # 排序选点：每隔 N epoch 在 val 上评估排序，按 BEST_RANK_METRIC 保存最优 checkpoint
         if BEST_RANK_METRIC != 'none' and (epoch + 1) % RANK_EVAL_INTERVAL == 0:
             model.eval()
