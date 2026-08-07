@@ -47,26 +47,18 @@ id2e=dict(zip(dyn['circuit_id'].astype(str),dyn['expr'].astype(str))) if 'expr' 
 tr,va,te=split_by_expr(ids,id2e,seed=SPLIT_SEED)
 print(f"Split: train={len(tr)} val={len(va)} test={len(te)}")
 
-allct=set()
-for p in static_p:
-    for c in pd.read_parquet(p)['cell_types_json']:
-        a=json.loads(c) if isinstance(c,str) else c
-        if a: allct.update(a)
-rebuild_gate_types(list(allct)); num_gt=len(GATE_TYPES)
-print(f"Gate types: {num_gt}")
-
 # Build datasets (reuse cache)
 train_ds=DelayDataset(static_p,dynamic_p,tr,scaler=None,cache_dir=os.path.join(PROJ,'cache107hard5w2'))
 val_ds=DelayDataset(static_p,dynamic_p,va,scaler=None,cache_dir=os.path.join(PROJ,'cache107hard5w2'))
-# Use existing cache
-# Get in_dim
 samp=train_ds[0]; in_dim=samp.x.shape[1]
 print(f"in_dim={in_dim}")
 
-# Load model
-model=DelayGNN(in_dim=in_dim,hidden_dim=HIDDEN_DIM,num_layers=NUM_LAYERS,dropout=DROPOUT,
-               num_gate_types=num_gt,gate_embed_dim=GATE_EMBED_DIM)
+# Load model — use gate_embed shape from checkpoint
 ckpt=torch.load(os.path.join(PROJ,'outputs','best_model.pt'),map_location='cpu',weights_only=False)
+num_gt_from_ckpt=ckpt['gate_embed.weight'].shape[0]
+print(f"Gate types from ckpt: {num_gt_from_ckpt}")
+model=DelayGNN(in_dim=in_dim,hidden_dim=HIDDEN_DIM,num_layers=NUM_LAYERS,dropout=DROPOUT,
+               num_gate_types=num_gt_from_ckpt,gate_embed_dim=GATE_EMBED_DIM)
 model.load_state_dict(ckpt)
 print("Model loaded from best_model.pt")
 
