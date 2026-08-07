@@ -111,7 +111,9 @@ for ep in range(START_EP, EPOCHS):
             plateau_triggered=True
             print(f">>> Plateau detected, stopping"); break
     # midpoint save
-    if SAVE_MIDPOINTS and (ep+1)%MIDPOINT_INTERVAL==0:
+    _sm = getattr(sys.modules.get('config', None), 'SAVE_MIDPOINTS', False) or globals().get('SAVE_MIDPOINTS', False)
+    _mi = getattr(sys.modules.get('config', None), 'MIDPOINT_INTERVAL', 50) or globals().get('MIDPOINT_INTERVAL', 50)
+    if _sm and (ep+1)%_mi==0:
         torch.save(model.state_dict(),os.path.join(PROJ,'outputs',f'midpoint_ep{ep+1}.pt'))
 
 elapsed=(time.time()-t0)/60
