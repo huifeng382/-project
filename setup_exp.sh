@@ -90,6 +90,19 @@ if [ "$V" = "newwave_hard10" ]; then     # 13.5 newwave 架构 + hard10 + 中途
   sed -i "s/^HARD_PAIR_MODE = .*/HARD_PAIR_MODE = 'hard10'/" config.py
   sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
 fi
+if [ "$V" = "newwave_base" ]; then       # 纯 13.5 基线 + 中途快照
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+fi
+if [ "$V" = "newwave_fast" ]; then       # 13.5 基线 + 时间优化 + 中途快照
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^OUTLIER_CLEANING = .*/OUTLIER_CLEANING = False/' config.py
+  sed -i 's/^PATIENCE = .*/PATIENCE = 25/' config.py
+  sed -i 's/num_workers=2/num_workers=4/' src/train_sweep.py
+fi
 if [ "$V" = "bestrank" ]; then          # checkpoint 按 val 选择遗憾选
   sed -i "s/^BEST_RANK_METRIC = .*/BEST_RANK_METRIC = 'regret'/" config.py
 fi
