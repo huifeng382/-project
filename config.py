@@ -44,6 +44,9 @@ HARD_PAIR_W = 0.5          # hard-pair 损失的额外权重系数
 SAVE_MIDPOINTS = False      # 是否保存中途 checkpoint
 MIDPOINT_INTERVAL = 50      # 每隔多少 epoch 保存一次
 
+# 模型架构开关（允许还原到 13.5 newwave：关 corner_attn 即得纯 13.5 架构）
+MODEL_CORNER_ATTN = True    # False=去掉 corner_attn 模块, 还原 13.5 newwave
+
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序

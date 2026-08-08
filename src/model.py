@@ -53,11 +53,12 @@ class DelayGNN(nn.Module):
             nn.Linear(hidden_dim // 4, hidden_dim),
         )
         # Corner 感知注意力：corner_cond 调制每个节点的池化权重
-        self.corner_attn = nn.Sequential(
-            nn.Linear(hidden_dim + 2, hidden_dim // 4),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 4, 1),
-        )
+        if config.MODEL_CORNER_ATTN:
+            self.corner_attn = nn.Sequential(
+                nn.Linear(hidden_dim + 2, hidden_dim // 4),
+                nn.ReLU(),
+                nn.Linear(hidden_dim // 4, 1),
+            )
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None, struct_prior=None):
@@ -84,7 +85,7 @@ class DelayGNN(nn.Module):
         # 路径累加读出：先用 gate_mask 清零非路径节点
         x = gate_mask.unsqueeze(-1) * x  # (N, 1) * (N, H)
         # Corner 注意力：corner_cond 调制每个节点在 pooling 中的权重
-        if corner_cond is not None and config.USE_CORNER_ATTN:
+        if corner_cond is not None and config.MODEL_CORNER_ATTN and config.USE_CORNER_ATTN:
             attn_input = torch.cat([x, corner_cond[batch]], dim=-1)  # (N, H+2)
             attn_w = torch.sigmoid(self.corner_attn(attn_input))      # (N, 1)
             x = x * attn_w

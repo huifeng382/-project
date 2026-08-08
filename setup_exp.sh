@@ -83,6 +83,13 @@ fi
 if [ "$V" = "midpoint" ]; then          # 中途快照(每50ep存checkpoint)
   sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
 fi
+if [ "$V" = "newwave_hard10" ]; then     # 13.5 newwave 架构 + hard10 + 中途快照
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/' config.py
+  sed -i "s/^HARD_PAIR_MODE = .*/HARD_PAIR_MODE = 'hard10'/" config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+fi
 if [ "$V" = "bestrank" ]; then          # checkpoint 按 val 选择遗憾选
   sed -i "s/^BEST_RANK_METRIC = .*/BEST_RANK_METRIC = 'regret'/" config.py
 fi
