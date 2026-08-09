@@ -95,12 +95,16 @@ for label, mp in ckpts:
     print(f"  ep{str(label):>5s}: hi_regret={results[-1]['hi_regret']:.2f}% hi_sp={results[-1]['hi_sp']:.3f} hi_top1={results[-1]['hi_top1']*100:.1f}% hi_cap={results[-1]['hi_capture']:.1f}%")
 
 # Sort by high-spread regret (primary KPI)
+# Sort by regret; within 0.3pp tiebreak by Spearman
 results.sort(key=lambda r: r['hi_regret'] if not np.isnan(r['hi_regret']) else float('inf'))
-print(f"\n=== Best Epoch Selection (sorted by high-spread regret) ===")
+best_reg = results[0]['hi_regret']
+close = [r for r in results if r['hi_regret'] <= best_reg + 0.3]
+best = max(close, key=lambda r: r['hi_sp'] if not np.isnan(r['hi_sp']) else -1.0)
+print(f"\n=== Best Epoch Selection (regret primary, Spearman tiebreak <=0.3pp) ===")
 print(f"{'epoch':>6s} {'hi_regret':>9s} {'hi_sp':>7s} {'hi_top1':>7s} {'hi_cap':>7s} {'sp':>6s} {'top1':>6s} {'cap':>6s} {'pair<2':>6s} {'pair2-5':>6s} {'pair5-10':>7s} {'pair>10':>7s} {'medrel':>7s} {'mae_ps':>7s}")
 for r in results:
-    print(f"{str(r['epoch']):>6s} {r['hi_regret']:>8.2f}% {r['hi_sp']:>7.3f} {r['hi_top1']*100:>6.1f}% {r['hi_capture']:>6.1f}% {r['sp']:>6.3f} {r['top1']*100:>6.1f}% {r['capture']:>6.1f}% {r['pair_2']:>5.0f}% {r['pair_5']:>6.0f}% {r['pair_10']:>7.0f}% {r['pair_20']:>7.0f}% {r['median_rel']:>6.1f}% {r['mae_ps']:>6.1f}")
+    marker = " <--BEST" if r is best else ""
+    print(f"{str(r['epoch']):>6s} {r['hi_regret']:>8.2f}% {r['hi_sp']:>7.3f} {r['hi_top1']*100:>6.1f}% {r['hi_capture']:>6.1f}% {r['sp']:>6.3f} {r['top1']*100:>6.1f}% {r['capture']:>6.1f}% {r['pair_2']:>5.0f}% {r['pair_5']:>6.0f}% {r['pair_10']:>7.0f}% {r['pair_20']:>7.0f}% {r['median_rel']:>6.1f}% {r['mae_ps']:>6.1f}%{marker}")
 
-best = results[0]
 print(f"\nBest epoch: {best['epoch']} | hi_regret={best['hi_regret']:.2f}% hi_sp={best['hi_sp']:.3f} hi_top1={best['hi_top1']*100:.1f}% hi_cap={best['hi_capture']:.1f}%")
 print(f"pairwise: <2%={best['pair_2']:.0f}% 2-5%={best['pair_5']:.0f}% 5-10%={best['pair_10']:.0f}% >10%={best['pair_20']:.0f}%")
