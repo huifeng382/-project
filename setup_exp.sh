@@ -103,6 +103,28 @@ if [ "$V" = "newwave_fast" ]; then       # 13.5 基线 + 时间优化 + 中途�
   sed -i 's/^PATIENCE = .*/PATIENCE = 25/' config.py
   sed -i 's/num_workers=2/num_workers=4/' src/train_sweep.py
 fi
+if [ "$V" = "b123" ]; then              # base + TRAIN_SEED=123
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 123/' config.py
+fi
+if [ "$V" = "h456" ]; then              # hard10 + TRAIN_SEED=456
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/' config.py
+  sed -i "s/^HARD_PAIR_MODE = .*/HARD_PAIR_MODE = 'hard10'/" config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 456/' config.py
+fi
+if [ "$V" = "h789" ]; then              # hard10 + TRAIN_SEED=789
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/' config.py
+  sed -i "s/^HARD_PAIR_MODE = .*/HARD_PAIR_MODE = 'hard10'/" config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 789/' config.py
+fi
 if [ "$V" = "bestrank" ]; then          # checkpoint 按 val 选择遗憾选
   sed -i "s/^BEST_RANK_METRIC = .*/BEST_RANK_METRIC = 'regret'/" config.py
 fi
