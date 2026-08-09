@@ -745,34 +745,35 @@ def main():
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
-    # ---------- 中途快照回溯：遗憾为主, <0.3pp内选Spearman最高 ----------
+    # ---------- 中途快照回溯：加权综合得分(遗憾1.0 + Spearman0.3 + top1*0.2 + 捕获率*0.1) ----------
     orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
-    mid_epoch, mid_regret = None, float('inf')
+    mid_epoch, mid_best_score = None, -float('inf')
     if SAVE_MIDPOINTS:
         import glob as _gb
         mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
         if mid_files:
-            print("\n------- Midpoint Comparison (regret primary, Spearman tiebreak) -------")
-            candidates = []
+            print("\n------- Midpoint Comparison (weighted score) -------")
+            best_ep, best_score = None, -float('inf')
             for mf in mid_files:
-                try:
-                    ep_num = int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
+                try: ep_num=int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
                 except: continue
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
                 _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
                 mn = min(len(test_dyn), len(mp_preds))
                 mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn])
                 mhi = mrk.get('hi_spread', {})
-                mr = mhi.get('regret_pct', float('inf'))
-                ms = mhi.get('spearman', -1.0)
-                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} top1={mhi.get('top1_acc',0)*100:.1f}%")
-                candidates.append((ep_num, mr, ms))
-            if candidates:
-                best_reg = min(c[1] for c in candidates)
-                close = [c for c in candidates if c[1] <= best_reg + 0.3]
-                best_ep, best_reg, _ = max(close, key=lambda c: c[2])
-                print(f"  >>> Best midpoint: ep{best_ep} (regret={best_reg:.2f}%, Spearman tiebreak)")
-                mid_epoch, mid_regret = best_ep, best_reg
+                mr = mhi.get('regret_pct', 100.0)
+                ms = mhi.get('spearman', 0.0)
+                mt = mhi.get('top1_acc', 0.0)
+                mc = mhi.get('captured_pct', 0.0)
+                # 综合得分：遗憾越低越好(取负), 其他越高越好
+                score = (-mr * 1.0) + (ms * 0.3) + (mt * 100 * 0.2) + (mc * 0.1)
+                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} top1={mt*100:.1f}% cap={mc:.1f}% score={score:.2f}")
+                if score > best_score:
+                    best_score, best_ep = score, ep_num
+            if best_ep is not None:
+                print(f"  >>> Best midpoint: ep{best_ep} (score={best_score:.2f})")
+                mid_epoch, mid_best_score = best_ep, best_score
                 model.load_state_dict(torch.load(
                     os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
                     map_location=device, weights_only=False))
