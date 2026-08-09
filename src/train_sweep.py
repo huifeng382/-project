@@ -746,6 +746,8 @@ def main():
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
     # ---------- 中途快照回溯：选高差异遗憾最优的 epoch ----------
+    # 先保存原版（best_model）的指标，以便最后和 midpoint 对比展示
+    orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
     mid_epoch, mid_regret = None, float('inf')
     if SAVE_MIDPOINTS:
         import glob as _gb
@@ -799,27 +801,49 @@ def main():
     print(f"  Config: LR={LEARNING_RATE} LR_MIN={LR_MIN} LR_FACTOR={LR_FACTOR} HUBER={HUBER_DELTA} "
           f"BATCH={BATCH_SIZE} BEST_METRIC={BEST_MODEL_METRIC} SPLIT_SEED={SPLIT_SEED} TRAIN_SEED={TRAIN_SEED}")
     print(f"  停止: {stop_reason} @ epoch {epoch + 1}  (Best Val Rel Err {best_val_rel:.2f}%)")
-    # ---- 点精度（目标: 越小越好, 理想0）----
-    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
-          f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "
-          f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
-    # ---- 排序（真实任务：等价变体择优。目标: Spearman→1, 遗憾→0%, top1/捕获/成对分辨→100%）----
-    try:
+    if mid_epoch is not None:
+        print(f"  Midpoint最优: ep{mid_epoch}  (vs best_model.pt——下文 [best] 行 vs [mid] 行)")
+    # ---- 原版 best_model 指标 (orig_preds/orig_targets) ----
+    if mid_epoch is not None:
+        print(f"\n  [best 逐点] Median Rel: {float(np.median(np.abs(orig_preds - orig_targets) / orig_targets))*100:.2f}%(→0)  "
+              f"Mean Abs: {float(np.mean(np.abs(orig_preds - orig_targets)))*1e12:.2f}ps(→0)")
+        print(f"  [mid  逐点] Median Rel: {float(np.median(np.abs(preds - targets) / targets))*100:.2f}%(→0)  "
+              f"Mean Abs: {float(np.mean(np.abs(preds - targets)))*1e12:.2f}ps(→0)")
+        # 排序指标 — best
+        if len(test_dyn) == len(orig_preds):
+            brk = ranking_metrics(test_dyn, orig_preds, orig_targets)
+            bhi = brk.get('hi_spread', {})
+            print(f"  [best 排序 spread>10%] 组={bhi.get('n',0)}  Spearman={bhi.get('spearman',0):.3f}  遗憾={bhi.get('regret_pct',0):.2f}%  top1={bhi.get('top1_acc',0)*100:.1f}%  捕获率={bhi.get('captured_pct',0):.1f}%")
+            bpa = brk['pair_acc']
+            print("  [best 成对] " + "  ".join(f"{l}:{bpa[l][0]:.0f}%" for l in ['<2%','2-5%','5-10%','>10%']))
+        # 排序指标 — mid
         if len(test_dyn) == len(preds):
             rk = ranking_metrics(test_dyn, preds, targets)
-            print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
-                  f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
-                  f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
-            pa = rk['pair_acc']
             hi = rk.get('hi_spread', {})
-            if hi.get('n', 0) > 0:
-                print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
-                      f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
-                      f"捕获率={hi['captured_pct']:.1f}%(→100)")
-            print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
-                f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
-    except Exception as _e:
-        print(f"  [排序] 计算失败: {_e}")
+            print(f"  [mid  排序 spread>10%] 组={hi.get('n',0)}  Spearman={hi.get('spearman',0):.3f}  遗憾={hi.get('regret_pct',0):.2f}%  top1={hi.get('top1_acc',0)*100:.1f}%  捕获率={hi.get('captured_pct',0):.1f}%")
+            pa = rk['pair_acc']
+            print("  [mid  成对] " + "  ".join(f"{l}:{pa[l][0]:.0f}%" for l in ['<2%','2-5%','5-10%','>10%']))
+    else:
+        # 无 midpoint —— 原格式
+        print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
+              f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "
+              f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
+        try:
+            if len(test_dyn) == len(preds):
+                rk = ranking_metrics(test_dyn, preds, targets)
+                print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
+                      f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
+                      f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
+                pa = rk['pair_acc']
+                hi = rk.get('hi_spread', {})
+                if hi.get('n', 0) > 0:
+                    print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
+                          f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
+                          f"捕获率={hi['captured_pct']:.1f}%(→100)")
+                print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
+                    f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
+        except Exception as _e:
+            print(f"  [排序] 计算失败: {_e}")
     # 批次误差（安全的，处理 expr 不存在的情况）
     if 'expr' in test_dyn.columns:
         for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
