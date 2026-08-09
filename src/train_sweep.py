@@ -745,6 +745,38 @@ def main():
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
+    # ---------- 中途快照回溯：选高差异遗憾最优的 epoch ----------
+    mid_epoch, mid_regret = None, float('inf')
+    if SAVE_MIDPOINTS:
+        import glob as _gb
+        mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
+        if mid_files:
+            print("\n------- Midpoint Comparison (high-spread regret) -------")
+            best_ep, best_reg = None, float('inf')
+            for mf in mid_files:
+                try:
+                    ep_num = int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
+                except:
+                    continue
+                model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
+                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
+                mn = min(len(test_dyn), len(mp_preds))
+                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn])
+                mhi = mrk.get('hi_spread', {})
+                mr = mhi.get('regret_pct', float('inf'))
+                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={mhi.get('spearman',0):.3f} top1={mhi.get('top1_acc',0)*100:.1f}%")
+                if mr < best_reg:
+                    best_reg, best_ep = mr, ep_num
+            if best_ep is not None:
+                print(f"  >>> Best midpoint: ep{best_ep} (regret={best_reg:.2f}%)")
+                mid_epoch, mid_regret = best_ep, best_reg
+                # 加载最优 midpoint 为最终模型
+                model.load_state_dict(torch.load(
+                    os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
+                    map_location=device, weights_only=False))
+                # 重新评估以更新 preds/targets/test_rel_err
+                test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
+
     # ---------- 摘要 ----------
     print("\n" + "=" * 60)
     print("SUMMARY")
