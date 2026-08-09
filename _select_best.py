@@ -92,7 +92,7 @@ for label, mp in ckpts:
         'median_rel': float(np.median(np.abs(preds-targets)/targets)*100),
         'mae_ps': float(np.mean(np.abs(preds-targets))*1e12),
     })
-    print(f"  ep{label:>5s}: hi_regret={results[-1]['hi_regret']:.2f}% hi_sp={results[-1]['hi_sp']:.3f} hi_top1={results[-1]['hi_top1']*100:.1f}% hi_cap={results[-1]['hi_capture']:.1f}%")
+    print(f"  ep{str(label):>5s}: hi_regret={results[-1]['hi_regret']:.2f}% hi_sp={results[-1]['hi_sp']:.3f} hi_top1={results[-1]['hi_top1']*100:.1f}% hi_cap={results[-1]['hi_capture']:.1f}%")
 
 # Sort by high-spread regret (primary KPI)
 results.sort(key=lambda r: r['hi_regret'] if not np.isnan(r['hi_regret']) else float('inf'))
