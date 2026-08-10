@@ -73,7 +73,7 @@ BASE_MIN_DELTA = 0.001     # 视为改进的最小loss下降
 # 智能早停：检测过拟合平台期，提前终止训练
 PLATEAU_WINDOW = 25        # 观察窗口（epoch数）
 PLATEAU_MIN_DELTA = 0.3    # val err 至少下降这么多才算有效改善（百分点）
-PLATEAU_MIN_EPOCHS = 50    # 最少训练epoch，在此之前不触发平台早停
+PLATEAU_MIN_EPOCHS = 150    # 最少训练epoch（之前 50 太激进，未收敛就误停）
 
 # 测试模式：快速检测平台期，大幅缩短训练时间
 # 开启后 err 不再明显下降即自动停止，关闭后可获得更精确的最优 err
