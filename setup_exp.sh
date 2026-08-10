@@ -150,6 +150,30 @@ fi
 if [ "$V" = "seed789" ]; then           # TRAIN_SEED=789 集成
   sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 789/' config.py
 fi
+if [ "$V" = "b2024" ]; then             # base + TRAIN_SEED=2024 + midpoint
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 2024/' config.py
+fi
+if [ "$V" = "b5678" ]; then             # base + TRAIN_SEED=5678 + midpoint
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 5678/' config.py
+fi
+if [ "$V" = "b3456" ]; then             # base + TRAIN_SEED=3456 + midpoint
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 3456/' config.py
+fi
+if [ "$V" = "b7890" ]; then             # base + TRAIN_SEED=7890 + midpoint
+  sed -i 's/^MODEL_CORNER_ATTN = .*/MODEL_CORNER_ATTN = False/' config.py
+  sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = False/' config.py
+  sed -i 's/^SAVE_MIDPOINTS = .*/SAVE_MIDPOINTS = True/' config.py
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 7890/' config.py
+fi
 if [ "$V" = "struct" ]; then            # 结构先验特征(transistor_count+门类型计数)
   sed -i 's/^USE_STRUCT_PRIOR = .*/USE_STRUCT_PRIOR = True/' config.py
 fi
