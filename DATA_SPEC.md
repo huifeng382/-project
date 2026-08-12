@@ -255,7 +255,10 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
       "transistor_wave_json.column_nonnull": "96000/96000 (100%)",
       "transistor_wave_json.ids_avg": "518400/518400 (100%)",
       "transistor_wave_json.ids_peak": "518400/518400 (100%)",
-      "transistor_wave_json.vds_swing": "518400/518400 (100%)"
+      "transistor_wave_json.vds_swing": "518400/518400 (100%)",
+      "transistor_wave_json.ids_rise_time": "518400/518400 (100%)",
+      "transistor_wave_json.vgs_swing": "518400/518400 (100%)",
+      "transistor_wave_json.ids_charge": "518400/518400 (100%)"
     }
   },
   "batch1/circuit_static": {
@@ -403,18 +406,22 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 | `ids_avg` | float | 翻转期间平均漏极电流 | μA | 翻转窗口内 \|I_ds\| 的时间平均 |
 | `ids_peak` | float | 翻转期间峰值漏极电流 | μA | 翻转窗口内 \|I_ds\| 的最大值 |
 | `vds_swing` | float | 翻转期间漏-源电压摆幅 | V | V_ds 最大值 − 最小值 |
+| `ids_rise_time` | float | 漏极电流 10%→90% 上升时间 | ps | 翻转窗口内 \|I_ds\| 从峰值的 10% 升至 90% 的时间。越短延迟越小 |
+| `vgs_swing` | float | 栅-源电压摆幅 | V | V_gs 最大值 − 最小值。越低开不彻底，延迟越大 |
+| `ids_charge` | float | 翻转窗口内漏极电流积分（总电荷） | fC | ∫ \|I_ds\| dt，直接决定延迟的物理量 |
 
 示例：
 ```json
-{"M1": {"gate": "X_2", "ids_avg": 12.3, "ids_peak": 25.1, "vds_swing": 0.72},
+{"M1": {"gate": "X_2", "ids_avg": 12.3, "ids_peak": 25.1, "vds_swing": 0.72,
+        "ids_rise_time": 8.5, "vgs_swing": 0.68, "ids_charge": 45.2},
  "M2": {"gate": "X_2", "ids_avg": 8.7,  "ids_peak": 18.4, "vds_swing": 0.68}}
 ```
 
 **覆盖率要求（受第七节「完整性铁律」约束，强制 100%）：**
 1. **所有批次的每一行**都必须有非空 `transistor_wave_json`——**不允许「只在部分 corner 采样」或「只在单独 batch 提供」**。
 2. 每行的 JSON 必须包含该电路**全部晶体管实例**（key 集合 = 该电路 SPICE 网表中所有晶体管），不得遗漏。
-3. 每个晶体管的 4 个子字段（`gate`/`ids_avg`/`ids_peak`/`vds_swing`）都必须有效（数值非 NaN；`ids_*` ≥ 0；`vds_swing` ≥ 0；`gate` 为有效 `X_N`）。
-4. 交付时在 `data/coverage_report.json` 中报告各批次列非空率、以及四个子字段各自的内部非空率，**均须 100%**。
+3. 每个晶体管的 7 个子字段（`gate`/`ids_avg`/`ids_peak`/`vds_swing`/`ids_rise_time`/`vgs_swing`/`ids_charge`）都必须有效（数值非 NaN；`ids_*` ≥ 0；`vds_swing` ≥ 0；`vgs_swing` ≥ 0；`ids_rise_time` ≥ 0；`ids_charge` ≥ 0；`gate` 为有效 `X_N`）。
+4. 交付时在 `data/coverage_report.json` 中报告各批次列非空率、以及 7 个子字段各自的内部非空率，**均须 100%**。
 
 ---
 
@@ -531,7 +538,13 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 
 ## 版本记录
 
-### v8（当前版本）
+### v9（当前版本）
+
+| 项目 | v8 | v9 | 原因 |
+|------|------|------|------|
+| transistor_wave_json 字段数 | 4 个（gate/ids_avg/ids_peak/vds_swing） | **7 个**（+ids_rise_time/vgs_swing/ids_charge） | SPICE 波形已含这些量，零额外仿真成本。新字段直接编码开关速度、驱动强度和电荷量——物理上比 avg/peak 更直接关联延迟。目标：在 13.5 wave 降噪 2x 基础上再降 1.5-2x |
+
+### v8
 
 | 项目 | v7 | v8 | 原因 |
 |------|------|------|------|
