@@ -615,6 +615,10 @@ def main():
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
 
+        # 中途快照（不影响训练 RNG，只写文件）
+        if SAVE_MIDPOINTS and (epoch + 1) % MIDPOINT_INTERVAL == 0:
+            torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, f'midpoint_ep{epoch+1}.pt'))
+
         # 排序选点：每隔 N epoch 在 val 上评估排序，按 BEST_RANK_METRIC 保存最优 checkpoint
         if BEST_RANK_METRIC != 'none' and (epoch + 1) % RANK_EVAL_INTERVAL == 0:
             model.eval()
@@ -730,6 +734,39 @@ def main():
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
+    # ---------- 中途快照回溯（训练已完成，不影响 RNG）----------
+    orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
+    mid_epoch = None
+    if SAVE_MIDPOINTS:
+        import glob as _gb
+        mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
+        if mid_files:
+            print("\n------- Midpoint Comparison (weighted score) -------")
+            best_ep, best_score = None, -float('inf')
+            for mf in mid_files:
+                try: ep_num=int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
+                except: continue
+                model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
+                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
+                mn = min(len(test_dyn), len(mp_preds))
+                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn])
+                mhi = mrk.get('hi_spread', {})
+                mr = mhi.get('regret_pct', 100.0)
+                ms = mhi.get('spearman', 0.0)
+                mt = mhi.get('top1_acc', 0.0)
+                mc = mhi.get('captured_pct', 0.0)
+                score = (-mr * 1.0) + (ms * 0.3) + (mt * 100 * 0.2) + (mc * 0.1)
+                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} top1={mt*100:.1f}% cap={mc:.1f}% score={score:.2f}")
+                if score > best_score:
+                    best_score, best_ep = score, ep_num
+            if best_ep is not None:
+                print(f"  >>> Best midpoint: ep{best_ep} (score={best_score:.2f})")
+                mid_epoch = best_ep
+                model.load_state_dict(torch.load(
+                    os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
+                    map_location=device, weights_only=False))
+                test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
+
     # ---------- 摘要 ----------
     print("\n" + "=" * 60)
     print("SUMMARY")
@@ -752,6 +789,8 @@ def main():
     print(f"  Config: LR={LEARNING_RATE} LR_MIN={LR_MIN} LR_FACTOR={LR_FACTOR} HUBER={HUBER_DELTA} "
           f"BATCH={BATCH_SIZE} BEST_METRIC={BEST_MODEL_METRIC} SPLIT_SEED={SPLIT_SEED} TRAIN_SEED={TRAIN_SEED}")
     print(f"  停止: {stop_reason} @ epoch {epoch + 1}  (Best Val Rel Err {best_val_rel:.2f}%)")
+    if mid_epoch is not None:
+        print(f"  [显示的是 midpoint ep{mid_epoch} 的指标（若SAVE_MIDPOINTS=midpoint最优epoch已载入）]")
     # ---- 点精度（目标: 越小越好, 理想0）----
     print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
           f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "

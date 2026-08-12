@@ -86,6 +86,10 @@ USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差�
 WAVE_AGG_RICH = False          # 晶体管波形聚合: mean → (mean, max, std)（in_dim 17→23）
 USE_CORNER_ATTN = True         # Corner 感知注意力池化（13.6 内部最优，设为默认）
 
+# 中途快照：每隔 N epoch 保存 checkpoint，训练结束后自动选最优 epoch
+SAVE_MIDPOINTS = False      # 是否保存中途 checkpoint（不影响训练 RNG）
+MIDPOINT_INTERVAL = 50      # 每隔多少 epoch 保存一次
+
 # LIB (Scheme A) 损失权重：SC 宏展开→标准单元链查表
 LIB_AUX_W = 0.1            # LIB 辅助损失总权重（外层缩放）
 LIB_TOTAL_W = 0.1         # 总延迟（展开求和 vs 实测 DELAY）项
