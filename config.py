@@ -36,17 +36,6 @@ BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 RANK_LOSS_W = 0.0          # 0=关(默认,不改现有行为)；>0 启用，用 GroupedBatchSampler
 RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 
-# 成对对比训练：聚焦 hard pairs（真实差异小的对），加权强化
-HARD_PAIR_MODE = 'none'    # 'none'(取消) | 'hard5'(<5%差加权) | 'hard10'(<10%差加权)
-HARD_PAIR_W = 0.5          # hard-pair 损失的额外权重系数
-
-# 中途快照：每隔 N epoch 保存 checkpoint，用于事后回溯最佳排序 epoch
-SAVE_MIDPOINTS = False      # 是否保存中途 checkpoint
-MIDPOINT_INTERVAL = 50      # 每隔多少 epoch 保存一次
-
-# 模型架构开关（允许还原到 13.5 newwave：关 corner_attn 即得纯 13.5 架构）
-MODEL_CORNER_ATTN = True    # False=去掉 corner_attn 模块, 还原 13.5 newwave
-
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序
@@ -73,7 +62,7 @@ BASE_MIN_DELTA = 0.001     # 视为改进的最小loss下降
 # 智能早停：检测过拟合平台期，提前终止训练
 PLATEAU_WINDOW = 25        # 观察窗口（epoch数）
 PLATEAU_MIN_DELTA = 0.3    # val err 至少下降这么多才算有效改善（百分点）
-PLATEAU_MIN_EPOCHS = 150    # 最少训练epoch（之前 50 太激进，未收敛就误停）
+PLATEAU_MIN_EPOCHS = 150    # 最少训练epoch，在此之前不触发平台早停
 
 # 测试模式：快速检测平台期，大幅缩短训练时间
 # 开启后 err 不再明显下降即自动停止，关闭后可获得更精确的最优 err

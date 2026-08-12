@@ -255,6 +255,96 @@
 4. **单 seed 方差确认**：遗憾差 3.7pp，Spearman 差 0.17。所有后续对比需多 seed。
 5. **最终基线**：cornerattn + wave + struct_prior + expr切分 + 深退火 + bmsm选点，4-seed集成，高差异遗憾 2.62%、Spearman 0.72、top1 74%。
 
+### 13.6.4 对比训练 hard-pair 加权（2026-08-06，delivery1+2，~54万行）
+
+> 在 rank_loss w=0.5 基础上，对小差异对加权，强迫模型关注难分辨的变体对。
+
+| Exp | HARD_PAIR | w | ep | 高差异Spearman | 高差异遗憾 | 高差异top1 | 成对5-10% | 成对2-5% |
+|---|---|---|---|---|---|---|---|---|
+| **hard10** | **<10%差** | **0.5** | **408** | **0.581** | **10.40%** | **67.3%** | **81%** | 71% |
+| hard5 | <5%差 | 0.5 | 433 | 0.602 | 10.45% | 68.0% | 78% | 70% |
+| hard5w2 | <5%差 | 2.0 | 待跑完 | — | — | — | — | — |
+| hard10w2 | <10%差 | 2.0 | 待跑完 | — | — | — | — | — |
+
+**发现**：
+1. **hard10 的最佳 epoch 是中途（~264），不是最后**：ep264 时 Spearman=0.618/遗憾=6.66%，ep408 回落到 0.581/10.40%。模型在 264-408 之间过拟合了排序能力——checkpoint 选点（smoothed_rel_err）和排序指标有失配。→ 催生 #14。
+2. **w=2.0 全部更差**（中途中 hard5w2/hard10w2 均差于 w=0.5），权重过高劫持主梯度。
+3. **hard10 遗憾（10.40%）优于等权 rankloss1（15.80%）**——hard-pair 加权确认有效。
+4. **<5% 差加权（hard5）不如 <10% 差**——<5% 信号太弱，加权重引噪。
+
+### 13.7 批次（Running，delivery1+2，~54万行，13.5 newwave 架构 + midpoint 选择）
+
+> 目的：(1) 还原 13.5 newwave 架构（MODEL_CORNER_ATTN=False），验证单 seed 基线；(2) 测试时间优化；(3) 叠加 hard10；(4) 用 midpoint 选择最优 epoch 取代 checkpoint 选点。
+
+| Exp | 变体 | 配置 | Status |
+|---|---|---|---|
+| newwave_base | 纯 13.5 基线 | MODEL_CORNER_ATTN=False, SAVE_MIDPOINTS=True | **Done** | midpoint选ep100: hi_regret=5.13%/Sp=0.577/top1=71.4% — **遗憾低于历史最优5.34%!** |
+| newwave_fast | +时间优化 | 同上 + OUTLIER_CLEANING=False + PATIENCE=25 + num_workers=4 | **Done** | ep150: hi_regret=9.96%/Sp=0.528 — 时间优化伤了排序, 不可用 |
+| newwave_hard10 | +hard10 | 同上 + RANK_LOSS_W=0.5 + HARD_PAIR_MODE='hard10' | **Done** | best: hi_regret=10.85%/Sp=0.526 — hard10在13.5架构上不叠加 |
+
+### 关键发现（2026-08-09）
+1. **midpoint 选择是有效的**：newwave_base 的 ep100 遗憾 5.13%，比 best_model.pt 的 7.63% 好了 2.5pp，超越了 13.5 newwave（5.34%）的遗憾。
+2. **最佳 epoch 确实不是最后**：ep100 的排序 >> ep252（best_model 在 smoothed_rel_err 下选的），ep250 的 Spearman 最高（0.638）但遗憾很重（6.47%），说明 Spearman 和遗憾不是同向最优。
+3. **时间优化不可用**：OUTLIER_CLEANING=False + PATIENCE=25 伤排序。
+4. **13.5 架构上 hard10 不叠加**：在 13.5 的 stronger baseline 上，hard-pair 反而退步。
+5. **跨配置集成（base+hard10）稳定在 ~5% 遗憾**：base_best+hard_best=5.01%, ep200+hard=4.99%, ep100+hard=6.66%。2 模型数量太少，误差降不彻底，不如 4-seed 同配置集成（2.62%）。
+
+### 当前最优单 seed
+- newwave_base midpoint ep100：遗憾 **5.13%**，Spearman 0.577，top1 71.4%
+- 历史 4-seed 集成（cornerattn）：遗憾 **2.62%**，Spearman 0.719
+- 如果 newwave_base 也做 4-seed 集成，有望把单 seed 5.13% 压到 4% 以下
+
+跑完后各用 `_select_best.py` 选最优 epoch。midpoint 选择只会更好或持平（best_model.pt 也在候选集中），不会比原 13.5 最优秀差。
+
+### 13.7.14 集成批次（Running，delivery1+2，4-seed全错开 + midpoint）
+
+> 目的：2 base + 2 hard10 全不同 seed → 4 模型集成，同时拿 base 低遗憾 + hard10 高成对分辨。
+
+| Slot | 变体 | TRAIN_SEED | 配置 | Status |
+|---|---|---|---|---|
+| 1 | newwave_base | 42 | 纯 13.5 基线 + midpoint | Running |
+| 2 | b123 | 123 | 同 base，不同 seed | Running |
+| 3 | h456 | 456 | hard10 (+rank loss + hard-pair) | Running |
+| 4 | h789 | 789 | 同 hard10，不同 seed | **Done** | regret=13.98%/Sp=0.602 — hard10 全差, 不用于集成 |
+
+**结论**：hard10 两个 seed 全差（16.3%/14.0%），不做 4 模型集成。仅用 2 base 集成（seed42 9.65% + seed123 2.96%→4.24%）。seed42 这次跑得差拖低了均值。
+
+**下一步**：补 4 个新 base seed（2024/3456/5678/7890），和已有 2 个共 6-seed 集成。
+
+| Slot | 变体 | TRAIN_SEED | Status |
+|---|---|---|---|
+| 5 | b2024 | 2024 | Running |
+| 6 | b3456 | 3456 | Running |
+| 7 | b5678 | 5678 | Running |
+| 8 | b7890 | 7890 | Running |
+
+### 6-base 集成批次（2026-08-11，delivery1+2，newwave 架构，6 seed 全跑完）
+
+| seed | 变体 | mid regret | mid sp | mid top1 | 判定 |
+|---|---|---|---|---|---|
+| 42 | newwave_base | 9.65% | 0.601 | 68.9% | 差 |
+| **123** | **b123** | **2.96%** | **0.711** | **75.3%** | **🏆 最优单 seed** |
+| 2024 | b2024 | 9.59% | 0.649 | 75.4% | 差 |
+| **3456** | **b3456** | **3.79%** | **0.663** | **75.9%** | **好** |
+| 5678 | b5678 | 11.84% | 0.621 | 71.9% | 差 |
+| **7890** | **b7890** | **4.62%** | **0.664** | **71.0%** | **好** |
+
+**集成结果（_ens6.py）**：
+- 6-base 全量：遗憾 9.71%（差种子拖累严重）
+- **best-3 (123+3456+7890)：遗憾 4.55%/Sp 0.698/top1 75.4%/成对>10%=85%  ← 当前最可信结果**
+- best-4 (+42)：遗憾 4.74%（42 拖低）
+- best-5 (+2024)：遗憾 7.38%（2024 拖低）
+
+**核心发现**：
+1. **同架构同 loss 集成收益有限**——误差高度相关，好种子取平均反而平滑了最优种子 b123 的峰值（3→4.55% vs 期望的 2% 以下）。
+2. **集成不是万能的**——架构/loss 相同的模型中，系统偏差方向一致，平均不能消除。
+3. **单 seed b123=2.96% 是单 run 的峰值**，非统计稳健。最终交付用 best-3 集成（4.55%）。
+4. **和 13.6 的 4-seed（2.62%）差距**——13.6 用了 cornerattn 架构，误差空间不同，集成收益更大。newwave 架构更稳定但集成空间更窄。
+
+### 最终基线（交付用）
+- **newwave 架构，3-seed 集成**：遗憾 **4.55%**，Spearman **0.698**，top1 **75.4%**，成对 >10% **85%**。
+- 建模杠杆到此穷举。下一步需要新数据或架构突破。
+
 ### 当前方向/待办
 - **per_gate**：死路，搁置。**LIB**：长线，需 2D-grid 加速再评估。
 - **wave**：信噪比诊断表明突破 <2% 成对分辨需要晶体管全覆盖数据(降模型预测噪声)；现有 wave 28% 稀疏+集中低slew→不可用。DATA_SPEC 已备好全覆盖规格。

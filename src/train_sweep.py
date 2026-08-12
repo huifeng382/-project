@@ -50,12 +50,9 @@ def clean_outliers_by_residual(dataset, model, device, top_percent=5):
 
 def _pairwise_rank_loss(pred_log, target_log, grp):
     """成对排序损失：pred_log/target_log=(B,),grp=(B,)int组ID。
-    同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。
-    可选 HARD_PAIR_MODE 对小差异对加权(聚焦难分辨对,把梯度花在刀刃上)。"""
+    同组内有序对(i,j):真实ti<tj时推pred_i<pred_j,hinge损失max(0,margin-(pred_j-pred_i))。"""
     if not torch.isfinite(pred_log).all() or not torch.isfinite(target_log).all():
         return torch.zeros((), device=pred_log.device)
-    hard_mode = HARD_PAIR_MODE != 'none'
-    hard_thresh = 0.05 if HARD_PAIR_MODE == 'hard5' else 0.10 if HARD_PAIR_MODE == 'hard10' else None
     loss = torch.tensor(0.0, device=pred_log.device)
     n = 0
     for g in grp.unique():
@@ -64,20 +61,13 @@ def _pairwise_rank_loss(pred_log, target_log, grp):
             continue
         p = pred_log[m]; t = target_log[m]
         dp = p.unsqueeze(0) - p.unsqueeze(1)              # (k,k): dp[i,j]=p_i-p_j
-        dt_lin = t.unsqueeze(0) - t.unsqueeze(1)          # 线性差(用于加权)
-        dt_log = dt_lin / (t.unsqueeze(1) + 1e-12)        # log-space ≈ 线性差/真实值(近似相对)
-        viol = torch.relu(dp + RANK_MARGIN)
-        mask = dt_lin < 0                                  # 真实 t_i < t_j
+        dt = t.unsqueeze(0) - t.unsqueeze(1)              # dt[i,j]=t_i-t_j
+        viol = torch.relu(dp + RANK_MARGIN)               # p_i-p_j + margin >0 → 惩罚
+        mask = dt < 0
         v = viol[mask]
-        if v.numel() == 0:
-            continue
-        if hard_mode and hard_thresh is not None:
-            # 权重 = 1/(1 + 相对差/阈值), 差越小权重越大(最大≈1, 差大→权重→0)
-            abs_diff = torch.abs(dt_lin[mask])
-            w = 1.0 / (1.0 + abs_diff / (hard_thresh * t.mean()))
-            v = v * w
-        loss = loss + v.mean()
-        n += 1
+        if v.numel() > 0:
+            loss = loss + v.mean()
+            n += 1
     return loss / max(n, 1)
 
 
@@ -625,11 +615,6 @@ def main():
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
             print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
 
-        # 中途快照：每隔 MIDPOINT_INTERVAL epoch 存一份 checkpoint（事后回溯最优排序 epoch）
-        if SAVE_MIDPOINTS and (epoch + 1) % MIDPOINT_INTERVAL == 0:
-            mp_path = os.path.join(OUTPUT_DIR, f'midpoint_ep{epoch+1}.pt')
-            torch.save(model.state_dict(), mp_path)
-
         # 排序选点：每隔 N epoch 在 val 上评估排序，按 BEST_RANK_METRIC 保存最优 checkpoint
         if BEST_RANK_METRIC != 'none' and (epoch + 1) % RANK_EVAL_INTERVAL == 0:
             model.eval()
@@ -745,40 +730,6 @@ def main():
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
-    # ---------- 中途快照回溯：加权综合得分(遗憾1.0 + Spearman0.3 + top1*0.2 + 捕获率*0.1) ----------
-    orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
-    mid_epoch, mid_best_score = None, -float('inf')
-    if SAVE_MIDPOINTS:
-        import glob as _gb
-        mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
-        if mid_files:
-            print("\n------- Midpoint Comparison (weighted score) -------")
-            best_ep, best_score = None, -float('inf')
-            for mf in mid_files:
-                try: ep_num=int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
-                except: continue
-                model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
-                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
-                mn = min(len(test_dyn), len(mp_preds))
-                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn])
-                mhi = mrk.get('hi_spread', {})
-                mr = mhi.get('regret_pct', 100.0)
-                ms = mhi.get('spearman', 0.0)
-                mt = mhi.get('top1_acc', 0.0)
-                mc = mhi.get('captured_pct', 0.0)
-                # 综合得分：遗憾越低越好(取负), 其他越高越好
-                score = (-mr * 1.0) + (ms * 0.3) + (mt * 100 * 0.2) + (mc * 0.1)
-                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} top1={mt*100:.1f}% cap={mc:.1f}% score={score:.2f}")
-                if score > best_score:
-                    best_score, best_ep = score, ep_num
-            if best_ep is not None:
-                print(f"  >>> Best midpoint: ep{best_ep} (score={best_score:.2f})")
-                mid_epoch, mid_best_score = best_ep, best_score
-                model.load_state_dict(torch.load(
-                    os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
-                    map_location=device, weights_only=False))
-                test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
-
     # ---------- 摘要 ----------
     print("\n" + "=" * 60)
     print("SUMMARY")
@@ -801,49 +752,27 @@ def main():
     print(f"  Config: LR={LEARNING_RATE} LR_MIN={LR_MIN} LR_FACTOR={LR_FACTOR} HUBER={HUBER_DELTA} "
           f"BATCH={BATCH_SIZE} BEST_METRIC={BEST_MODEL_METRIC} SPLIT_SEED={SPLIT_SEED} TRAIN_SEED={TRAIN_SEED}")
     print(f"  停止: {stop_reason} @ epoch {epoch + 1}  (Best Val Rel Err {best_val_rel:.2f}%)")
-    if mid_epoch is not None:
-        print(f"  Midpoint最优: ep{mid_epoch}  (vs best_model.pt——下文 [best] 行 vs [mid] 行)")
-    # ---- 原版 best_model 指标 (orig_preds/orig_targets) ----
-    if mid_epoch is not None:
-        print(f"\n  [best 逐点] Median Rel: {float(np.median(np.abs(orig_preds - orig_targets) / orig_targets))*100:.2f}%(→0)  "
-              f"Mean Abs: {float(np.mean(np.abs(orig_preds - orig_targets)))*1e12:.2f}ps(→0)")
-        print(f"  [mid  逐点] Median Rel: {float(np.median(np.abs(preds - targets) / targets))*100:.2f}%(→0)  "
-              f"Mean Abs: {float(np.mean(np.abs(preds - targets)))*1e12:.2f}ps(→0)")
-        # 排序指标 — best
-        if len(test_dyn) == len(orig_preds):
-            brk = ranking_metrics(test_dyn, orig_preds, orig_targets)
-            bhi = brk.get('hi_spread', {})
-            print(f"  [best 排序 spread>10%] 组={bhi.get('n',0)}  Spearman={bhi.get('spearman',0):.3f}  遗憾={bhi.get('regret_pct',0):.2f}%  top1={bhi.get('top1_acc',0)*100:.1f}%  捕获率={bhi.get('captured_pct',0):.1f}%")
-            bpa = brk['pair_acc']
-            print("  [best 成对] " + "  ".join(f"{l}:{bpa[l][0]:.0f}%" for l in ['<2%','2-5%','5-10%','>10%']))
-        # 排序指标 — mid
+    # ---- 点精度（目标: 越小越好, 理想0）----
+    print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
+          f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "
+          f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
+    # ---- 排序（真实任务：等价变体择优。目标: Spearman→1, 遗憾→0%, top1/捕获/成对分辨→100%）----
+    try:
         if len(test_dyn) == len(preds):
             rk = ranking_metrics(test_dyn, preds, targets)
-            hi = rk.get('hi_spread', {})
-            print(f"  [mid  排序 spread>10%] 组={hi.get('n',0)}  Spearman={hi.get('spearman',0):.3f}  遗憾={hi.get('regret_pct',0):.2f}%  top1={hi.get('top1_acc',0)*100:.1f}%  捕获率={hi.get('captured_pct',0):.1f}%")
+            print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
+                  f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
+                  f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
             pa = rk['pair_acc']
-            print("  [mid  成对] " + "  ".join(f"{l}:{pa[l][0]:.0f}%" for l in ['<2%','2-5%','5-10%','>10%']))
-    else:
-        # 无 midpoint —— 原格式
-        print(f"  Test Median Rel Err: {float(np.median(np.abs(preds - targets) / targets)) * 100:.2f}%(→0)   "
-              f"Mean Abs Err: {float(np.mean(np.abs(preds - targets))) * 1e12:.2f}ps(→0)   "
-              f"(Mean Rel Err {test_rel_err:.2f}% ← 被小延迟放大,仅参考)")
-        try:
-            if len(test_dyn) == len(preds):
-                rk = ranking_metrics(test_dyn, preds, targets)
-                print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
-                      f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
-                      f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
-                pa = rk['pair_acc']
-                hi = rk.get('hi_spread', {})
-                if hi.get('n', 0) > 0:
-                    print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
-                          f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
-                          f"捕获率={hi['captured_pct']:.1f}%(→100)")
-                print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
-                    f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
-        except Exception as _e:
-            print(f"  [排序] 计算失败: {_e}")
+            hi = rk.get('hi_spread', {})
+            if hi.get('n', 0) > 0:
+                print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
+                      f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
+                      f"捕获率={hi['captured_pct']:.1f}%(→100)")
+            print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
+                f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
+    except Exception as _e:
+        print(f"  [排序] 计算失败: {_e}")
     # 批次误差（安全的，处理 expr 不存在的情况）
     if 'expr' in test_dyn.columns:
         for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
