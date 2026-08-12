@@ -88,6 +88,18 @@ fi
 if [ "$V" = "seed789" ]; then           # TRAIN_SEED=789 集成
   sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 789/' config.py
 fi
+if [ "$V" = "seed1357" ]; then          # TRAIN_SEED=1357 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 1357/' config.py
+fi
+if [ "$V" = "seed2468" ]; then          # TRAIN_SEED=2468 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 2468/' config.py
+fi
+if [ "$V" = "seed3579" ]; then          # TRAIN_SEED=3579 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 3579/' config.py
+fi
+if [ "$V" = "seed9012" ]; then          # TRAIN_SEED=9012 集成
+  sed -i 's/^TRAIN_SEED = .*/TRAIN_SEED = 9012/' config.py
+fi
 if [ "$V" = "struct" ]; then            # 结构先验特征(transistor_count+门类型计数)
   sed -i 's/^USE_STRUCT_PRIOR = .*/USE_STRUCT_PRIOR = True/' config.py
 fi
