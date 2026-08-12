@@ -493,14 +493,31 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 
 ---
 
-## 九、验证顺序
+## 九、交付计划（两阶段）
 
-1. 全部数据生成，包含 `gate_states_json` 字段（**`per_gate_timing_json` 不再需要**，见第三节废弃说明）。
-2. **所有批次每行都必须包含 `transistor_wave_json` 列**（方案 B，**绝无例外**）。受第七节完整性铁律约束。
-3. **所有电路每行都必须包含 `parasitic_caps_json` 列**（方案 C，**绝无例外**）。静态数据，每电路一行，无需 per-stimulus 重复。受完整性铁律约束。
-4. **所有批次每行都必须包含 `supply_noise_json` 列**（方案 D，**绝无例外**）。受完整性铁律约束。
-5. **方案 A（LIB 查表）数据已提供**：`data/std_cells.lib` + `data/sc_expansion.json` 已就位。优先度低于方案 B/C/D，后三者到位后可叠加。
-6. 交付附 `data/coverage_report.json` 报告所有批次中所有「必须」字段的覆盖率（第七节完整性铁律）。
+### 阶段 1：升级现有 60 万行到 v9（零仿真成本，优先执行）
+
+1. 数据方先确认：原始 SPICE 瞬态波形文件（`.raw` / `.tr0` / 仿真输出）是否还保留？
+2. 如果保留——直接对已有 60 万行的 SPICE 波形做后处理，提取 v9 新增的 3 个晶体管字段（`ids_rise_time` / `vgs_swing` / `ids_charge`），补入原有的 `transistor_wave_json`。
+3. **零仿真成本**：这 3 个字段和已有的 `ids_avg` / `ids_peak` / `vds_swing` 来自**同一组仿真波形**，只需重新跑后处理提取脚本。
+4. 更新后的 60 万行直接覆盖旧 batch 目录（或作为 `batch1_v2`/`batch2_v2`/`batch3_v2` 新增目录，旧数据归档保留）。
+5. 交付附更新后的 `coverage_report.json`——新字段必须 100% 填充。
+
+### 阶段 2：生成 120 万行新数据（4 vector，全 v9 规格）
+
+1. 新电路全部使用 **4 vector 每 stimulus 条件**（2→4），其余全部按 v9 列格式。
+2. 新电路 **不得与已有电路 expr 重叠**——确保引入足够多的新 expr，使 val 组数自然翻倍。
+3. 每电路 30 corner × 4 引脚 × 2 方向 × 4 vector × 480 行 = 全量 ~1,152,000 行。
+4. 新旧数据并存：旧 60 万（2 vector）+ 新 120 万（4 vector）= **~180 万行**。两者列格式完全一致，模型训练可混用。
+5. 新数据放在独立 batch 目录（如 `data/batch4/` / `data/batch5/`），不动旧数据目录。
+6. 交付附 `coverage_report.json`（同上要求）。
+
+### 通用验证
+
+- `gate_states_json`：必须，100% 覆盖（`per_gate_timing_json` 已废弃）。
+- `transistor_wave_json`（方案 B）、`parasitic_caps_json`（方案 C）、`supply_noise_json`（方案 D）：所有批次每行 100% 覆盖，受完整性铁律约束。
+- 方案 A（LIB 查表）数据已提供，优先度低于方案 B/C/D。
+- 任何批次交付必须附 `coverage_report.json`。
 
 ### ⚠️ 强烈建议：分步交付与预检（非强制，但强烈推荐——零额外成本、可大幅避免返工）
 
@@ -542,7 +559,8 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 
 | 项目 | v8 | v9 | 原因 |
 |------|------|------|------|
-| transistor_wave_json 字段数 | 4 个（gate/ids_avg/ids_peak/vds_swing） | **7 个**（+ids_rise_time/vgs_swing/ids_charge） | SPICE 波形已含这些量，零额外仿真成本。新字段直接编码开关速度、驱动强度和电荷量——物理上比 avg/peak 更直接关联延迟。目标：在 13.5 wave 降噪 2x 基础上再降 1.5-2x |
+| transistor_wave_json 字段数 | 4 个（gate/ids_avg/ids_peak/vds_swing） | **7 个**（+ids_rise_time/vgs_swing/ids_charge） | 零额外仿真成本。编码开关速度、驱动强度和电荷量 |
+| 交付计划 | 单批次一次性交付 | **两阶段**（§九） | 阶段1: 升级 60 万到 v9（零仿真成本，后处理即可）；阶段2: 新 120 万行/4 vector |
 
 ### v8
 
