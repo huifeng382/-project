@@ -14,22 +14,30 @@
 
 ### 基本命令
 ```bash
-pkill -f main.py                         # 清理旧训练进程
+pkill -9 -f main.py                      # 清理旧训练进程
+pkill -9 -f _resume.py                   # 清理续跑进程
 cd ~/exp107 && git pull                 # 拉取最新代码和脚本
-bash setup_exp.sh <变体名>              # 启动一个实验
+bash setup_exp.sh <变体名>              # 启动一个实验（自动 clone 到 ~/project-107-<变体>）
 ```
 
 ### 常用变体
 
 | 变体 | 说明 |
 |---|---|
-| `rank` | 当前最优基线（cornerattn + wave + struct_prior，默认配置） |
-| `seed123` / `seed2024` / `seed456` | 不同 TRAIN_SEED（集成用） |
+| `rank` | 当前最优基线（cornerattn + wave + struct_prior，默认配置，TRAIN_SEED=42） |
+| `seed123` / `seed2024` / `seed456` / `seed789` / `seed1357` / `seed2468` / `seed3579` / `seed9012` | 不同 TRAIN_SEED（集成/裁剪平均用） |
 | `anneal` | 更深退火（LR_MIN 1e-7, LR_FACTOR 0.4） |
 | `waverich` | 丰富晶体管波形聚合（mean+max+std） |
 | `cornerattn` | Corner 注意力池化 |
 | `rankloss1` | 成对排序损失 w=0.5 |
 | `newcaps` / `newwave` / `newnoise` | 新物理特征消融（寄生电容 / 晶体管波形 / 电源噪声） |
+
+> **注意**：`rank` 变体用默认 TRAIN_SEED=42，是集成的基础之一。其他 seed 变体只改 TRAIN_SEED，其余配置与 rank 完全一致，可直接集成。
+
+### 中途快照（midpoint）
+- `SAVE_MIDPOINTS=True`（默认开启）→ 每 50 epoch 存一个 `midpoint_ep{N}.pt`。
+- 训练结束后，代码自动在 SUMMARY 前评估所有 midpoint，按加权得分选最优 epoch 作为最终模型。
+- 不影响训练 RNG（midpoint 代码在训练循环结束后、SUMMARY 前，用局部 import）。
 
 ---
 
@@ -112,11 +120,22 @@ Config: ... BEST_METRIC=... SPLIT_SEED=... TRAIN_SEED=...
 
 ## 6. 集成评估
 
-当有 2-4 个不同 TRAIN_SEED 的跑完后，在任一目录下跑集成脚本：
+### 4-seed 等权平均（验证 13.6 现成结果）
 ```bash
-cd ~/project-107-rank && git pull && python _ensemble.py
+cd ~/project-107-rank && git pull && ~/venv/bin/python3 _ens4.py
 ```
-输出 4-seed 等权平均的排序指标 vs 单 seed 最优对比。
+读 rank/seed123/seed2024/seed456 的 test_predictions.npz，输出 4-seed 平均 + 各单 seed 指标。
+
+### 裁剪平均（当前最优，去掉遗憾最差的 seed）
+```bash
+cd ~/project-107-rank && git pull && ~/venv/bin/python3 _trim.py
+```
+自动按遗憾排序，对比「全量平均 / Trim 1（去最差）/ Trim 2（去最差两个）」三种。当前最优是 Trim 1（去 rank，留 456+2024+123）= 遗憾 2.08%。
+
+### 集成要点
+- 同配置不同 TRAIN_SEED 才能集成（SPLIT_SEED 固定 42 → 同一切分可比）。
+- 误差相关时，裁剪平均（去最差 seed）优于全量平均。
+- 脚本读 `~/project-107-<变体>/outputs/test_predictions.npz`，需先确认这些 npz 存在。
 
 ---
 
