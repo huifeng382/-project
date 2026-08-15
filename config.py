@@ -86,6 +86,13 @@ USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差�
 WAVE_AGG_RICH = False          # 晶体管波形聚合: mean → (mean, max, std)（in_dim 17→23）
 USE_CORNER_ATTN = True         # Corner 感知注意力池化（13.6 内部最优，设为默认）
 
+# 结构特征模式（14.2.2 起：用逻辑类别+结构特征替代 638 类 cell 名嵌入）
+# 'base'       = 10逻辑 + n_transistors（主测）
+# 'logic_only' = 只 10逻辑，无 n_t（消融：n_t 有无贡献）
+# 'rich'       = 10逻辑 + n_t + stack + parallel（更多结构细节）
+# 'elec'       = 10逻辑 + n_t + p/g/drive 改从 ASAP7 结构算（修 p/g 名字正则失效）
+STRUCT_MODE = 'base'
+
 # 中途快照：每隔 N epoch 保存 checkpoint，训练结束后自动选最优 epoch
 SAVE_MIDPOINTS = True       # 是否保存中途 checkpoint（不影响训练 RNG，默认开启）
 MIDPOINT_INTERVAL = 50      # 每隔多少 epoch 保存一次

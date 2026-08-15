@@ -181,7 +181,7 @@ def check_and_clear_cache(static_parquets=None, dynamic_parquets=None):
 
     print("Cache check:")
     _check_cache_dir(os.path.join(CACHE_DIR, 'graphs'),
-                      gb_hash + data_hash, "Graph cache")
+                      gb_hash + data_hash + STRUCT_MODE, "Graph cache")
     os.makedirs(os.path.join(CACHE_DIR, 'outlier'), exist_ok=True)
     # 离群点缓存自管理
     _check_cache_dir(os.path.join(CACHE_DIR, 'gate'),
@@ -199,6 +199,7 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
         f"seed{TRAIN_SEED}",
         f"hdim{HIDDEN_DIM}",
         f"nlay{NUM_LAYERS}",
+        f"struct{STRUCT_MODE}",
     ]
     # 加入数据文件的修改时间，数据变了缓存自动失效
     for p in sorted(static_parquets + dynamic_parquets):

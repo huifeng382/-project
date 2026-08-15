@@ -2,6 +2,7 @@ import torch
 import numpy as np
 from collections import deque
 import re
+import config
 
 # 定义门类型映射（根据实际网表中出现的门类型扩充）
 GATE_TYPES = [
@@ -120,20 +121,46 @@ def _name_fallback_logic(name):
 
 
 def gate_struct(name):
-    """cell 名 -> (logic_type, n_transistors, drive, stack_height)。
+    """cell 名 -> dict{logic, n_t, drive, stack, parallel}。
     优先用 sc_expansion.json 的 ASAP7 展开；查不到回退名字关键字。"""
+    d = {'logic': 'COMPLEX', 'n_t': 6.0, 'drive': 1.0, 'stack': 1.0, 'parallel': 1.0}
     exp = _load_sc_expansion().get(name)
     if isinstance(exp, dict):
         sub = exp.get('subcircuit')
         if sub:
             feats = [f for f in (_asap7_cell_feat(x.get('cell', '')) for x in sub) if f is not None]
             if feats:
-                logic = _compose_logic([f[0] for f in feats])
-                n_t = float(sum(f[3] for f in feats))
-                drive = float(feats[-1][2])
-                stack = float(max(f[1] for f in feats))
-                return logic, n_t, drive, stack
-    return _name_fallback_logic(name), 6.0, 1.0, 1.0
+                d['logic'] = _compose_logic([f[0] for f in feats])
+                d['n_t'] = float(sum(f[3] for f in feats))
+                d['drive'] = float(feats[-1][2])
+                d['stack'] = float(max(f[1] for f in feats))
+                d['parallel'] = float(len(sub))
+                return d
+    d['logic'] = _name_fallback_logic(name)
+    return d
+
+
+def _logic_p_g(logic_type, num_inputs):
+    """从逻辑类别 + 输入数算逻辑努力参数 (p, g)。"""
+    gt = logic_type.upper()
+    n = max(int(num_inputs), 1)
+    if gt == 'INV':
+        p, g = 1.0, 1.0
+    elif gt == 'NAND':
+        p, g = float(n), (n + 2) / 3
+    elif gt == 'NOR':
+        p, g = float(n), (2 * n + 1) / 3
+    elif gt == 'AND':
+        p, g = float(n + 1), (n + 2) / 3
+    elif gt == 'OR':
+        p, g = float(n + 1), (2 * n + 1) / 3
+    elif gt == 'XOR':
+        p, g = 2.0 * n, 4.0
+    elif gt == 'BUF':
+        p, g = 1.0, 1.0
+    else:
+        p, g = 1.0, 1.0
+    return p, g
 
 
 def rebuild_gate_types(cell_types):
@@ -225,21 +252,21 @@ def build_static_graph(circuit_id, netlist_str):
             edge_index.append([node_names.index(u), node_names.index(v)])
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     
-    # 节点门类型索引：用固定逻辑类别（10 类）替代 638 类 cell 名，另算晶体管数特征
+    # 节点门类型索引 + 结构特征（按 STRUCT_MODE 决定用哪些）
+    mode = getattr(config, 'STRUCT_MODE', 'base')
     node_type_idx = []
-    n_transistor_feat = []
+    struct_info = {}
     for n in node_names:
         gt = nodes[n]['type']
         if gt in ('INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE'):
             idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
-            n_t = 0.0
+            struct_info[n] = {'logic': gt, 'n_t': 0.0, 'drive': 0.0, 'stack': 0.0, 'parallel': 0.0}
         else:
-            logic, n_t, _drive, _stack = gate_struct(gt)
-            idx = GATE_TO_IDX.get(logic, GATE_TO_IDX['UNKNOWN_GATE'])
+            si = gate_struct(gt)
+            idx = GATE_TO_IDX.get(si['logic'], GATE_TO_IDX['UNKNOWN_GATE'])
+            struct_info[n] = si
         node_type_idx.append([float(idx)])
-        n_transistor_feat.append(n_t)
     node_type_idx = torch.tensor(node_type_idx, dtype=torch.float)
-    n_transistor_feat = torch.tensor([[x] for x in n_transistor_feat], dtype=torch.float)
     
     # 1. 扇出数（出度）
     out_degree = {n: 0 for n in node_names}
@@ -309,9 +336,14 @@ def build_static_graph(circuit_id, netlist_str):
     for n in node_names:
         if n.startswith('X_'):
             gt = nodes[n]['type']
-            ds = get_drive_strength(gt)
             num_in = len([e for e in edges if e[1] == n])
+            ds = get_drive_strength(gt)
             p, g, cin = get_logic_params(gt, num_in)
+            if mode == 'elec':
+                # 电学特征(drive/p/g)从结构(ASAP7)算，替代名字正则（发现1第二处修复）
+                si = struct_info[n]
+                ds = si['drive']
+                p, g = _logic_p_g(si['logic'], num_in)
         else:
             ds = 0.0
             num_in = 0
@@ -344,8 +376,16 @@ def build_static_graph(circuit_id, netlist_str):
     g_feat       = torch.tensor([[g] for g in logic_effort], dtype=torch.float)
     h_feat       = torch.tensor([[np.log1p(h)] for h in electrical_effort], dtype=torch.float)
 
-    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 寄生延迟 + 逻辑努力 + 电努力 + 晶体管数
+    # 结构特征（按 STRUCT_MODE）
+    struct_feats = []
+    if mode in ('base', 'rich', 'elec'):
+        struct_feats.append(torch.tensor([[struct_info[n]['n_t']] for n in node_names], dtype=torch.float))
+    if mode == 'rich':
+        struct_feats.append(torch.tensor([[struct_info[n]['stack']] for n in node_names], dtype=torch.float))
+        struct_feats.append(torch.tensor([[struct_info[n]['parallel']] for n in node_names], dtype=torch.float))
+
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 寄生延迟 + 逻辑努力 + 电努力 + 结构特征
     node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat,
-                              p_feat, g_feat, h_feat, n_transistor_feat], dim=1)
+                              p_feat, g_feat, h_feat] + struct_feats, dim=1)
 
     return node_names, node_static, edge_index
