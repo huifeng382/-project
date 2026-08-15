@@ -567,9 +567,12 @@ def main():
                 _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
                 mn = min(len(test_dyn), len(mp_preds))
                 mhi = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn]).get('hi_spread', {})
+                mrec = mhi.get('recall_at_k', {})
+                mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
+                mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
                 score = (-mhi.get('regret_pct', 100.0) * 1.0 + mhi.get('spearman', 0.0) * 0.3
-                         + mhi.get('top1_acc', 0.0) * 100 * 0.2 + mhi.get('captured_pct', 0.0) * 0.1)
-                print(f"[eval-only] ep{ep_num}: regret={mhi.get('regret_pct', 100.0):.2f}% score={score:.2f}")
+                         + mhi.get('captured_pct', 0.0) * 0.1 + mr2 * 100 * 0.3 + mr3 * 100 * 0.1)
+                print(f"[eval-only] ep{ep_num}: regret={mhi.get('regret_pct', 100.0):.2f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
                 if score > best_score:
                     best_score, best_ep = score, ep_num
             ckpt = os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt')
@@ -790,10 +793,12 @@ def main():
                 mhi = mrk.get('hi_spread', {})
                 mr = mhi.get('regret_pct', 100.0)
                 ms = mhi.get('spearman', 0.0)
-                mt = mhi.get('top1_acc', 0.0)
                 mc = mhi.get('captured_pct', 0.0)
-                score = (-mr * 1.0) + (ms * 0.3) + (mt * 100 * 0.2) + (mc * 0.1)
-                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} top1={mt*100:.1f}% cap={mc:.1f}% score={score:.2f}")
+                mrec = mhi.get('recall_at_k', {})
+                mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
+                mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
+                score = (-mr * 1.0) + (ms * 0.3) + (mc * 0.1) + (mr2 * 100 * 0.3) + (mr3 * 100 * 0.1)
+                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} cap={mc:.1f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
                 if score > best_score:
                     best_score, best_ep = score, ep_num
             if best_ep is not None:
@@ -847,6 +852,15 @@ def main():
                 print(f"  [排序 spread>10%] 组(>=2)={hi['n']}  Spearman={hi['spearman']:.3f}(→1)  "
                       f"选择遗憾={hi['regret_pct']:.2f}%(→0)  top1={hi['top1_acc']*100:.1f}%(→100)  "
                       f"捕获率={hi['captured_pct']:.1f}%(→100)")
+            # recall@K：A=真#1进前K / B=前K有真前K之一，仅统计非平凡组(size>=K+1)
+            def _fmt_recall(rec):
+                return '  '.join(
+                    f"@K={K} A={rec[K]['strict']['hit_pct']*100:.1f}%(n={rec[K]['strict']['n']}) "
+                    f"B={rec[K]['lenient']['hit_pct']*100:.1f}%(n={rec[K]['lenient']['n']})"
+                    for K in sorted(rec))
+            print(f"  [recall@K 全局] {_fmt_recall(rk.get('recall_at_k', {}))}")
+            if hi.get('recall_at_k'):
+                print(f"  [recall@K spread>10%] {_fmt_recall(hi.get('recall_at_k', {}))}")
             print("  [成对分辨(按真实延迟差,→100%; <2%那档是贪心细粒度重写的关键)] " + "  ".join(
                 f"{lab}:{pa[lab][0]:.0f}%(n={pa[lab][1]})" for lab in ['<2%', '2-5%', '5-10%', '>10%']))
     except Exception as _e:

@@ -81,6 +81,7 @@ def ranking_metrics(test_dyn, preds, targets):
     wc = df.groupby(['_expr', 'corner', 'circuit_id']).agg(
         pred=('_pred', 'max'), true=('_true', 'max')).reset_index()
     sps, regrets, top1s, spreads, captured = [], [], [], [], []
+    recA = {2: [], 3: []}; recB = {2: [], 3: []}   # recall@K: A=真#1进前K, B=前K有真前K之一(只统计非平凡组 size>=K+1)
     bins = [(0.0, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, np.inf)]
     labels = ['<2%', '2-5%', '5-10%', '>10%']
     pair_ok = [0] * len(bins); pair_n = [0] * len(bins)
@@ -100,6 +101,18 @@ def ranking_metrics(test_dyn, preds, targets):
         if rng > 1e-18:
             spreads.append(rng / max(tr[best], 1e-15) * 100)      # 变体延迟差(相对最优)
             captured.append((tr[worst] - tr[pick]) / rng * 100)   # 捕获率: 抓住最差→最优差距的%
+            # recall@K：仅非平凡组(组内变体数 m >= K+1)才有意义，否则 top-K=全组恒命中
+            m = len(tr)
+            ord_pred = np.argsort(pr)          # 预测最快→最慢
+            ord_true = np.argsort(tr)          # 真实最快→最慢
+            for K in recA:
+                if m >= K + 1:
+                    topK = set(ord_pred[:K].tolist())
+                    recA[K].append(1.0 if best in topK else 0.0)
+                    recB[K].append(1.0 if len(topK & set(ord_true[:K].tolist())) > 0 else 0.0)
+                else:
+                    recA[K].append(float('nan'))
+                    recB[K].append(float('nan'))
         # 成对分辨（按真实相对差分档）
         m = len(tr)
         for i in range(m):
@@ -119,14 +132,31 @@ def ranking_metrics(test_dyn, preds, targets):
     # spread 分档（>10% 高差异组 vs 其余）：模型在这两组上的排序能力是否不同
     hi_sps, hi_reg, hi_t1, hi_cap = [], [], [], []
     lo_sps, lo_reg, lo_t1, lo_cap = [], [], [], []
+    hi_recA = {2: [], 3: []}; hi_recB = {2: [], 3: []}
+    lo_recA = {2: [], 3: []}; lo_recB = {2: [], 3: []}
     for i in range(len(spreads)):
         s = spreads[i]
-        (hi_sps if s > 10 else lo_sps).append(sps[i] if i < len(sps) else float('nan'))
-        (hi_reg if s > 10 else lo_reg).append(regrets[i] if i < len(regrets) else float('nan'))
-        (hi_t1 if s > 10 else lo_t1).append(top1s[i] if i < len(top1s) else float('nan'))
-        (hi_cap if s > 10 else lo_cap).append(captured[i] if i < len(captured) else float('nan'))
+        hi = s > 10
+        (hi_sps if hi else lo_sps).append(sps[i] if i < len(sps) else float('nan'))
+        (hi_reg if hi else lo_reg).append(regrets[i] if i < len(regrets) else float('nan'))
+        (hi_t1 if hi else lo_t1).append(top1s[i] if i < len(top1s) else float('nan'))
+        (hi_cap if hi else lo_cap).append(captured[i] if i < len(captured) else float('nan'))
+        for K in recA:
+            if not np.isnan(recA[K][i]):
+                (hi_recA[K] if hi else lo_recA[K]).append(recA[K][i])
+                (hi_recB[K] if hi else lo_recB[K]).append(recB[K][i])
     def _m(lst, nan_val=float('nan')):
         return float(np.mean([x for x in lst if not np.isnan(x)])) if lst else nan_val
+    def _recall(rA, rB):
+        out = {}
+        for K in rA:
+            va = [x for x in rA[K] if not np.isnan(x)]
+            vb = [x for x in rB[K] if not np.isnan(x)]
+            out[K] = {
+                'strict': {'hit_pct': float(np.mean(va)) if va else float('nan'), 'n': len(va)},
+                'lenient': {'hit_pct': float(np.mean(vb)) if vb else float('nan'), 'n': len(vb)},
+            }
+        return out
     return {
         'n_groups': len(top1s),
         'spearman': float(np.mean(sps)) if sps else float('nan'),
@@ -135,8 +165,10 @@ def ranking_metrics(test_dyn, preds, targets):
         'spread_pct': float(np.median(spreads)) if spreads else float('nan'),
         'captured_pct': float(np.mean(captured)) if captured else float('nan'),
         'pair_acc': pair_acc,
+        'recall_at_k': _recall(recA, recB),
         'hi_spread': {'n': len(hi_sps), 'spearman': _m(hi_sps), 'regret_pct': _m(hi_reg),
-                      'top1_acc': _m(hi_t1), 'captured_pct': _m(hi_cap)},
+                      'top1_acc': _m(hi_t1), 'captured_pct': _m(hi_cap),
+                      'recall_at_k': _recall(hi_recA, hi_recB)},
     }
 
 
