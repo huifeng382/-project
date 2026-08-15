@@ -187,7 +187,85 @@ X_22 wire_21 y SC_INV
 
 ---
 
-## 五、待决问题
+## 五、各维度解决方案
+
+> 每个维度：改哪里 / 怎么改 / 是否要重训 / 是否要改 Rust。
+
+### 5.1 电路 I/O 形状（+ 输出 pin 命名）
+
+- **短期（不改模型、不重训）**：只对 Rust 里「≤4 输入且恰好 1 输出」的 window 调 GNN。窗口边界由 `TlWindowParams` 控制，再加一层过滤即可。
+- **代码改点**：`parse_netlist` 把 `input_pins`/`output_pins` 改成从调用方显式传入（读 Rust JSON 的 `input_pins`/`output_pins`），删掉 `.SUBCKT DUT` 猜测和 `out` 硬编码。输出名 `y`/`sum_0` 就不再是问题。
+- **长期（放开 4-pin）**：`DelayGNN` 的「固定 4 pin per-pin 特征」改成「变长 pin 逐 pin 编码后池化」，DATA_SPEC 铁律放宽 → 必须重训。
+- **是否重训**：锁 4-pin = 否；放开 = 是。**是否改 Rust**：窗口过滤小改。
+
+### 5.2 网表格式
+
+- **基本不用改，反而利用层次化**。`parse_netlist` 现在就是 `if not stripped.startswith('X_'): continue`，会自动跳过嵌套 `.SUBCKT` 和 `M_` 行，X_ 行正常抽出。
+- 层次化网表里的 `.SUBCKT SC_*` 定义 + `M_` 行是维度 5.3「结构特征」的原料，**不要扁平化**，让 parser 在遇到 `.SUBCKT SC_*` 时额外解析 M_ 行提结构特征。
+- **是否重训**：否。**是否改 Rust**：否。
+
+### 5.3 cell 类型命名（最关键）
+
+**放弃 cell 名当类别，改成「固定逻辑类别 + 晶体管级结构特征」。** 三处改：
+
+1. `graph_builder.parse_netlist`：解析 X_ 行时不再把 cell 名直接当 `gate_idx`，而是找到该 SC_ 门对应的 `.SUBCKT` 定义 → 解析 `M_` 行 → 算结构特征；逻辑类别用固定规则归到 ~10 类。
+2. `model.DelayGNN`：`Embedding(638, 32)` 改成 `Embedding(~10, 16)`，结构特征拼进 node features。
+3. 数据生成侧（重训必需）：对每个 SC_ 门输出结构特征字段，替代 `cell_types_json` 名字。
+
+**固定特征清单**（稳定、通用、永不 OOV）：
+```
+logic_type ∈ {INV, NAND, NOR, AND, OR, AOI, OAI, XOR, BUF, COMPLEX}
+num_inputs, n_transistors, stack_height(串联深度), parallel_width(并联支路数), nfin(驱动)
+```
+
+**是否重训**：是。**是否改 Rust**：路线 A 不改（Python 解析 .sp）；路线 B 改（Rust 从 `StructuralLogic` 出特征 JSON）。
+
+### 5.4 延迟口径
+
+**统一到「每电路最坏情况延迟」**（GNN 评估本来就是这个口径）。
+
+- GNN 侧：评估已是「每变体取 max over (pin/dir/vector) 最坏延迟」，直接用。
+- Rust 侧：`simulate_all_outputs_for_expr` 里已有每个 output 的 `avg_rise`/`avg_fall`，把「多输出平均」改成「多输出取最坏」（或保持平均，只要两边一致）。
+- 推理时 GNN 在固定 corner 下预测每个 (pin,dir) 延迟取 max 作为排序分数。
+
+**是否重训**：用最坏口径 = 否。**是否改 Rust**：`avg_delay` 改成取 max（小改）。
+
+### 5.5 corner 条件
+
+**提取 Rust 仿真实际 slew/load，固定成一个 corner 喂 GNN。**
+
+- 查 `asap7.sp` 模板的输入 slew 和负载设置 → 映射到 GNN 30 corner 里最接近的一个（如 `s05p0_l01p0`）。
+- serve.py 推理时写死这个 corner，不做 corner 泛化。
+
+**是否重训**：否。**是否改 Rust**：否（只需把 asap7.sp 的 slew/load 值告诉 Python 侧）。
+
+### 5.6 输入特征
+
+**分阶段降级。**
+
+- **阶段 1（验证，不改 Rust、不重训）**：只给「网表 + 固定 corner + 默认特征」。slew/load=固定值、arrival=0、vector=默认、gate_states 用 `logic_sim.py` BFS 推算、transistor_wave/parasitic_caps 缺省（设 0 或去维度）。跑通看排序掉多少。
+- **阶段 2（Rust 补齐）**：gate_states 用 Rust truth_table 算；vector 从 `SimuVector.truth_table_idx` 映射；slew/load 从 asap7.sp 提取；transistor_wave 在 Rust 真仿真时顺手提取。
+
+**是否重训**：阶段 1 够用 = 否；不够 = 是。**是否改 Rust**：阶段 1 否，阶段 2 是。
+
+### 汇总
+
+| 维度 | 是否重训 | 是否改 Rust | 优先级 |
+|---|---|---|---|
+| 5.2 网表格式 | 否 | 否 | 无需处理 |
+| 5.5 corner | 否 | 否 | 低 |
+| 5.4 延迟口径 | 否（最坏口径） | 小改 | 中 |
+| 5.6 输入特征 | 阶段1否/阶段2是 | 阶段1否 | 中 |
+| 5.1 I/O 形状 | 锁4pin否/放开是 | 窗口过滤小改 | 中 |
+| 5.3 cell 命名 | **是** | 路线A否/路线B是 | **最高** |
+
+**核心结论**：5.2/5.4/5.5 不阻塞；5.1/5.6 短期可绕过（锁 4-pin + 极简特征）；**5.3（cell 命名）是唯一必须动模型 + 重训的硬骨头**。
+
+验证顺序：先做 5.2/5.4/5.5/5.6-阶段1 的「极简接线」，在不重训前提下把 Rust 候选喂现有 GNN（cell 名先用「名字→~10 类逻辑类别」粗映射代替），看排序是否有意义；若粗映射就不行，再上 5.3 的结构特征重训。
+
+---
+
+## 六、待决问题
 
 1. **方向验证**：先离线用现有 54 万数据（或其晶体管结构来源）+ 结构特征，验证"结构特征替代 gate_idx 嵌入"排序指标掉不掉（9.6 gate-merge 650→27 曾失败 24.55%→28.7%，必须实测）。
 2. **I/O 是否仍锁 4-pin**：若锁，Rust 只能对能规约成 4-pin/1-out 的窗口用模型；若放开，模型输入侧（parse_netlist 硬编码 out、输入 pin 提取、DelayGNN 维度）都要改。
