@@ -35,6 +35,106 @@ GATE_TYPES = [
 ]
 GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
+# ---- 结构特征：固定逻辑类别替代 638 类 cell 名嵌入（通用、永不 OOV）----
+LOGIC_TYPES = ['INV', 'NAND', 'NOR', 'AND', 'OR', 'AOI', 'OAI', 'XOR', 'BUF', 'COMPLEX']
+LOGIC_TO_IDX = {t: i for i, t in enumerate(LOGIC_TYPES)}
+
+import os as _os
+import json as _json
+
+_SC_EXPANSION = None
+
+
+def _load_sc_expansion():
+    global _SC_EXPANSION
+    if _SC_EXPANSION is None:
+        _p = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))),
+                           'data', 'sc_expansion.json')
+        try:
+            _SC_EXPANSION = _json.load(open(_p, encoding='utf-8'))
+        except Exception:
+            _SC_EXPANSION = {}
+    return _SC_EXPANSION
+
+
+def _asap7_cell_feat(cell):
+    """ASAP7 单元名 -> (逻辑函数, 输入数, 驱动, 晶体管数)。NAND2x1 -> ('NAND',2,1,4)。"""
+    m = re.match(r'^([A-Z]+)(\d*)x(\d+)', cell)
+    if not m:
+        return None
+    func, nin_s, drive_s = m.group(1), m.group(2), m.group(3)
+    nin = int(nin_s) if nin_s else 1
+    drive = int(drive_s)
+    if func == 'INV':
+        n_t = 2
+    elif func == 'BUF':
+        n_t = 4
+    elif func in ('NAND', 'NOR'):
+        n_t = 2 * nin
+    elif func in ('AND', 'OR'):
+        n_t = 2 * nin + 2
+    elif func in ('XOR', 'XNOR'):
+        n_t = 12
+    else:
+        n_t = 2 * max(nin, 1)
+    return func, nin, drive, n_t
+
+
+def _compose_logic(funcs):
+    if not funcs:
+        return 'COMPLEX'
+    if len(funcs) == 1:
+        f = funcs[0]
+        return {'INV': 'INV', 'BUF': 'BUF', 'NAND': 'NAND', 'NOR': 'NOR',
+                'XOR': 'XOR', 'XNOR': 'XOR'}.get(f, 'COMPLEX')
+    if len(funcs) == 2 and funcs[-1] in ('INV', 'BUF'):
+        if funcs[0] == 'NAND':
+            return 'AND'
+        if funcs[0] == 'NOR':
+            return 'OR'
+        if funcs[0] == 'INV':
+            return 'BUF'
+    return 'COMPLEX'
+
+
+def _name_fallback_logic(name):
+    gt = name.upper()
+    # SC_JOIN_*/SC_BRIDGE_*/SC_*_WIRE_* 都是复杂门，归 COMPLEX
+    if 'JOIN' in gt or 'BRIDGE' in gt or 'WIRE' in gt:
+        return 'COMPLEX'
+    if 'NAND' in gt:
+        return 'NAND'
+    if 'NOR' in gt:
+        return 'NOR'
+    if 'XOR' in gt or 'XNOR' in gt:
+        return 'XOR'
+    if 'INV' in gt:
+        return 'INV'
+    if 'BUF' in gt:
+        return 'BUF'
+    if 'AND' in gt:
+        return 'AND'
+    if 'OR' in gt:
+        return 'OR'
+    return 'COMPLEX'
+
+
+def gate_struct(name):
+    """cell 名 -> (logic_type, n_transistors, drive, stack_height)。
+    优先用 sc_expansion.json 的 ASAP7 展开；查不到回退名字关键字。"""
+    exp = _load_sc_expansion().get(name)
+    if isinstance(exp, dict):
+        sub = exp.get('subcircuit')
+        if sub:
+            feats = [f for f in (_asap7_cell_feat(x.get('cell', '')) for x in sub) if f is not None]
+            if feats:
+                logic = _compose_logic([f[0] for f in feats])
+                n_t = float(sum(f[3] for f in feats))
+                drive = float(feats[-1][2])
+                stack = float(max(f[1] for f in feats))
+                return logic, n_t, drive, stack
+    return _name_fallback_logic(name), 6.0, 1.0, 1.0
+
 
 def rebuild_gate_types(cell_types):
     """
@@ -45,7 +145,8 @@ def rebuild_gate_types(cell_types):
     """
     global GATE_TYPES, GATE_TO_IDX
     reserved = ['INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE']
-    GATE_TYPES = sorted(set(cell_types)) + reserved
+    # 用固定逻辑类别（10 类）替代动态 cell 名词表；cell_types 参数保留（兼容调用）但不再用于构建词表
+    GATE_TYPES = LOGIC_TYPES + reserved
     GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
 def parse_netlist(netlist_str):
@@ -124,13 +225,21 @@ def build_static_graph(circuit_id, netlist_str):
             edge_index.append([node_names.index(u), node_names.index(v)])
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     
-    # 节点门类型索引（不再用 one-hot，改为整数索引，由模型 Embedding 层处理）
+    # 节点门类型索引：用固定逻辑类别（10 类）替代 638 类 cell 名，另算晶体管数特征
     node_type_idx = []
+    n_transistor_feat = []
     for n in node_names:
         gt = nodes[n]['type']
-        idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
+        if gt in ('INPUT_PIN', 'OUTPUT_PIN', 'UNKNOWN_GATE'):
+            idx = GATE_TO_IDX.get(gt, GATE_TO_IDX['UNKNOWN_GATE'])
+            n_t = 0.0
+        else:
+            logic, n_t, _drive, _stack = gate_struct(gt)
+            idx = GATE_TO_IDX.get(logic, GATE_TO_IDX['UNKNOWN_GATE'])
         node_type_idx.append([float(idx)])
+        n_transistor_feat.append(n_t)
     node_type_idx = torch.tensor(node_type_idx, dtype=torch.float)
+    n_transistor_feat = torch.tensor([[x] for x in n_transistor_feat], dtype=torch.float)
     
     # 1. 扇出数（出度）
     out_degree = {n: 0 for n in node_names}
@@ -235,8 +344,8 @@ def build_static_graph(circuit_id, netlist_str):
     g_feat       = torch.tensor([[g] for g in logic_effort], dtype=torch.float)
     h_feat       = torch.tensor([[np.log1p(h)] for h in electrical_effort], dtype=torch.float)
 
-    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 寄生延迟 + 逻辑努力 + 电努力
+    # 合并静态特征：门类型索引 + 扇出 + 深度 + 驱动 + 寄生延迟 + 逻辑努力 + 电努力 + 晶体管数
     node_static = torch.cat([node_type_idx, fanout_feat, depth_feat, drive_feat,
-                              p_feat, g_feat, h_feat], dim=1)
+                              p_feat, g_feat, h_feat, n_transistor_feat], dim=1)
 
     return node_names, node_static, edge_index
