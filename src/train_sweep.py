@@ -547,6 +547,43 @@ def main():
                      gate_embed_dim=GATE_EMBED_DIM).to(device)
     optimizer = Adam(model.parameters(), lr=LEARNING_RATE, weight_decay=WEIGHT_DECAY)
 
+    # ---------- eval-only 模式：不训练，直接从 checkpoint 重新生成 test_predictions.npz ----------
+    # 用途：修复「SUMMARY 显示 midpoint 但 npz 存的是 best_model.pt」的不一致（已跑完的 seed 用 midpoint 重生成）
+    # EVAL_ONLY 取值: 'midpoint'（自动按加权分数选最优 midpoint）| 'best'（best_model.pt）| 显式 checkpoint 路径
+    eval_only = os.environ.get('EVAL_ONLY', '')
+    if eval_only:
+        import glob as _gb
+        test_dyn = test_dataset.dynamic_df.reset_index(drop=True)
+        if eval_only == 'midpoint':
+            mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
+            assert mid_files, f"[eval-only] 未找到 midpoint 文件于 {OUTPUT_DIR}"
+            best_ep, best_score = None, -float('inf')
+            for mf in mid_files:
+                try:
+                    ep_num = int(os.path.basename(mf).replace('midpoint_ep', '').replace('.pt', ''))
+                except Exception:
+                    continue
+                model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
+                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
+                mn = min(len(test_dyn), len(mp_preds))
+                mhi = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn]).get('hi_spread', {})
+                score = (-mhi.get('regret_pct', 100.0) * 1.0 + mhi.get('spearman', 0.0) * 0.3
+                         + mhi.get('top1_acc', 0.0) * 100 * 0.2 + mhi.get('captured_pct', 0.0) * 0.1)
+                print(f"[eval-only] ep{ep_num}: regret={mhi.get('regret_pct', 100.0):.2f}% score={score:.2f}")
+                if score > best_score:
+                    best_score, best_ep = score, ep_num
+            ckpt = os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt')
+            print(f"[eval-only] best midpoint ep{best_ep} (score={best_score:.2f})")
+        elif eval_only == 'best':
+            ckpt = os.path.join(OUTPUT_DIR, 'best_model.pt')
+        else:
+            ckpt = eval_only
+        model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=False))
+        test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
+        np.savez(os.path.join(OUTPUT_DIR, 'test_predictions.npz'), preds=preds, targets=targets)
+        print(f"[eval-only] saved test_predictions.npz from {ckpt} (test_rel_err={test_rel_err:.2f}%)")
+        return
+
     scheduler = None
     if LR_SCHEDULER == 'ReduceLROnPlateau':
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
@@ -766,6 +803,8 @@ def main():
                     os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
                     map_location=device, weights_only=False))
                 test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
+                # 让 npz 与 SUMMARY 一致（midpoint 选点后的预测），否则集成脚本读到的是 best_model.pt
+                np.savez(os.path.join(OUTPUT_DIR, 'test_predictions.npz'), preds=preds, targets=targets)
 
     # ---------- 摘要 ----------
     print("\n" + "=" * 60)
