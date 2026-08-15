@@ -103,6 +103,19 @@ fi
 if [ "$V" = "struct" ]; then            # 结构先验特征(transistor_count+门类型计数)
   sed -i 's/^USE_STRUCT_PRIOR = .*/USE_STRUCT_PRIOR = True/' config.py
 fi
+# STRUCT_MODE 变体（14.2.3：逻辑类别+结构特征替代 638 类 cell 名嵌入）
+if [ "$V" = "structbase" ]; then         # 10逻辑 + n_transistors（主测，=默认）
+  sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'base'/" config.py
+fi
+if [ "$V" = "structlogic" ]; then        # 只 10逻辑，无 n_t（消融：n_t 有无贡献）
+  sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'logic_only'/" config.py
+fi
+if [ "$V" = "structrich" ]; then         # +stack +parallel（更多结构细节）
+  sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'rich'/" config.py
+fi
+if [ "$V" = "structelec" ]; then         # p/g/drive 改从 ASAP7 结构算（修 p/g 正则失效）
+  sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'elec'/" config.py
+fi
 if [ "$V" = "waverich" ]; then          # 晶体管波形丰富聚合(mean+max+std)
   sed -i 's/^WAVE_AGG_RICH = .*/WAVE_AGG_RICH = True/' config.py
 fi
