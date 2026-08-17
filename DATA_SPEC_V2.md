@@ -49,9 +49,9 @@ data/batch5/timing_arcs.parquet
 | `transistor_count` | int | `44` | 电路中的晶体管总数 |
 | `gate_level_netlist` | str | 见下方 | SPICE子电路网表 |
 | `cell_types_json` | str | `["SC_AND","SC_INV_WIRE"]` | JSON数组，网表中出现的所有门类型名 |
-| `input_pins_json` | str | `["a","b","c","d"]` | JSON数组，输入引脚名（统一为a,b,c,d） |
-| `output_pins_json` | str | `["out"]` | JSON数组，输出引脚名 |
-| `pin_loads_json` | str | `{"a":4.5e-16,"b":3.2e-16,"c":6.1e-16,"d":5.0e-16,"out":0.0}` | JSON对象，每个引脚的负载电容（F） |
+| `input_pins_json` | str | `["a_0","b_0","cin"]` | JSON数组，输入引脚名（任意 N 个，对齐 Rust INORDER） |
+| `output_pins_json` | str | `["sum_0","cout"]` | JSON数组，输出引脚名（任意 M 个，对齐 Rust OUTORDER） |
+| `pin_loads_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16,"out":0.0}` | JSON对象，每个引脚的负载电容（F） |
 | `parasitic_caps_json` | str | `{"X_1":{"in_a":0.8,"in_b":0.82,"out":1.2},"X_2":{...}}` | **【必须，100%覆盖】** 每个门实例各输入/输出引脚的对地寄生电容（fF）。受完整性铁律约束。详见§八方案C |
 
 ### `gate_level_netlist` 格式
@@ -83,31 +83,24 @@ X_4 wire_1 wire_2 SC_INV_WIRE
 | 列名 | 类型 | 示例值 | 说明 |
 |------|------|--------|------|
 | `circuit_id` | str | `"candidate_expr0001_0005"` | 对应静态数据中的电路ID |
-| `corner` | str | `"s05p0_l01p0"` | 仿真corner标签，格式见下方 |
-| `switching_pin` | str | `"a"` | 发生电平翻转的输入引脚，取值a/b/c/d。若推理时无此列，可从 slew_a~d 中非零引脚推导 |
+| `corner` | str | `"s02p0_l01p0"` | 仿真corner标签（V2 单 corner：2ps/1fF），格式见下方 |
+| `switching_pin` | str | `"a_0"` | 发生电平翻转的输入引脚，取值 = `input_pins_json` 中的某个引脚名 |
 | `direction` | str | `"rise"` | 翻转方向，`rise`（0→1）或 `fall`（1→0）。若推理时无此列，可从 vector 中 switching_pin 对应位推导（0→rise, 1→fall） |
 | `expr` | str | `"expr0001"` | 电路所属批次 |
 | `candidate_idx` | int | `5` | 批次内序号 |
-| `vector` | str | `"00101"` | 5位字符串，输入引脚逻辑值，格式见下方 |
+| `vector` | str | `"000"` | N位字符串，输入引脚逻辑值，格式见下方 |
 | `slew_s` | float | `5.0e-12` | 切换引脚的输入slew（秒） |
 | `output_load_f` | float | `1.0e-15` | 输出端负载电容（法拉） |
 | `DELAY` | float | `3.304e-11` | 该timing arc的传播延迟（秒），从 switching_pin 翻转50%到 output 翻转50% |
-| `slew_a` | float | `5.0e-12` | 引脚a的输入slew（秒）。非切换引脚填0.0 |
-| `slew_b` | float | `0.0` | 引脚b的输入slew（秒） |
-| `slew_c` | float | `0.0` | 引脚c的输入slew（秒） |
-| `slew_d` | float | `0.0` | 引脚d的输入slew（秒） |
-| `load_a` | float | `4.5e-16` | 引脚a的负载电容（法拉） |
-| `load_b` | float | `3.2e-16` | 引脚b的负载电容（法拉） |
-| `load_c` | float | `6.1e-16` | 引脚c的负载电容（法拉） |
-| `load_d` | float | `5.0e-16` | 引脚d的负载电容（法拉） |
-| `arrival_time_a` | float | `0.0` | 引脚a信号到达时间（秒）。若为最早到达的引脚则填0.0 |
-| `arrival_time_b` | float | `5.0e-12` | 引脚b信号到达时间（秒）。相对于最早到达引脚的偏移量 |
-| `arrival_time_c` | float | `0.0` | 引脚c信号到达时间（秒） |
-| `arrival_time_d` | float | `8.0e-12` | 引脚d信号到达时间（秒） |
+| `pin_slew_json` | str | `{"a_0":2.0e-12,"b_0":0.0}` | **【任意 I/O，JSON】** 每个输入引脚的输入 slew（秒）。切换引脚填实际值，非切换引脚填 0。key 集合 = `input_pins_json`。受完整性铁律约束 |
+| `pin_load_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16}` | **【任意 I/O，JSON】** 每个输入引脚的负载电容（法拉）。key 集合 = `input_pins_json`。受完整性铁律约束 |
+| `pin_arrival_json` | str | `{"a_0":0.0,"b_0":5.0e-12}` | **【任意 I/O，JSON】** 每个输入引脚信号到达时间（秒），相对最早到达引脚的偏移。最早引脚填 0。key 集合 = `input_pins_json` |
 | `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | 该vector下各门实例翻转状态，1=翻转，0=静态（SPICE实测，推理时缺失可BFS推算） |
 | `transistor_wave_json` | str | `{"M1":{"gate":"X_2","ids_avg":12.3,...}}` | **【必须，100%覆盖】** 该仿真行每个晶体管的波形数据（gate/ids_avg/ids_peak/vds_swing）。受完整性铁律约束，所有批次每行必须非空。详见§八方案B |
 | `supply_noise_json` | str | `{"vdd_droop_mV":12.3,"gnd_bounce_mV":5.1}` | **【必须，100%覆盖】** 该仿真行翻转窗口内的电源/地噪声。受完整性铁律约束，所有批次每行必须非空。详见§八方案D |
 | `per_gate_timing_json` | str | — | **【已废弃，不需要生成】** 逐门过渡时间。实测表明逐门辅助监督对模型有害（见下方废弃说明），不再生成此列 |
+
+> **I/O 列结构说明（方案 X：JSON）**：任意 I/O 下，per-pin 特征用 JSON 列（`pin_slew_json` / `pin_load_json` / `pin_arrival_json`）而非固定列。原因：(1) JSON 天然变长，无需零填充；(2) 避免「填充 0 被当成真实非切换 pin」的静默坑——填充 pin 和真实非切换 pin 的 slew 都是 0，靠零值无法区分；(3) 与现有 JSON 为主的数据设计一致（gate_states / transistor_wave / pin_loads 均为 JSON）。若用固定列（如 slew_0..slew_15）填零，则 scaler 和数据加载必须严格按 `input_pins_json` 只吃真实 pin，否则会污染特征、损害排序指标。
 
 ### `per_gate_timing_json`（已废弃，不需要生成）
 
