@@ -56,7 +56,7 @@ data/batch5/timing_arcs.parquet
 
 ### `gate_level_netlist` 格式
 
-SPICE子电路格式，设备行为从网表推断。示例：
+**层次化 SPICE**（对齐 Rust `expr_to_hierarchical_spice` 的输出），数据生成器直接用 `expr_to_hierarchical_spice` 产出。GNN 的 `parse_netlist` 只抽 `.SUBCKT DUT` 里的 `X_` 行、自动跳过嵌套 `.SUBCKT` 定义和晶体管 `M_` 行，所以层次化可直接喂。示例：
 
 ```
 .SUBCKT DUT a_0 b_0 cin sum_0 cout vdd gnd
@@ -91,7 +91,7 @@ X_4 wire_1 wire_2 cout SC_INV_WIRE
 | `vector` | str | `"000"` | N位字符串，输入引脚逻辑值，格式见下方 |
 | `slew_s` | float | `5.0e-12` | 切换引脚的输入slew（秒） |
 | `output_load_f` | float | `1.0e-15` | 输出端负载电容（法拉） |
-| `DELAY` | float | `3.304e-11` | 该timing arc的传播延迟（秒），从 switching_pin 翻转50%到 output 翻转50% |
+| `DELAY` | float | `3.304e-11` | 该电路的传播延迟（秒），对齐 Rust `avg_delay` = 各输出 `(avg_rise+avg_fall)/2` 的平均。同一电路所有行 DELAY 相同（延迟是每电路一个值，不按 switching_pin/direction 区分） |
 | `pin_slew_json` | str | `{"a_0":2.0e-12,"b_0":0.0}` | **【任意 I/O，JSON】** 每个输入引脚的输入 slew（秒）。切换引脚填实际值，非切换引脚填 0。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_load_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16}` | **【任意 I/O，JSON】** 每个输入引脚的负载电容（法拉）。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_arrival_json` | str | `{"a_0":0.0,"b_0":5.0e-12}` | **【任意 I/O，JSON】** 每个输入引脚信号到达时间（秒），相对最早到达引脚的偏移。最早引脚填 0。key 集合 = `input_pins_json` |
@@ -256,7 +256,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 
 ## 六、高级物理数据（突破排序瓶颈）
 
-> **V2 训练策略（重要）**：本节详细物理特征（方案 B/C/D）在**数据生成时全部照常生成**（零额外仿真成本——SPICE 已算过，只需后处理写出），但**训练时按需选用**。因为 `transistor_wave` / `supply_noise` 依赖 SPICE 仿真、Rust 推理时拿不到，推理模型可能不用它们（或用蒸馏间接利用）。首版先试「无 wave」模型看排序指标，不够再蒸馏。**数据生成全要，免得以后重生成。**
+> **V2 训练策略（重要）**：以下详细物理特征在**数据生成时全部照常生成**（零额外仿真成本——SPICE 已算过，只需后处理写出），但**训练时按需选用**，因为 Rust 推理时拿不到（或依赖仿真）。**train-only 字段**：`transistor_wave_json`（需仿真）、`supply_noise_json`（需仿真）、`parasitic_caps_json`（需寄生提取）、`pin_load_json`/`pin_loads_json`（Rust 不建模输入负载）。首版先试「无 wave」模型看排序指标，不够再蒸馏。**数据生成全要，免得以后重生成。**
 
 > **当前模型排序指标**：Spearman ≈ 0.21，选择遗憾 ≈ 2.6%，top1 ≈ 42%。
 > **核心瓶颈**（信噪比诊断实证）：成对分辨 <2% 真实延迟差 = **52%（= 随机）**。
