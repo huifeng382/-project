@@ -30,9 +30,9 @@ data/batch5/timing_arcs.parquet
 - 电源/地引脚：`vdd`, `gnd`（不出现在输入输出引脚列表中）
 - 所有物理量统一使用国际单位制（SI）：
   - 延迟 `DELAY`：秒（s）
-  - 负载电容 `load_*` `output_load_f`：法拉（F）
-  - slew `slew_*`：秒（s）
-  - 到达时间 `arrival_time_*`：秒（s）
+  - 负载电容 `pin_load_json` `output_load_f`：法拉（F）
+  - slew `slew_s` `pin_slew_json`：秒（s）
+  - 到达时间 `pin_arrival_json`：秒（s）
 - corner 标签中的数值用于标识测试条件，单位：slew（ps），load（fF）
 
 ---
@@ -52,23 +52,23 @@ data/batch5/timing_arcs.parquet
 | `input_pins_json` | str | `["a_0","b_0","cin"]` | JSON数组，输入引脚名（任意 N 个，对齐 Rust INORDER） |
 | `output_pins_json` | str | `["sum_0","cout"]` | JSON数组，输出引脚名（任意 M 个，对齐 Rust OUTORDER） |
 | `pin_loads_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16,"out":0.0}` | JSON对象，每个引脚的负载电容（F） |
-| `parasitic_caps_json` | str | `{"X_1":{"in_a":0.8,"in_b":0.82,"out":1.2},"X_2":{...}}` | **【必须，100%覆盖】** 每个门实例各输入/输出引脚的对地寄生电容（fF）。受完整性铁律约束。详见§八方案C |
+| `parasitic_caps_json` | str | `{"X_1":{"in_a":0.8,"in_b":0.82,"out":1.2},"X_2":{...}}` | **【必须，100%覆盖】** 每个门实例各输入/输出引脚的对地寄生电容（fF）。受完整性铁律约束。详见§六方案C |
 
 ### `gate_level_netlist` 格式
 
 SPICE子电路格式，设备行为从网表推断。示例：
 
 ```
-.SUBCKT DUT a b c d out vdd gnd
-X_1 a wire_1 SC_AND
-X_2 b wire_1 wire_2 SC_NAND
-X_3 wire_2 c out SC_NOR
-X_4 wire_1 wire_2 SC_INV_WIRE
+.SUBCKT DUT a_0 b_0 cin sum_0 cout vdd gnd
+X_1 a_0 wire_1 SC_AND
+X_2 b_0 wire_1 wire_2 SC_NAND
+X_3 wire_2 cin sum_0 SC_NOR
+X_4 wire_1 wire_2 cout SC_INV_WIRE
 .ENDS DUT
 ```
 
 规则：
-- 第一行 `.SUBCKT DUT` 后跟引脚列表（a b c d out vdd gnd）
+- 第一行 `.SUBCKT DUT` 后跟引脚列表（任意输入...任意输出... vdd gnd，对齐 Rust INORDER/OUTORDER）
 - 以 `.ENDS DUT` 结尾
 - 每个门实例占一行，格式 `X_{序号} {输入网表名}... {输出网表名} {门类型}`
 - 最后一个token是门类型名称（如SC_AND、SC_NOR、INVx1_ASAP7_75t_R等）
@@ -96,8 +96,8 @@ X_4 wire_1 wire_2 SC_INV_WIRE
 | `pin_load_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16}` | **【任意 I/O，JSON】** 每个输入引脚的负载电容（法拉）。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_arrival_json` | str | `{"a_0":0.0,"b_0":5.0e-12}` | **【任意 I/O，JSON】** 每个输入引脚信号到达时间（秒），相对最早到达引脚的偏移。最早引脚填 0。key 集合 = `input_pins_json` |
 | `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | 该vector下各门实例翻转状态，1=翻转，0=静态（SPICE实测，推理时缺失可BFS推算） |
-| `transistor_wave_json` | str | `{"M1":{"gate":"X_2","ids_avg":12.3,...}}` | **【必须，100%覆盖】** 该仿真行每个晶体管的波形数据（gate/ids_avg/ids_peak/vds_swing）。受完整性铁律约束，所有批次每行必须非空。详见§八方案B |
-| `supply_noise_json` | str | `{"vdd_droop_mV":12.3,"gnd_bounce_mV":5.1}` | **【必须，100%覆盖】** 该仿真行翻转窗口内的电源/地噪声。受完整性铁律约束，所有批次每行必须非空。详见§八方案D |
+| `transistor_wave_json` | str | `{"M1":{"gate":"X_2","ids_avg":12.3,...}}` | **【必须，100%覆盖】** 该仿真行每个晶体管的波形数据（gate/ids_avg/ids_peak/vds_swing）。受完整性铁律约束，所有批次每行必须非空。详见§六方案B |
+| `supply_noise_json` | str | `{"vdd_droop_mV":12.3,"gnd_bounce_mV":5.1}` | **【必须，100%覆盖】** 该仿真行翻转窗口内的电源/地噪声。受完整性铁律约束，所有批次每行必须非空。详见§六方案D |
 | `per_gate_timing_json` | str | — | **【已废弃，不需要生成】** 逐门过渡时间。实测表明逐门辅助监督对模型有害（见下方废弃说明），不再生成此列 |
 
 > **I/O 列结构说明（方案 X：JSON）**：任意 I/O 下，per-pin 特征用 JSON 列（`pin_slew_json` / `pin_load_json` / `pin_arrival_json`）而非固定列。原因：(1) JSON 天然变长，无需零填充；(2) 避免「填充 0 被当成真实非切换 pin」的静默坑——填充 pin 和真实非切换 pin 的 slew 都是 0，靠零值无法区分；(3) 与现有 JSON 为主的数据设计一致（gate_states / transistor_wave / pin_loads 均为 JSON）。若用固定列（如 slew_0..slew_15）填零，则 scaler 和数据加载必须严格按 `input_pins_json` 只吃真实 pin，否则会污染特征、损害排序指标。
@@ -117,8 +117,7 @@ X_4 wire_1 wire_2 SC_INV_WIRE
 
 - `s` = slew条件，`{XX}`=整数部分，`p{Y}`=小数部分（p=小数点）
 - `l` = load条件，同上
-- 例：slew=5.0ps, load=1.0fF → `s05p0_l01p0`
-- 例：slew=0.2ps, load=10.0fF → `s00p2_l10p0`
+- 例：slew=2.0ps, load=1.0fF → `s02p0_l01p0`
 
 **V2 统一使用单 corner（对齐 Rust `asap7.sp` 模板的固定仿真条件）：**
 
@@ -187,7 +186,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 
 > 对比 V1：1200 电路 → ~7.5万 电路（~62×）；569 expr → ~6000 expr（~10×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
 
-## 七、数据质量规则
+## 五、数据质量规则
 
 ### ⚠️ 完整性铁律（最重要，必读，历史踩过坑）
 
@@ -239,21 +238,21 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 1. `DELAY` 值范围：1e-12 < DELAY < 1e-8（超出此范围的视为物理不可行数据，剔除）
 2. `slew_s` 不得为0或NaN
 3. `output_load_f` 不得为0或NaN
-4. `slew_a/b/c/d` 必须全部非NaN。切换引脚的值等于 `slew_s`，非切换引脚填 0.0
-5. `load_a/b/c/d` 必须全部非NaN。值与 `pin_loads_json`（静态列）一致即可，但仍需逐行填入
-6. `arrival_time_a/b/c/d` 必须全部非NaN。最早到达的引脚填 0.0，其余引脚填入相对偏移（秒）。不同引脚应有不同的 arrival time 值，不要全部填 0
+4. `pin_slew_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。切换引脚的值等于 `slew_s`，非切换引脚填 0.0
+5. `pin_load_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。值与 `pin_loads_json`（静态列）一致即可
+6. `pin_arrival_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。最早到达的引脚填 0.0，其余引脚填入相对偏移（秒）
 7. 同一 `(circuit_id, corner, switching_pin, direction, vector)` 组合不得出现重复行
-8. `arrival_time_*` 不得全为同一常数。不同电路、不同 corner、不同 vector 应有不同值
+8. `pin_arrival_json` 各值不得全为同一常数。不同电路应有不同值
 9. `cell_types_json` 中的门类型名称与网表中的门类型名称完全一致
-10. `input_pins_json` 统一为 `["a","b","c","d"]`
-11. `pin_loads_json` 必须包含 a, b, c, d, out 五个引脚的负载值
+10. `input_pins_json` 为任意 N 个输入引脚名（对齐 Rust INORDER）
+11. `pin_loads_json` 必须包含所有输入引脚 + 所有输出引脚的负载值
 12. `slew_s` 和 `output_load_f` 是 SPICE 仿真测得的**实际值**，corner 标签中的 S/L 是设定的**测试条件**，两者可能不同。不要用 corner 条件值直接填充实测值列
 13. `gate_states_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例，不得遗漏。翻转判定阈值：输出摆幅 > VDD × 20%。受完整性铁律约束
 14. ~~`per_gate_timing_json` 必须覆盖网表中所有门实例~~ **【已废弃，不需要生成，见第三节废弃说明】**
-15. `parasitic_caps_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例（key 集合一致）。每个门必须含 `in_*` 和 `out` 字段。受完整性铁律约束，详见§八方案C
-16. `supply_noise_json` **【必须，100%覆盖】** 每一行必须包含 `vdd_droop_mV` 和 `gnd_bounce_mV` 两个字段，值 ≥ 0。受完整性铁律约束，详见§八方案D
+15. `parasitic_caps_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例（key 集合一致）。每个门必须含 `in_*` 和 `out` 字段。受完整性铁律约束，详见§六方案C
+16. `supply_noise_json` **【必须，100%覆盖】** 每一行必须包含 `vdd_droop_mV` 和 `gnd_bounce_mV` 两个字段，值 ≥ 0。受完整性铁律约束，详见§六方案D
 
-## 八、高级物理数据（突破排序瓶颈）
+## 六、高级物理数据（突破排序瓶颈）
 
 > **当前模型排序指标**：Spearman ≈ 0.21，选择遗憾 ≈ 2.6%，top1 ≈ 42%。
 > **核心瓶颈**（信噪比诊断实证）：成对分辨 <2% 真实延迟差 = **52%（= 随机）**。
@@ -448,7 +447,7 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 
 ---
 
-## 九、交付计划（单批 ~60 万行）
+## 七、交付计划（单批 ~60 万行）
 
 > V2 改为单批 ~60 万行（单 corner + 任意 I/O + 每组 10-15 变体），批次与数量见第四节。V1 的「两阶段（60 万升级 + 120 万新增）」已废弃。
 
@@ -465,7 +464,7 @@ X_2_I1 wire_1 out INVx1_ASAP7_75t_R
 
 **步骤 1：小批量预检（先跑 2-3 个电路，验证格式 100% 合规再放量）**
 
-生成方在启动 60 万行全量前，**先完成 2-3 个电路（建议涵盖不同门类型和拓扑深度）的全 corner（30 corner）仿真 + 全部列输出**，并附 `data/coverage_report.json`。接收方立即逐字段核对：
+生成方在启动 60 万行全量前，**先完成 2-3 个电路（建议涵盖不同门类型和拓扑深度）的单 corner（2ps/1fF）仿真 + 全部列输出**，并附 `data/coverage_report.json`。接收方立即逐字段核对：
 
 - 列级：`transistor_wave_json`、`parasitic_caps_json`、`supply_noise_json` 是否所有行非空？
 - 子字段级：每个 JSON 内部的 key 集合是否齐全？子字段是否全部非 NaN？`gate` 是否映射到正确的 `X_N`？
