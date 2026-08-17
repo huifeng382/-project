@@ -347,7 +347,18 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 | # | 问题 | GNN 侧 | Rust 侧 | 性质 |
 |---|---|---|---|---|
 | 1 | I/O 形状 | 恰好 4入1出 | 任意 N入M出（1~16入 / 1~6出） | 🔴 硬阻塞 |
-| 2 | 电气条件 | 30 corner + per-pin arrival/vector | 固定 2ps slew / 1fF load / 单 vector | 🟡 中 |
-| 3 | ~~cell 命名~~ | — | — | ✅ 已解决（13 类逻辑） |
+| 2 | 延迟口径 | per-(pin,dir) 端到端 DELAY（评估取最坏） | avg_delay=(rise+fall)/2 多输出平均 | 🟡 中 |
+| 3 | 电气条件 | 30 corner + per-pin arrival/vector | 固定 2ps slew / 1fF load / 单 vector | 🟡 中 |
 
-> 网表格式（扁平 vs 层次化）非阻塞（parser 跳过嵌套）；cell 命名已解决。真正的硬阻塞只剩 **#1 I/O 形状**，其次 **#2 电气条件**。
+> 已消除：cell 命名（✅ 13 类逻辑）、候选粒度（✅ 澄清：贪心评估全局）、输出 pin 命名（并入 #1）。网表格式非阻塞（parser 跳过嵌套）。
+
+### 8.4 问题 2/3 的潜在解决方案
+
+**#2 延迟口径**：
+- 方案 A（推荐）：统一到「最坏情况延迟」。GNN 评估已用最坏（max over pin/dir/vector）；Rust 把 `avg_delay` 改成 max over outputs 的 max(rise,fall)。只改 Rust 一行聚合，GNN 不重训。
+- 方案 B：GNN 重训成「每电路 avg_delay」口径，保持 Rust 不动。丢 per-pin 信息 + 重训成本。
+
+**#3 电气条件**：
+- 方案 A（推荐）：GNN 固定到 Rust 的单一 corner。Rust 固定 2ps/1fF → GNN 补一个 s02p0_l01p0（或 s03p0 近似），per-pin 特征固定值合成（slew=2ps 切换/0 其余、load=固定、arrival=0、vector=默认）。Rust 不改。
+- 方案 B：Rust 补齐多 corner + per-pin arrival/vector（改仿真模板 + SimuVector，成本高）。
+- 方案 C：GNN 降级成无-corner 模型（丢 corner 信息，8.7 教训风险高）。
