@@ -362,3 +362,52 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 - 方案 A（推荐）：GNN 固定到 Rust 的单一 corner。Rust 固定 2ps/1fF → GNN 补一个 s02p0_l01p0（或 s03p0 近似），per-pin 特征固定值合成（slew=2ps 切换/0 其余、load=固定、arrival=0、vector=默认）。Rust 不改。
 - 方案 B：Rust 补齐多 corner + per-pin arrival/vector（改仿真模板 + SimuVector，成本高）。
 - 方案 C：GNN 降级成无-corner 模型（丢 corner 信息，8.7 教训风险高）。
+
+---
+
+## 九、GNN 代码侧修改计划（4 项，spec 已定、代码待改）
+
+> 前提：`DATA_SPEC_V2` 已把 I/O（任意 N/M + JSON 列）、corner（单）、延迟口径（avg_delay）、网表（层次化）定稿。以下 4 项是 GNN 代码侧要跟上 spec 的改动。依赖关系：①→②③（先让 `parse_netlist` 支持任意 I/O，再改 data_loader 和模型读出），④ 独立。
+
+### 9.1 `parse_netlist` 支持任意 I/O（去 `out` 硬编码）
+
+- **现状**（`src/graph_builder.py:parse_netlist`）：从 `.SUBCKT DUT` 行猜输入 pin（排除 vdd/gnd/vss/out），并硬编码 `nodes['out']` 为唯一输出节点。
+- **目标**：输入/输出 pin 由显式列表传入，支持任意 N 输入 / M 输出。
+- **改动**：
+  1. `parse_netlist(netlist_str, input_pins, output_pins)` 增加两个参数。
+  2. 输入节点 = `input_pins` 列表；输出节点 = `output_pins` 列表（删掉硬编码 `nodes['out']`）。
+  3. `build_static_graph` 调用处从 `circuit_static` 的 `input_pins_json` / `output_pins_json` 读列表传入。
+
+### 9.2 `data_loader` 读 JSON pin 列（替代固定 4-pin 列）
+
+- **现状**（`src/data_loader.py:_get_dynamic_features`）：读 `slew_a/b/c/d`、`load_a/b/c/d`、`arrival_time_a/b/c/d` 固定列。
+- **目标**：读 `pin_slew_json` / `pin_load_json` / `pin_arrival_json`（dict keyed by pin 名）。
+- **改动**：
+  1. 解析三个 JSON 列，得到 per-pin 的 slew/load/arrival dict。
+  2. `self.pins` 从 `input_pins_json` 读（不再固定 `['a','b','c','d']`）。
+  3. 按 `input_pins_json` 顺序取每 pin 特征，广播到对应输入节点。
+
+### 9.3 `DelayGNN` 多输出读出（预测 avg_delay）
+
+- **现状**（`src/model.py:forward`）：`gate_mask * x` → `global_add_pool` → 单 scalar，隐含单输出 `out`。
+- **目标**：支持任意 M 输出，读出层对 M 个输出节点取平均，预测单个 avg_delay。
+- **改动**：
+  1. 输出节点来自 `output_pins_json`（M 个），不再硬编码 `out`。
+  2. 读出层对 M 个输出节点池化（先做简单版：对输出节点特征取平均 → 预测单个 avg_delay，对齐 V2 的 DELAY=avg_delay）。
+  3. 后续可选：每个输出节点预测一个延迟再平均（更细粒度，但先不做）。
+
+### 9.4 评估口径「最坏」→「avg_delay」
+
+- **现状**（`src/utils.py:ranking_metrics`）：按 `(expr, corner)` 分组，每变体取 `max over (pin/dir/vector)` 最坏延迟。
+- **目标**：按 `expr` 分组（单 corner），每变体直接用单个 avg_delay。
+- **改动**：
+  1. 分组 key 从 `(expr, corner)` 改成 `expr`（单 corner 下 corner 维度无意义）。
+  2. 每变体延迟直接取 avg_delay（不再 max over pin/dir/vector；V2 里同一电路所有行 DELAY 相同，max 退化为单值）。
+  3. regret/Spearman/top1/recall 等指标计算逻辑不变。
+
+### 9.5 前置验证（先做，再动上面 4 项代码）
+
+- **「无 wave」模型 regret**：跑 `USE_TRANSISTOR_WAVE=False`（+ 关 supply_noise），看 regret 掉多少，决定要不要蒸馏。
+- **「任意 I/O + 多输出 + avg_delay」能否训练**：用 V2 数据（单 corner + 任意 I/O + avg_delay）训一个 seed，确认 9.1~9.4 改完后能正常收敛、排序指标合理。
+
+> 注：本节 9.4 同时把 8.4 里「#2 延迟口径」的决策从「最坏情况」明确为「avg_delay」（对齐 V2 spec 的 DELAY 定义）。
