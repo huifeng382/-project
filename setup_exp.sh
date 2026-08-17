@@ -116,6 +116,16 @@ fi
 if [ "$V" = "structelec" ]; then         # p/g/drive 改从 ASAP7 结构算（修 p/g 正则失效）
   sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'elec'/" config.py
 fi
+# structrich / structlogic 的 seed 变体（补多 seed 确认哪个 cell 策略更好）
+# 用法：structrich123 / structlogic2468 等，后缀即 TRAIN_SEED
+case "$V" in
+  structrich123|structrich2024|structrich456|structrich789|structrich1357|structrich2468|structrich3579|structrich9012)
+    sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'rich'/" config.py
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#structrich}/" config.py ;;
+  structlogic123|structlogic2024|structlogic456|structlogic789|structlogic1357|structlogic2468|structlogic3579|structlogic9012)
+    sed -i "s/^STRUCT_MODE = .*/STRUCT_MODE = 'logic_only'/" config.py
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#structlogic}/" config.py ;;
+esac
 if [ "$V" = "waverich" ]; then          # 晶体管波形丰富聚合(mean+max+std)
   sed -i 's/^WAVE_AGG_RICH = .*/WAVE_AGG_RICH = True/' config.py
 fi
