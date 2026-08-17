@@ -319,3 +319,35 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 
 - **多 seed 确认**：单 seed 噪声大（旧嵌入单 seed 波动 1.93~5.67%）。给 structrich / structlogic 各补 2-3 个 seed。
 - **OOV 名结构精度**：52% 回退默认 n_t=6.0，需补 sc_expansion 覆盖或从 Rust .sp 直接解析晶体管结构（路线 A 完整版）。
+
+---
+
+## 八、贪心评估全局性（修正）+ 电气条件 + 收敛问题清单
+
+### 8.1 修正：贪心是全局择优，不是 window 孤立仿真
+
+> 之前「候选粒度 = window 子电路」的表述不准确，本节修正。
+
+- window 只是**局部搜索单元**（在哪生成 rewrite）；**候选评估的对象是「代回 rewrite 的整个电路」**。
+- 代码证据（`tl_opt.rs`）：
+  - `evaluate()` 用 `module.to_recexpr()` 取**整个电路** expr → `simulate_all_outputs_for_expr` 仿真整个电路。
+  - `avg_delay` = 对所有输出平均 = 全局延迟。
+  - 接受条件 = `global_delta = global_score - current.combined_score`（全局 score 改善）。
+- 因此 GNN 应预测**整个电路的全局延迟**，而非孤立 window。这与 GNN 训练数据（整电路）反而更对齐。
+
+### 8.2 Rust 仿真的电气条件是固定的（asap7.sp 硬编码）
+
+- 输入 slew = **2ps**（`VSTIM_RISE ... PWL(0 0 20p 0 22p {VDD} 1n {VDD})`）。
+- 输出 load = **1fF**（`Cload_out __PIN_OUT__ 0 1f`）。
+- 所有输入 **t=0 同时翻转**、单 vector、非切换输入接 vdd/gnd。
+- 对应 GNN 一个固定 corner（≈s03p0_l01p0；2ps 比 GNN 最小 slew corner 3ps 还低）。
+
+### 8.3 收敛后的问题清单（vs GNN）
+
+| # | 问题 | GNN 侧 | Rust 侧 | 性质 |
+|---|---|---|---|---|
+| 1 | I/O 形状 | 恰好 4入1出 | 任意 N入M出（1~16入 / 1~6出） | 🔴 硬阻塞 |
+| 2 | 电气条件 | 30 corner + per-pin arrival/vector | 固定 2ps slew / 1fF load / 单 vector | 🟡 中 |
+| 3 | ~~cell 命名~~ | — | — | ✅ 已解决（13 类逻辑） |
+
+> 网表格式（扁平 vs 层次化）非阻塞（parser 跳过嵌套）；cell 命名已解决。真正的硬阻塞只剩 **#1 I/O 形状**，其次 **#2 电气条件**。
