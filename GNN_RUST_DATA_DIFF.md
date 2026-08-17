@@ -265,9 +265,57 @@ num_inputs, n_transistors, stack_height(串联深度), parallel_width(并联支�
 
 ---
 
-## 六、待决问题
+## 六、待决问题（更新）
 
-1. **方向验证**：先离线用现有 54 万数据（或其晶体管结构来源）+ 结构特征，验证"结构特征替代 gate_idx 嵌入"排序指标掉不掉（9.6 gate-merge 650→27 曾失败 24.55%→28.7%，必须实测）。
+1. ~~方向验证~~ ✅ **已完成**：结构特征方向成立，见第七节（rich 2.85%、logic 3.64% 均优于旧 638 名嵌入 5.67%）。
 2. **I/O 是否仍锁 4-pin**：若锁，Rust 只能对能规约成 4-pin/1-out 的窗口用模型；若放开，模型输入侧（parse_netlist 硬编码 out、输入 pin 提取、DelayGNN 维度）都要改。
-3. **cell 命名到底哪套**：确认训练数据 638 类 vs `expr_to_hierarchical_spice` 的 `semantic_name` 是否同一逻辑的不同版本，判断能不能做确定性映射（但结论上已倾向"放弃名字、用结构特征"）。
+3. ~~cell 命名到底哪套~~ ✅ **已解决**：放弃名字，用固定 10 类逻辑 + 结构特征（STRUCT_MODE），任意名字（含 Rust）都不 OOV，见第七节。
 4. **延迟口径统一方向**：GNN 学 per-(pin,dir) 延迟，还是退到"每电路 avg_delay"。
+
+---
+
+## 七、问题3（cell 命名 OOV）解决记录 + 结构特征实验
+
+### 7.1 落地实现（14.2.2~14.2.4）
+
+- `graph_builder.py` 新增 `gate_struct(name)`：优先用 `sc_expansion.json` 的 ASAP7 展开算 `(logic_type, n_transistors, drive, stack, parallel)`，查不到回退名字关键字（JOIN/BRIDGE/WIRE → COMPLEX 等）。
+- `rebuild_gate_types` 从「动态 638 类名」改成「固定 10 类逻辑 + 保留类」。
+- `build_static_graph` 的 `gate_idx` 改用逻辑类别；按 `STRUCT_MODE` 决定拼哪些结构特征列。
+- `config.STRUCT_MODE` 四模式：`base`（10逻辑+n_t）/ `logic_only`（只10逻辑）/ `rich`（+stack+parallel）/ `elec`（p/g/drive 从 ASAP7 算）。
+- 缓存 key 加 `STRUCT_MODE`（防止脏缓存）。
+
+### 7.2 OOV 彻底解决（已验证）
+
+Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
+
+| Rust cell 名 | 逻辑类别 | idx | n_t 来源 |
+|---|---|---|---|
+| SC_INV | INV | 0 | sc_expansion |
+| SC_JOIN | INV | 0 | sc_expansion |
+| SC_JOIN_AND_AND | COMPLEX | 9 | 回退（默认6.0） |
+| SC_JOIN_AND_WIRE_WIRE_AND_WIRE_WIRE | COMPLEX | 9 | sc_expansion（10） |
+| 其余复杂 SC_JOIN_* | COMPLEX | 9 | 回退 |
+
+用这些名字构造的网表跑 `build_static_graph`：gate_idx 全部合法（0-9 逻辑 / 10 INPUT_PIN / 11 OUTPUT_PIN），**无越界、无崩溃、无 UNKNOWN_GATE**。词表固定 13 类，Rust 生成再多新结构也不 OOV。
+
+### 7.3 结构特征实验（单 seed=42，spread>10% 遗憾）
+
+| 变体 | 遗憾 | Spearman | top1 | 捕获 | recall@2 A | 停点 |
+|---|---|---|---|---|---|---|
+| 旧 rank(42)（638名嵌入） | 5.67% | 0.699 | 74.2% | 88.5% | — | ~300 |
+| structbase（10逻辑+n_t） | 6.05% | 0.646 | 74.8% | 83.1% | 82.0% | **160** ⚠️ |
+| structlogic（只10逻辑） | 3.64% | 0.692 | 75.7% | 90.9% | **89.2%** | 298 |
+| structrich（+stack+parallel） | **2.85%** 🏆 | 0.619 | 73.5% | 86.8% | 85.8% | 311 |
+| structelec（p/g/drive修） | 3.78% | 0.529 | 71.1% | 89.0% | 86.2% | 377 |
+
+### 7.4 结论
+
+1. **方向成立**：3/4 变体遗憾优于旧 638 名嵌入（5.67%）。rich=2.85%、logic=3.64%、elec=3.78%。
+2. **干净的逻辑分类本身有信号**：`structlogic`（纯 10 逻辑，无结构特征）3.64% > 旧 5.67%。9.6 的「650→27 任意聚类」失败是因为聚的是任意类；「INV/NAND/NOR/AND/OR/…」这套有物理意义的分类比任意名字哈希更 informative。
+3. **rich 最好（2.85%）**：stack+parallel 有真实增益。
+4. **structbase 的 6.05% 被早停污染**：160 epoch 触发 plateau（过拟合）早停，比其它三个少跑一半。是 `n_t` 48% 真实 / 52% 默认 6.0 造成噪声的早过拟合信号，不能当「n_t 有害」的干净证据。
+
+### 7.5 待办
+
+- **多 seed 确认**：单 seed 噪声大（旧嵌入单 seed 波动 1.93~5.67%）。给 structrich / structlogic 各补 2-3 个 seed。
+- **OOV 名结构精度**：52% 回退默认 n_t=6.0，需补 sc_expansion 覆盖或从 Rust .sp 直接解析晶体管结构（路线 A 完整版）。
