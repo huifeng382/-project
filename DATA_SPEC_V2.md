@@ -91,7 +91,7 @@ X_4 wire_1 wire_2 cout SC_INV_WIRE
 | `vector` | str | `"000"` | N位字符串，输入引脚逻辑值，格式见下方 |
 | `slew_s` | float | `5.0e-12` | 切换引脚的输入slew（秒） |
 | `output_load_f` | float | `1.0e-15` | 输出端负载电容（法拉） |
-| `DELAY` | float | `3.304e-11` | 该电路的传播延迟（秒），对齐 Rust `avg_delay` = 各输出 `(avg_rise+avg_fall)/2` 的平均。同一电路所有行 DELAY 相同（延迟是每电路一个值，不按 switching_pin/direction 区分） |
+| `DELAY` | float | `3.304e-11` | 该 timing arc 的传播延迟（秒），从 switching_pin 翻转 50% 到 output 翻转 50%（per-switching_pin/direction/vector 的端到端延迟） |
 | `pin_slew_json` | str | `{"a_0":2.0e-12,"b_0":0.0}` | **【任意 I/O，JSON】** 每个输入引脚的输入 slew（秒）。切换引脚填实际值，非切换引脚填 0。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_load_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16}` | **【任意 I/O，JSON】** 每个输入引脚的负载电容（法拉）。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_arrival_json` | str | `{"a_0":0.0,"b_0":5.0e-12}` | **【任意 I/O，JSON】** 每个输入引脚信号到达时间（秒），相对最早到达引脚的偏移。最早引脚填 0。key 集合 = `input_pins_json` |
@@ -139,8 +139,10 @@ N 位字符串，每位表示一个输入引脚在仿真开始时的初始逻辑
 
 要求：
 - switching_pin 对应的位必须与 direction 一致：direction=rise 时该位为 0，direction=fall 时该位为 1。
-- 每个 (circuit, corner, switching_pin, direction) 组合下固定生成 **1 个 vector**（对齐 Rust `SimuVector`：切换引脚翻转，非切换引脚固定）。
-- 非切换引脚统一取 0（低电平，即 Rust 里「非切换输入接 gnd」），保持与 Rust 仿真一致。
+- 每个 (circuit, corner, switching_pin, direction) 组合下固定生成 **2 个 vector**（切换引脚位相同，非切换引脚取 2 个不同组合，覆盖路径选择）。
+- 示例（switching_pin 为第 2 位，direction=rise）：
+  - vector1: 非切换引脚全 0；
+  - vector2: 非切换引脚取另一组合（如第 1、3 位为 1，其余为 0）。
 
 ### `gate_states_json` 编码规则
 
@@ -173,18 +175,20 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | I/O 形状 | 任意 N-in（1~16）/ M-out（1~6），对齐 Rust benchmark |
 | corner 数 | **1**（2ps slew / 1fF load，标签 `s02p0_l01p0`） |
 | 每输入引脚 | 2 个方向（rise / fall） |
-| vector 数 | 1（切换引脚翻转，非切换引脚固定 vdd/gnd） |
-| 每电路行数 | N_in × 2 行（N_in = 输入引脚数） |
+| vector 数 | 2（切换引脚翻转，非切换引脚取 2 个不同组合，覆盖路径选择） |
+| 每电路行数 | N_in × 2 dir × 2 vector = 4 × N_in 行（N_in = 输入引脚数） |
 | **每组变体数** | **10~15 个**（对齐 Rust 贪心候选数 4~12） |
 | expr 编号 | 新 expr 不与 V1 的 569 个重叠 |
 | 总量 | **~60 万行** |
 
 **隐含数量**（按平均 N_in ≈ 4 估算）：
-- 每电路 ≈ 8 行（4 pin × 2 dir × 1 vector）。
-- 电路数 ≈ 60万 / 8 ≈ **7.5 万**。
-- 组数（expr）≈ 7.5万 / 12.5 ≈ **6000 组**。
+- 每电路 ≈ 16 行（4 pin × 2 dir × 2 vector）。
+- 电路数 ≈ 60万 / 16 ≈ **3.75 万**。
+- 组数（expr）≈ 3.75万 / 12.5 ≈ **3000 组**。
 
-> 对比 V1：1200 电路 → ~7.5万 电路（~62×）；569 expr → ~6000 expr（~10×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
+> 对比 V1：1200 电路 → ~3.75万 电路（~31×）；569 expr → ~3000 expr（~5.3×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
+
+> **聚合方式（对齐 Rust avg_delay）**：评估/排序时，对每个电路所有行（pin/dir/vector）的 DELAY 取**平均** = Rust 的 `avg_delay`。注意：V1 用的是「最坏情况（max）」，V2 改成「平均（mean）」——两者训练标签粒度相同（都是 per-pin/dir/vector 端到端延迟），只是聚合方式不同。
 
 > **I/O 多样性要求（避免小 I/O 独大）**：e-graph 枚举天然偏小电路（输入少 → 功能简单 → 可枚举变体多），若不约束，2~4 输入的电路会占绝对多数、大 I/O 复杂电路被忽视——而大 I/O 恰是 Rust 贪心最需要模型帮忙的难例。因此**按输入数分桶等比例**，每桶电路数大致均衡，避免偏斜。建议分桶：输入 1~2 / 3~4 / 5~8 / 9~16 各约 25%；输出 1 / 2 / 3+ 三档，多输出（≥2 输出）占比不低于 ~20%。
 
