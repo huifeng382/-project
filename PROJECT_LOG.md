@@ -453,6 +453,44 @@ score = -regret×1.0 + recall@2(A)×0.3 + spearman×0.3 + captured×0.1 + recall
 ```
 regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未重选；未来 run 生效。
 
+### 14.4 Rust 集成调查 + DATA_SPEC_V2（2026-08-17~18）
+
+**目标**：把 GNN 排序模型接到 Rust 贪心优化器（NetlistOpt，`tl_opt_smoke` → `optimize_tl_text`），替代昂贵的 SPICE 仿真来给候选排序。
+
+**Rust 侧关键调查发现**（详见 `GNN_RUST_DATA_DIFF.md`）：
+1. **贪心是全局择优**：window 只是「在哪生成 rewrite」的搜索单元；候选评估是「代回整个电路 → 仿真 → 全局 avg_delay」。
+2. **仿真条件固定**（`asap7.sp`）：单 corner（2ps slew / 1fF load）、所有输入 t=0 同时翻转、**单 vector**（`build_simu_vectors_for_simulation` 里 `break` 只取第一个能翻转输出的 truth_table_idx）、延迟 = avg_delay（多输出 rise/fall 平均）。
+3. **I/O 形状**：任意 N入(1~16)/M出(1~6)，不是固定 4pin（benchmark 48 个 .tl 电路，多输出 11 个）。
+
+**cell 命名 OOV → 已解决（STRUCT_MODE）**：
+- 训练（SC_JOIN_OR_WIRE_...）vs Rust（SC_JOIN_AND_AND）两套命名，任意名字都映射到固定 13 类逻辑（sc_expansion 查得到就用，查不到名字回退 COMPLEX）。
+- 结构特征（n_t/stack/parallel）48% 来自 sc_expansion、52% 回退默认值——**质量瑕疵非阻塞**，structrich 单 seed 遗憾 2.85% 证明够用。
+- STRUCT_MODE 四模式（`config.STRUCT_MODE`）：base/logic_only/rich/elec。structrich 2.85%、structlogic 3.64% 均优于旧 638 名嵌入 5.67%（单 seed 42，待多 seed 确认）。
+
+**DATA_SPEC_V2（新文件，对齐 Rust，原 DATA_SPEC.md 保留作 V1 存档）**：
+- I/O 任意 + JSON 列（pin_slew/pin_load，删 arrival——Rust 全 t=0）。
+- 单 corner + 全 t=0 + vector=1。
+- 细粒度 DELAY（per-pin/dir/vector）+ 平均聚合（对齐 avg_delay，非 V1 的「最坏」）。
+- 每组 10-15 变体，60 万行 → 5万电路 / 4000 expr（~42×/7×）。
+- 电路质量 6 条（功能等价/结构去重/非退化/仿真收敛/延迟有效/跨组多样性）。
+- sc_expansion 覆盖 + 命名一致（纳入完整性铁律）。
+- train-only 字段标注：transistor_wave/supply_noise（需仿真）、parasitic_caps（需寄生提取）、pin_load/pin_loads（Rust 不建模输入负载）。
+
+**本轮代码改动**：
+- `graph_builder.py`：STRUCT_MODE（13类逻辑 + 结构特征替代 638 名嵌入）。
+- `utils.py`：recall@K 指标（A/B，@2/@3，非平凡组）。
+- `train_sweep.py`：mid 选点分数加 recall（去 top1）、缓存 key 加 STRUCT_MODE。
+- `config.py`：STRUCT_MODE 四模式开关。
+- `setup_exp.sh`：struct 变体 + seed 变体（structrich2468 等）。
+
+**待办（下一步，按优先级）**：
+1. **验证「无 wave」模型精度**（最高优先）：wave 是 game-changer 但 train-only（Rust 推理拿不到），跑 `USE_TRANSISTOR_WAVE=False` 一个 seed 看 regret 掉多少；掉多（>5%）则上蒸馏（teacher 有 wave → student 无 wave）。
+2. **跑 structrich/structlogic 的 seed 变体**（`bash setup_exp.sh structrich2468` 等），确认哪个 cell 策略更好（单 seed 2.85% vs 3.64% 可能是噪声）。
+3. **GNN 代码侧 4 项改动**（`GNN_RUST_DATA_DIFF.md` 第九节）：parse_netlist 任意 I/O、data_loader JSON 列、DelayGNN 多输出读出、评估口径 avg。
+4. **数据生成方确认项**：4000 expr 是否可行；用不用 expr_to_hierarchical_spice 统一命名（可选优化，非必须）。
+
+> 本节的「当前方向/待办」已由上面的待办清单取代；下方旧的「当前方向/待办」一节作历史保留。
+
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
 2. 阶段2：新 120 万行，4 vector/condition，全部 v9 格式，新 expr 不与已有 569 个重叠。总计 ~180 万行，val 组数翻倍。

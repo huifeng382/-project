@@ -340,6 +340,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 - 输入 slew = **2ps**（`VSTIM_RISE ... PWL(0 0 20p 0 22p {VDD} 1n {VDD})`）。
 - 输出 load = **1fF**（`Cload_out __PIN_OUT__ 0 1f`）。
 - 所有输入 **t=0 同时翻转**、单 vector、非切换输入接 vdd/gnd。
+- **vector 数 = 1（不是 2）**：`design.rs:build_simu_vectors_for_simulation` 里对每个 `(output, pin)` 用 `break` 只取第一个能让输出翻转的 truth_table_idx，不覆盖多路径。`direction`（rise/fall）= 2。所以每电路行数 = N_in × 2 dir × 1 vector × M output。
 - 对应 GNN 一个固定 corner（≈s03p0_l01p0；2ps 比 GNN 最小 slew corner 3ps 还低）。
 
 ### 8.3 收敛后的问题清单（vs GNN）
