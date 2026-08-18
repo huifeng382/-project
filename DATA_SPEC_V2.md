@@ -5,11 +5,11 @@
 > 2. **corner**：从「30 corner（6 slew × 5 load 全交叉）」改为「**单 corner（2ps slew / 1fF load）**」。对齐 Rust `asap7.sp` 模板的固定仿真条件。
 > 3. **每组变体数**：从「2~6 个」改为「**10~15 个**」。对齐 Rust 贪心每 window 的候选数（4~12）。
 >
-> **数据总量保持 ~60 万行不变**（单 corner 省下的 30× 仿真预算，转成 30× 的电路数量）。
+> **数据总量保持 ~60 万行不变**（单 corner 省下的仿真预算，转成 ~21× 的电路数量）。
 
 ## 输出文件
 
-生成 Parquet 文件（每行均须含 `transistor_wave_json`）。V2 改为单 corner + 任意 I/O + 每组 10-15 变体，批次按 e-graph 枚举分组（总量见第四节，~7.5 万电路 / ~60 万行），示例：
+生成 Parquet 文件（每行均须含 `transistor_wave_json`）。V2 改为单 corner + 任意 I/O + 每组 10-15 变体，批次按 e-graph 枚举分组（总量见第四节，~2.5 万电路 / ~60 万行），示例：
 
 ```
 data/batch4/circuit_static.parquet    # e-graph 枚举批次
@@ -32,7 +32,6 @@ data/batch5/timing_arcs.parquet
   - 延迟 `DELAY`：秒（s）
   - 负载电容 `pin_load_json` `output_load_f`：法拉（F）
   - slew `slew_s` `pin_slew_json`：秒（s）
-  - 到达时间 `pin_arrival_json`：秒（s）
 - corner 标签中的数值用于标识测试条件，单位：slew（ps），load（fF）
 
 ---
@@ -91,16 +90,15 @@ X_4 wire_1 wire_2 cout SC_INV_WIRE
 | `vector` | str | `"000"` | N位字符串，输入引脚逻辑值，格式见下方 |
 | `slew_s` | float | `5.0e-12` | 切换引脚的输入slew（秒） |
 | `output_load_f` | float | `1.0e-15` | 输出端负载电容（法拉） |
-| `DELAY` | float | `3.304e-11` | 该 timing arc 的传播延迟（秒），从 switching_pin 翻转 50% 到 output 翻转 50%（per-switching_pin/direction/vector 的端到端延迟） |
+| `DELAY` | float | `3.304e-11` | 该 timing arc 的传播延迟（秒），从 switching_pin 翻转 50% 到 output 翻转 50%（per-switching_pin/direction/vector 的端到端延迟）。多输出电路为 per-output（每个输出一行） |
 | `pin_slew_json` | str | `{"a_0":2.0e-12,"b_0":0.0}` | **【任意 I/O，JSON】** 每个输入引脚的输入 slew（秒）。切换引脚填实际值，非切换引脚填 0。key 集合 = `input_pins_json`。受完整性铁律约束 |
 | `pin_load_json` | str | `{"a_0":4.5e-16,"b_0":3.2e-16}` | **【任意 I/O，JSON】** 每个输入引脚的负载电容（法拉）。key 集合 = `input_pins_json`。受完整性铁律约束 |
-| `pin_arrival_json` | str | `{"a_0":0.0,"b_0":5.0e-12}` | **【任意 I/O，JSON】** 每个输入引脚信号到达时间（秒），相对最早到达引脚的偏移。最早引脚填 0。key 集合 = `input_pins_json` |
-| `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | 该vector下各门实例翻转状态，1=翻转，0=静态（SPICE实测，推理时缺失可BFS推算） |
+| `gate_states_json` | str | `{"X_1":0,"X_2":1,"X_3":1}` | **【必须，100%覆盖】** 该vector下各门实例翻转状态，1=翻转，0=静态（SPICE实测，推理时缺失可BFS推算）。受完整性铁律约束 |
 | `transistor_wave_json` | str | `{"M1":{"gate":"X_2","ids_avg":12.3,...}}` | **【必须，100%覆盖】** 该仿真行每个晶体管的波形数据（gate/ids_avg/ids_peak/vds_swing）。受完整性铁律约束，所有批次每行必须非空。详见§六方案B |
 | `supply_noise_json` | str | `{"vdd_droop_mV":12.3,"gnd_bounce_mV":5.1}` | **【必须，100%覆盖】** 该仿真行翻转窗口内的电源/地噪声。受完整性铁律约束，所有批次每行必须非空。详见§六方案D |
 | `per_gate_timing_json` | str | — | **【已废弃，不需要生成】** 逐门过渡时间。实测表明逐门辅助监督对模型有害（见下方废弃说明），不再生成此列 |
 
-> **I/O 列结构说明（方案 X：JSON）**：任意 I/O 下，per-pin 特征用 JSON 列（`pin_slew_json` / `pin_load_json` / `pin_arrival_json`）而非固定列。原因：(1) JSON 天然变长，无需零填充；(2) 避免「填充 0 被当成真实非切换 pin」的静默坑——填充 pin 和真实非切换 pin 的 slew 都是 0，靠零值无法区分；(3) 与现有 JSON 为主的数据设计一致（gate_states / transistor_wave / pin_loads 均为 JSON）。若用固定列（如 slew_0..slew_15）填零，则 scaler 和数据加载必须严格按 `input_pins_json` 只吃真实 pin，否则会污染特征、损害排序指标。
+> **I/O 列结构说明（方案 X：JSON）**：任意 I/O 下，per-pin 特征用 JSON 列（`pin_slew_json` / `pin_load_json`）而非固定列。原因：(1) JSON 天然变长，无需零填充；(2) 避免「填充 0 被当成真实非切换 pin」的静默坑——填充 pin 和真实非切换 pin 的 slew 都是 0，靠零值无法区分；(3) 与现有 JSON 为主的数据设计一致（gate_states / transistor_wave / pin_loads 均为 JSON）。若用固定列（如 slew_0..slew_15）填零，则 scaler 和数据加载必须严格按 `input_pins_json` 只吃真实 pin，否则会污染特征、损害排序指标。
 
 ### `per_gate_timing_json`（已废弃，不需要生成）
 
@@ -126,6 +124,7 @@ X_4 wire_1 wire_2 cout SC_INV_WIRE
 | slew | **2 ps** | Rust `VSTIM_RISE ... PWL(0 0 20p 0 22p {VDD} ...)` |
 | load | **1 fF** | Rust `Cload_out __PIN_OUT__ 0 1f` |
 | corner 标签 | **`s02p0_l01p0`** | — |
+| 输入翻转 | **所有输入 t=0 同时翻转** | Rust `VSTIM_RISE ... PWL(0 0 ...)`（PWL 从 0 开始，无到达时间偏移） |
 
 **所有批次统一使用上方单 corner（2ps / 1fF）。** 不再有 30 corner 全交叉规格。
 
@@ -167,7 +166,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 
 ## 四、批次要求（V2：单 corner + 任意 I/O + 每组 10-15 变体）
 
-> 相对 V1 的核心变化：单 corner（2ps/1fF）省下 30× 仿真预算 → 换成 30× 电路数量；I/O 任意；每组变体 10-15 个。
+> 相对 V1 的核心变化：单 corner（2ps/1fF）省下仿真预算 → 换成 ~21× 电路数量；I/O 任意；每组变体 10-15 个。
 
 | 项目 | 规格 |
 |------|------|
@@ -176,19 +175,19 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | corner 数 | **1**（2ps slew / 1fF load，标签 `s02p0_l01p0`） |
 | 每输入引脚 | 2 个方向（rise / fall） |
 | vector 数 | 2（切换引脚翻转，非切换引脚取 2 个不同组合，覆盖路径选择） |
-| 每电路行数 | N_in × 2 dir × 2 vector = 4 × N_in 行（N_in = 输入引脚数） |
+| 每电路行数 | N_in × 2 dir × 2 vector × M output = 4 × N_in × M 行（N_in = 输入引脚数，M = 输出引脚数） |
 | **每组变体数** | **10~15 个**（对齐 Rust 贪心候选数 4~12） |
 | expr 编号 | 新 expr 不与 V1 的 569 个重叠 |
 | 总量 | **~60 万行** |
 
 **隐含数量**（按平均 N_in ≈ 6 估算，来自下方「I/O 等比例分桶」1~2/3~4/5~8/9~16 各 25%，加权平均 = (1.5+3.5+6.5+12.5)/4 = 6）：
-- 每电路 ≈ 24 行（6 pin × 2 dir × 2 vector）。
+- 每电路 ≈ 24 行（6 pin × 2 dir × 2 vector × M output，此处按 M=1 估算、未计多输出）。
 - 电路数 ≈ 60万 / 24 ≈ **2.5 万**。
 - 组数（expr）≈ 2.5万 / 12.5 ≈ **2000 组**。
 
 > 对比 V1：1200 电路 → ~2.5万 电路（~21×）；569 expr → ~2000 expr（~3.5×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
 
-> **聚合方式（对齐 Rust avg_delay）**：评估/排序时，对每个电路所有行（pin/dir/vector）的 DELAY 取**平均** = Rust 的 `avg_delay`。注意：V1 用的是「最坏情况（max）」，V2 改成「平均（mean）」——两者训练标签粒度相同（都是 per-pin/dir/vector 端到端延迟），只是聚合方式不同。
+> **聚合方式（对齐 Rust avg_delay）**：评估/排序时，对每个电路所有行（pin/dir/vector/output）的 DELAY 取**平均** = Rust 的 `avg_delay`。注意：V1 用的是「最坏情况（max）」，V2 改成「平均（mean）」——两者训练标签粒度相同（都是 per-pin/dir/vector 端到端延迟），只是聚合方式不同。
 
 > **I/O 多样性要求（避免小 I/O 独大）**：e-graph 枚举天然偏小电路（输入少 → 功能简单 → 可枚举变体多），若不约束，2~4 输入的电路会占绝对多数、大 I/O 复杂电路被忽视——而大 I/O 恰是 Rust 贪心最需要模型帮忙的难例。因此**按输入数分桶等比例**，每桶电路数大致均衡，避免偏斜。建议分桶：输入 1~2 / 3~4 / 5~8 / 9~16 各约 25%；输出 1 / 2 / 3+ 三档，多输出（≥2 输出）占比不低于 ~20%。
 
@@ -260,19 +259,17 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 3. `output_load_f` 不得为0或NaN
 4. `pin_slew_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。切换引脚的值等于 `slew_s`，非切换引脚填 0.0
 5. `pin_load_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。值与 `pin_loads_json`（静态列）一致即可
-6. `pin_arrival_json` 必须覆盖 `input_pins_json` 中所有输入引脚，每个值非 NaN。最早到达的引脚填 0.0，其余引脚填入相对偏移（秒）
-7. 同一 `(circuit_id, corner, switching_pin, direction, vector)` 组合不得出现重复行
-8. `pin_arrival_json` 各值不得全为同一常数。不同电路应有不同值
-9. `cell_types_json` 中的门类型名称与网表中的门类型名称完全一致
-10. `input_pins_json` 为任意 N 个输入引脚名（对齐 Rust INORDER）
-11. `pin_loads_json` 必须包含所有输入引脚 + 所有输出引脚的负载值
-12. `slew_s` 和 `output_load_f` 是 SPICE 仿真测得的**实际值**，corner 标签中的 S/L 是设定的**测试条件**，两者可能不同。不要用 corner 条件值直接填充实测值列
-13. `gate_states_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例，不得遗漏。翻转判定阈值：输出摆幅 > VDD × 20%。受完整性铁律约束
-14. ~~`per_gate_timing_json` 必须覆盖网表中所有门实例~~ **【已废弃，不需要生成，见第三节废弃说明】**
-15. `parasitic_caps_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例（key 集合一致）。每个门必须含 `in_*` 和 `out` 字段。受完整性铁律约束，详见§六方案C
-16. `supply_noise_json` **【必须，100%覆盖】** 每一行必须包含 `vdd_droop_mV` 和 `gnd_bounce_mV` 两个字段，值 ≥ 0。受完整性铁律约束，详见§六方案D
-17. `sc_expansion.json` **【必须，100%覆盖】** 必须覆盖训练数据 `cell_types_json` 中出现的所有 SC_ cell 名，且每个条目的 `subcircuit` 非 null、能展开为 ASAP7 单元。覆盖率报告加一项 `sc_expansion.coverage`。否则 STRUCT_MODE 提不到结构特征、回退到默认值。
-18. **命名一致**：`sc_expansion.json` 的 key 命名必须与训练数据 `cell_types_json` / `gate_level_netlist` 中的 cell 名**完全同一套**（不能用两套命名）。这是规则 17 成立的前提——命名不一致会导致「查不到展开」。
+6. 同一 `(circuit_id, corner, switching_pin, direction, vector)` 组合不得出现重复行
+7. `cell_types_json` 中的门类型名称与网表中的门类型名称完全一致
+8. `input_pins_json` 为任意 N 个输入引脚名（对齐 Rust INORDER）
+9. `pin_loads_json` 必须包含所有输入引脚 + 所有输出引脚的负载值
+10. `slew_s` 和 `output_load_f` 是 SPICE 仿真测得的**实际值**，corner 标签中的 S/L 是设定的**测试条件**，两者可能不同。不要用 corner 条件值直接填充实测值列
+11. `gate_states_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例，不得遗漏。翻转判定阈值：输出摆幅 > VDD × 20%。受完整性铁律约束
+12. ~~`per_gate_timing_json` 必须覆盖网表中所有门实例~~ **【已废弃，不需要生成，见第三节废弃说明】**
+13. `parasitic_caps_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例（key 集合一致）。每个门必须含 `in_*` 和 `out` 字段。受完整性铁律约束，详见§六方案C
+14. `supply_noise_json` **【必须，100%覆盖】** 每一行必须包含 `vdd_droop_mV` 和 `gnd_bounce_mV` 两个字段，值 ≥ 0。受完整性铁律约束，详见§六方案D
+15. `sc_expansion.json` **【必须，100%覆盖】** 必须覆盖训练数据 `cell_types_json` 中出现的所有 SC_ cell 名，且每个条目的 `subcircuit` 非 null、能展开为 ASAP7 单元。覆盖率报告加一项 `sc_expansion.coverage`。否则 STRUCT_MODE 提不到结构特征、回退到默认值。
+16. **命名一致**：`sc_expansion.json` 的 key 命名必须与训练数据 `cell_types_json` / `gate_level_netlist` 中的 cell 名**完全同一套**（不能用两套命名）。这是规则 15 成立的前提——命名不一致会导致「查不到展开」。
 
 ## 六、高级物理数据（突破排序瓶颈）
 
