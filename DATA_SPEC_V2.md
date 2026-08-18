@@ -5,11 +5,11 @@
 > 2. **corner**：从「30 corner（6 slew × 5 load 全交叉）」改为「**单 corner（2ps slew / 1fF load）**」。对齐 Rust `asap7.sp` 模板的固定仿真条件。
 > 3. **每组变体数**：从「2~6 个」改为「**10~15 个**」。对齐 Rust 贪心每 window 的候选数（4~12）。
 >
-> **数据总量保持 ~60 万行不变**（单 corner 省下的仿真预算，转成 ~21× 的电路数量）。
+> **数据总量保持 ~60 万行不变**（单 corner 省下的仿真预算，转成 ~42× 的电路数量）。
 
 ## 输出文件
 
-生成 Parquet 文件（每行均须含 `transistor_wave_json`）。V2 改为单 corner + 任意 I/O + 每组 10-15 变体，批次按 e-graph 枚举分组（总量见第四节，~2.5 万电路 / ~60 万行），示例：
+生成 Parquet 文件（每行均须含 `transistor_wave_json`）。V2 改为单 corner + 任意 I/O + 每组 10-15 变体，批次按 e-graph 枚举分组（总量见第四节，~5 万电路 / ~60 万行），示例：
 
 ```
 data/batch4/circuit_static.parquet    # e-graph 枚举批次
@@ -138,10 +138,8 @@ N 位字符串，每位表示一个输入引脚在仿真开始时的初始逻辑
 
 要求：
 - switching_pin 对应的位必须与 direction 一致：direction=rise 时该位为 0，direction=fall 时该位为 1。
-- 每个 (circuit, corner, switching_pin, direction) 组合下固定生成 **2 个 vector**（切换引脚位相同，非切换引脚取 2 个不同组合，覆盖路径选择）。
-- 示例（switching_pin 为第 2 位，direction=rise）：
-  - vector1: 非切换引脚全 0；
-  - vector2: 非切换引脚取另一组合（如第 1、3 位为 1，其余为 0）。
+- 每个 (circuit, corner, switching_pin, direction) 组合下固定生成 **1 个 vector**（对齐 Rust `build_simu_vectors_for_simulation` 的 `break`：每个 (output, pin) 只取第一个能让输出翻转的 truth_table_idx）。
+- 非切换引脚的电平由该 truth_table_idx 决定（Rust 取「第一个能翻转输出的真值表行」，非任意选）。
 
 ### `gate_states_json` 编码规则
 
@@ -166,7 +164,7 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 
 ## 四、批次要求（V2：单 corner + 任意 I/O + 每组 10-15 变体）
 
-> 相对 V1 的核心变化：单 corner（2ps/1fF）省下仿真预算 → 换成 ~21× 电路数量；I/O 任意；每组变体 10-15 个。
+> 相对 V1 的核心变化：单 corner（2ps/1fF）省下仿真预算 → 换成 ~42× 电路数量；I/O 任意；每组变体 10-15 个。
 
 | 项目 | 规格 |
 |------|------|
@@ -174,18 +172,18 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 | I/O 形状 | 任意 N-in（1~16）/ M-out（1~6），对齐 Rust benchmark |
 | corner 数 | **1**（2ps slew / 1fF load，标签 `s02p0_l01p0`） |
 | 每输入引脚 | 2 个方向（rise / fall） |
-| vector 数 | 2（切换引脚翻转，非切换引脚取 2 个不同组合，覆盖路径选择） |
-| 每电路行数 | N_in × 2 dir × 2 vector × M output = 4 × N_in × M 行（N_in = 输入引脚数，M = 输出引脚数） |
+| vector 数 | 1（对齐 Rust `break`：每个 (output, pin) 只取第一个能翻转输出的 truth_table_idx） |
+| 每电路行数 | N_in × 2 dir × 1 vector × M output = 2 × N_in × M 行（N_in = 输入引脚数，M = 输出引脚数） |
 | **每组变体数** | **10~15 个**（对齐 Rust 贪心候选数 4~12） |
 | expr 编号 | 新 expr 不与 V1 的 569 个重叠 |
 | 总量 | **~60 万行** |
 
 **隐含数量**（按平均 N_in ≈ 6 估算，来自下方「I/O 等比例分桶」1~2/3~4/5~8/9~16 各 25%，加权平均 = (1.5+3.5+6.5+12.5)/4 = 6）：
-- 每电路 ≈ 24 行（6 pin × 2 dir × 2 vector × M output，此处按 M=1 估算、未计多输出）。
-- 电路数 ≈ 60万 / 24 ≈ **2.5 万**。
-- 组数（expr）≈ 2.5万 / 12.5 ≈ **2000 组**。
+- 每电路 ≈ 12 行（6 pin × 2 dir × 1 vector × M output，此处按 M=1 估算、未计多输出）。
+- 电路数 ≈ 60万 / 12 ≈ **5 万**。
+- 组数（expr）≈ 5万 / 12.5 ≈ **4000 组**。
 
-> 对比 V1：1200 电路 → ~2.5万 电路（~21×）；569 expr → ~2000 expr（~3.5×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
+> 对比 V1：1200 电路 → ~5万 电路（~42×）；569 expr → ~4000 expr（~7×）。核心收益 = 拓扑多样性暴涨，对齐 Rust 贪心排「任意 I/O 整电路、单 corner、10-15 候选」的场景。
 
 > **聚合方式（对齐 Rust avg_delay）**：评估/排序时，对每个电路所有行（pin/dir/vector/output）的 DELAY 取**平均** = Rust 的 `avg_delay`。注意：V1 用的是「最坏情况（max）」，V2 改成「平均（mean）」——两者训练标签粒度相同（都是 per-pin/dir/vector 端到端延迟），只是聚合方式不同。
 
