@@ -246,6 +246,9 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
       "supply_noise_json.vdd_droop_mV": "96000/96000 (100%)",
       "supply_noise_json.gnd_bounce_mV": "96000/96000 (100%)"
     }
+  },
+  "sc_expansion": {
+    "coverage": "N/N (100%)"
   }
 }
 ```
@@ -268,6 +271,8 @@ gate_states_json = {"X_1":0,"X_2":1,"X_3":1,"X_4":1}
 14. ~~`per_gate_timing_json` 必须覆盖网表中所有门实例~~ **【已废弃，不需要生成，见第三节废弃说明】**
 15. `parasitic_caps_json` **【必须，100%覆盖】** 必须覆盖网表中所有门实例（key 集合一致）。每个门必须含 `in_*` 和 `out` 字段。受完整性铁律约束，详见§六方案C
 16. `supply_noise_json` **【必须，100%覆盖】** 每一行必须包含 `vdd_droop_mV` 和 `gnd_bounce_mV` 两个字段，值 ≥ 0。受完整性铁律约束，详见§六方案D
+17. `sc_expansion.json` **【必须，100%覆盖】** 必须覆盖训练数据 `cell_types_json` 中出现的所有 SC_ cell 名，且每个条目的 `subcircuit` 非 null、能展开为 ASAP7 单元。覆盖率报告加一项 `sc_expansion.coverage`。否则 STRUCT_MODE 提不到结构特征、回退到默认值。
+18. **命名一致**：`sc_expansion.json` 的 key 命名必须与训练数据 `cell_types_json` / `gate_level_netlist` 中的 cell 名**完全同一套**（不能用两套命名）。这是规则 17 成立的前提——命名不一致会导致「查不到展开」。
 
 ## 六、高级物理数据（突破排序瓶颈）
 
