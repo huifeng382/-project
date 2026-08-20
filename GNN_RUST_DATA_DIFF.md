@@ -310,15 +310,42 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 
 ### 7.4 结论
 
+> ⚠️ **本节 7.3/7.4 为单 seed=42 的历史记录，结论已被 7.6 多 seed 确认推翻（2026-08-20）：真正最优是 structlogic（logic_only），不是 structrich。**
+
 1. **方向成立**：3/4 变体遗憾优于旧 638 名嵌入（5.67%）。rich=2.85%、logic=3.64%、elec=3.78%。
 2. **干净的逻辑分类本身有信号**：`structlogic`（纯 10 逻辑，无结构特征）3.64% > 旧 5.67%。9.6 的「650→27 任意聚类」失败是因为聚的是任意类；「INV/NAND/NOR/AND/OR/…」这套有物理意义的分类比任意名字哈希更 informative。
-3. **rich 最好（2.85%）**：stack+parallel 有真实增益。
+3. ~~**rich 最好（2.85%）**：stack+parallel 有真实增益。~~ ❌ 单 seed 噪声（见 7.6）。
 4. **structbase 的 6.05% 被早停污染**：160 epoch 触发 plateau（过拟合）早停，比其它三个少跑一半。是 `n_t` 48% 真实 / 52% 默认 6.0 造成噪声的早过拟合信号，不能当「n_t 有害」的干净证据。
 
 ### 7.5 待办
 
-- **多 seed 确认**：单 seed 噪声大（旧嵌入单 seed 波动 1.93~5.67%）。给 structrich / structlogic 各补 2-3 个 seed。
-- **OOV 名结构精度**：52% 回退默认 n_t=6.0，需补 sc_expansion 覆盖或从 Rust .sp 直接解析晶体管结构（路线 A 完整版）。
+- ✅ **多 seed 确认**（已完成，2026-08-20，见 7.6）：structlogic 两 seed 全面胜出 → 默认 `STRUCT_MODE='logic_only'`。
+- **OOV 名结构精度**：52% 回退默认 n_t=6.0，需补 sc_expansion 覆盖或从 Rust .sp 直接解析晶体管结构（路线 A 完整版）。——随 structrich 降级为低优先（logic_only 不依赖 n_t）。
+
+### 7.6 多 seed 确认（2026-08-20）：结论反转，structlogic 胜出
+
+**seed 2468/456 两批（hi_spread 口径，SPLIT_SEED=42 同切分）：**
+
+| run | 遗憾 | Spearman | top1 | 捕获率 | recall@2 A | 停点 |
+|---|---|---|---|---|---|---|
+| structrich2468 | 3.72% | 0.652 | 76.3% | 87.8% | 86.8% | 264 |
+| structrich456 | 3.36% | 0.586 | 71.2% | 89.4% | 87.3% | 579 |
+| **structlogic2468** | **1.72%** | 0.657 | 78.0% | 89.7% | **92.6%** | 193 |
+| **structlogic456** | **1.78%** | 0.686 | **83.0%** | 89.0% | 90.0% | 327 |
+
+**3-seed 集成（seed 42+2468+456，等权平均）：**
+
+| 组合 | 遗憾 | Spearman | top1 | 捕获率 | recall@2 A |
+|---|---|---|---|---|---|
+| 3-seed（42+2468+456） | 1.88% | **0.694** | 77.5% | 91.6% | 89.0% |
+| top-2（2468+456） | **1.76%** | 0.642 | **80.3%** | 89.7% | **91.5%** |
+
+**结论**：
+1. **structlogic 是最优 cell 策略**：两 seed 遗憾 1.72/1.78% 全面优于 structrich（3.36/3.72%）。7.3 的「rich 最好」是 seed 42 噪声。结构特征（n_t/stack/parallel）在 logic_only 之上**有害**（噪声/过拟合），不是「更多特征更好」。
+2. **structlogic 单 seed 已超越历史最强单 seed（cornerattn 2468 = 1.93%）**，recall@2 A 90~92.6% 甚至高于 cornerattn top-3 集成（88.1%）。
+3. **集成遗憾未破 cornerattn top-3 的 1.48%**（3-seed=1.88%、top-2=1.76%），但 Spearman/top1 相当或更好。cornerattn top-3 仍是最低遗憾交付基线；structlogic（logic_only）为 V2 重训默认。
+4. **seed42 是拖累项**：加入集成 Spearman +0.05、regret +0.12pp、recall@2 A −2.5pp——差 seed 拖累，与 14.1 一致。后续 structlogic 集成建议从强 seed（2468/456/1357 系）起步。
+5. **<2% 成对分辨 58%** 仍接近随机——SNR 天花板未破，突破靠 V2 数据（wave 全覆盖）。
 
 ---
 

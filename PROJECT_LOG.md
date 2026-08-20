@@ -485,11 +485,40 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **待办（下一步，按优先级）**：
 1. **验证「无 wave」模型精度**（最高优先）：wave 是 game-changer 但 train-only（Rust 推理拿不到），跑 `USE_TRANSISTOR_WAVE=False` 一个 seed 看 regret 掉多少；掉多（>5%）则上蒸馏（teacher 有 wave → student 无 wave）。
-2. **跑 structrich/structlogic 的 seed 变体**（`bash setup_exp.sh structrich2468` 等），确认哪个 cell 策略更好（单 seed 2.85% vs 3.64% 可能是噪声）。
+2. ✅ **structrich/structlogic 多 seed 确认**（已完成，2026-08-20，结果见 14.4.4）：structlogic 两 seed 全面胜出 → V2 重训默认 `STRUCT_MODE='logic_only'`，structrich/elec 不再投入。
 3. **GNN 代码侧 4 项改动**（`GNN_RUST_DATA_DIFF.md` 第九节）：parse_netlist 任意 I/O、data_loader JSON 列、DelayGNN 多输出读出、评估口径 avg。
 4. **数据生成方确认项**：4000 expr 是否可行；用不用 expr_to_hierarchical_spice 统一命名（可选优化，非必须）。
 
 > 本节的「当前方向/待办」已由上面的待办清单取代；下方旧的「当前方向/待办」一节作历史保留。
+
+### 14.4.4 struct 多 seed 确认 + 3-seed 集成（2026-08-20，交付数据 delivery1+2，~54 万行）
+
+**多 seed 确认（seed 2468/456，hi_spread 口径，SPLIT_SEED=42 同切分）：**
+
+| run | 遗憾 | Spearman | top1 | 捕获率 | recall@2 A | 停点 |
+|---|---|---|---|---|---|---|
+| structrich2468 | 3.72% | 0.652 | 76.3% | 87.8% | 86.8% | 264 |
+| structrich456 | 3.36% | 0.586 | 71.2% | 89.4% | 87.3% | 579 |
+| **structlogic2468** | **1.72%** | 0.657 | 78.0% | 89.7% | **92.6%** | 193 |
+| **structlogic456** | **1.78%** | 0.686 | **83.0%** | 89.0% | 90.0% | 327 |
+
+**3-seed 集成（structlogic seed 42+2468+456，等权平均，`_ens_struct.py`）：**
+
+| 组合 | 遗憾 | Spearman | top1 | 捕获率 | recall@2 A | recall@3 A | <2% 成对 |
+|---|---|---|---|---|---|---|---|
+| 3-seed（42+2468+456） | 1.88% | **0.694** | 77.5% | 91.6% | 89.0% | 85.9% | 58% |
+| top-2（2468+456） | **1.76%** | 0.642 | **80.3%** | 89.7% | **91.5%** | 89.9% | 58% |
+| （对照）cornerattn top-3 裁剪 | **1.48%** | 0.691 | 76.3% | 92.6% | 88.1% | 84.9% | — |
+
+**结论**：
+1. **structlogic 胜出，7.3 结论反转**：两 seed 遗憾 1.72/1.78% 全面优于 structrich（3.36/3.72%）——7.3「structrich 2.85% 最优」是 seed 42 噪声。干净的 10 逻辑分类才是最优 cell 策略，n_t/stack/parallel 结构特征反而有害。
+2. **structlogic 单 seed 超越历史最强单 seed**：1.72/1.78% vs cornerattn 最优单 seed 2468（1.93%）；recall@2 A 90~92.6% 高于 cornerattn top-3 集成（88.1%）。
+3. **集成遗憾未破 cornerattn top-3 的 1.48%**：3-seed=1.88%、top-2=1.76%，遗憾仍略高；但 Spearman（0.694 vs 0.691）与 top1（77.5/80.3 vs 76.3）相当或更好。**cornerattn top-3（1.48%）仍是最低遗憾交付基线**。
+4. **seed42（3.64%）是拖累项**：加入后 Spearman +0.05（0.642→0.694）、但 regret +0.12pp、recall@2 A −2.5pp（91.5→89.0）——差 seed 拖累，与 14.1 结论一致。
+5. **npz 对账全部通过**（单 seed 3.64/1.72/1.78 与 SUMMARY 一致）——无 midpoint/npz 失配，集成可信。
+6. **<2% 成对分辨 58%** 仍接近随机——SNR 天花板未破，突破仍靠 V2 数据（wave 全覆盖）。
+
+**状态更新**：14.4 待办 #2 ✅ 完成（cell 策略 = logic_only）；structrich/elec 不再投入。当前最优交付基线不变：cornerattn top-3（1.48%）。structlogic 作为 V2 重训默认架构候选（logic_only）。
 
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
