@@ -520,6 +520,31 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **状态更新**：14.4 待办 #2 ✅ 完成（cell 策略 = logic_only）；structrich/elec 不再投入。当前最优交付基线不变：cornerattn top-3（1.48%）。structlogic 作为 V2 重训默认架构候选（logic_only）。
 
+### 14.4.5 V2 数据首轮合规检查（2026-08-20，不合格，需返工）
+
+> 数据来源：GitHub `10.3.3-fix-earlystop` 分支 commit 4a0c18f（Add V2 dataset）+ 97fd7fda（sc_expansion 合并 8909 类）。本地 `git checkout 97fd7fda -- data/` 拉取。检查脚本：`_check_v2_data.py`（对照 DATA_SPEC_V2 逐项，输出 `_v2check_full.txt`）。
+
+**数据概况（batch_v2_full，交付主体）**：
+- 8860 电路 / 69,439 行 / 591 expr（expr8000+，与 V1 569 无重叠 ✓）
+- 组大小 10~15（中位 15，100% 合规 ✓）；单 corner `s02p0_l01p0` ✓；slew_s=2ps / load=1fF ✓
+- 每电路 8 行 = 2×N_in×M ✓（1 个电路 7 行缺 a/fall）；无重复行 ✓；DELAY 1.6ps~174ps 在范围 ✓
+- batch_v2（290 电路）= full 的子集且本身损坏（input_pins_json 全空、网表缺输入引脚、direction 同样 .sp）→ **该批废弃**，用 full 即可
+
+**不合格项（生成侧需修复）**：
+1. ❌ **direction 带 `.sp` 后缀**（rise.sp/fall.sp），应为 rise/fall——全部行。
+2. ❌ **大小写不一致**：gate_states_json / parasitic_caps_json 的 key 与 transistor_wave_json 的 gate 字段全用小写 `x_*`，网表是 `X_*` → graph_builder 按网表名查 JSON 必 miss（**14.4 历史同款 bug 复现**，教训未传导）。
+3. ❌ **vector 切换位恒为 1**（抽样 2 万行 100%）：rise 行切换位应为 0——vector 与 direction 不一致。
+4. ❌ **ids_charge == ids_avg（100% 完全相等）**：电荷积分未算，直接复制平均电流（∫|Ids|dt 语义丢失）。
+5. ❌ **sc_expansion.json**：3653 个 SC_ 名中 **1456 个（40%）展开为空**（subcircuit 缺失）；coverage_report_v2.json 声称 100% 与事实不符。
+6. ❌ 1 个电路缺行：candidate_expr8089_0014（缺 switching_pin=a/direction=fall）。
+7. ⚠️ **supply_noise 全零 100%**——疑似未提取（规格允许 0.0 但全零=占位，无信息量）。
+8. ⚠️ **I/O 形状未达 V2 规格**：全部 1~4 入 / 1 出（4 入占 98%），无 5~16 入、无多输出、无分桶——「任意 I/O 对齐 Rust」核心目标未实现。
+9. ⚠️ **规模仅规格的 ~12%**：8860 电路 / 69K 行 / 591 expr vs 规格 5 万电路 / 60 万行 / 4000 expr。
+
+**结论**：结构层（列、单 corner、DELAY 范围、组大小、无重复、覆盖率声明）基本就位，但**值级硬伤（方向后缀、大小写、vector 位、ids_charge）任一都会让训练/推理静默出错**，加 I/O 形状与规模未达规格 → **本轮不合格，退回生成方修复**。PASS 36 / FAIL 4 / WARN 8 明细见 `_v2check_full.txt`。
+
+**对模型侧影响**：修复 1-6 是生成方的事；8/9（任意 I/O + 满量）决定能否启动 V2 训练。数据到位前，V2 训练无从谈起，唯一可推进的是 14.4 待办 #1「无 wave 验证」（V1 数据即可跑）。
+
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
 2. 阶段2：新 120 万行，4 vector/condition，全部 v9 格式，新 expr 不与已有 569 个重叠。总计 ~180 万行，val 组数翻倍。

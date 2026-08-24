@@ -15,4 +15,8 @@ outputs/
 
 # 临时文件
 *.log
-*.tmp
+*.tmp_v2check_out.txt
+_v2extra_out.txt
+_v2extra2.txt
+_inspect_v2_out.txt
+_inspect_v2_out.txt
