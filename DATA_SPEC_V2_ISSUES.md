@@ -1,39 +1,39 @@
-# DATA_SPEC_V2 数据合规问题清单（首轮检查 2026-08-20 + 修复版复检 2026-08-24）
+# DATA_SPEC_V2 数据合规问题清单（版本记录式）
 
-> **首轮结论：不合格，需返工。** 检查对象为 GitHub `10.3.3-fix-earlystop` @ `97fd7fda` 交付的 V2 数据
-> （`data/batch_v2` + `data/batch_v2_full`）。检查方法：`_check_v2_data.py` 逐项对照
-> `DATA_SPEC_V2.md`（定稿）自动校验，明细见 `_v2check_full.txt`。
+> 检查方法：`_check_v2_data.py` 逐项对照 `DATA_SPEC_V2.md`（定稿）自动校验；检查对象为 GitHub
+> `10.3.3-fix-earlystop` 分支交付的 `data/batch_v2_full`（V2 单 corner 数据）。
+> 明细：首轮 `_v2check_full.txt`、复检 `_v2check_fix2.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
 >
-> **修复版复检（2026-08-24, commit `a2b5d36`）：基本达标，残留 3 项小问题（见第四节），可用于训练。**
->
-> **范围说明**：生成**数量**问题（规格 ~5 万电路 / 60 万行 / 4000 expr，实际 8860 / 69,439 / 591，
-> 约 12%）按 2026-08-20 讨论**暂缓**，不在本清单展开；本清单只列值级与结构性问题。
+> **范围说明**：生成**数量**问题（规格 ~5 万电路 / 60 万行 / 4000 expr，实际 8,679 / 69,432 / 579，约 14%）
+> 按 2026-08-20 讨论**暂缓**，两版均不展开；本清单只列值级与结构性问题。
 
 ---
 
-## 一、数据概况（batch_v2_full，交付主体）
+## 版本记录
 
-| 项 | 实际 | 规格要求 | 判定 |
+| 版本 | 日期 | 状态 | 变更摘要 |
 |---|---|---|---|
-| 电路 / 行 / expr | 8,860 / 69,439 / 591（expr8000+） | 见「范围说明」 | ⏸ 暂缓 |
-| I/O 形状 | 全部 1~4 入 / 1 出（4 入占 98%） | 任意 N(1~16)/M(1~6) + 分桶 + 多输出 ≥20% | ❌ P9 |
-| corner | 单 `s02p0_l01p0` ✓ | 单 corner（2ps/1fF） | ✅ |
-| slew_s / output_load_f | 2e-12 / 1e-15（恒定）✓ | 2ps / 1fF | ✅ |
-| 组大小（变体/expr） | 10~15，中位 15，100% 合规 ✓ | 10~15 | ✅ |
-| 每电路行数 | 8 = 2×N_in×M（1 个电路 7 行） | 2×N_in×M | ⚠️ P6 |
-| vector | 每 (circuit,pin,dir) 恰 1 个 ✓ | 1（对齐 Rust break） | ✅（但值错，见 P3） |
-| 重复行 | 0 ✓ | 无 | ✅ |
-| DELAY | 1.6ps ~ 174ps，在 (1e-12, 1e-8) ✓ | 同上 | ✅ |
-| expr 与 V1 | 不重叠（expr8000+）✓ | 不与 V1 569 重叠 | ✅ |
-| 必需列 | 静态 10 列 / 动态 15 列齐全 ✓ | 见规格 | ✅ |
-| coverage_report_v2.json | 存在且声称 100%，但 3 处口径不可信 | 随数据交付 | ❌ P10 |
-| transistor_wave / gate_states / supply_noise / parasitic_caps | 列非空 100% ✓ | 完整性铁律 | ✅（值级问题见 P1/P5/P7） |
-
-- **batch_v2（290 电路）= batch_v2_full 的子集且本身损坏**（`input_pins_json` 全空、网表 `.SUBCKT DUT` 无输入引脚）→ **该批废弃**，用 full 即可（P8）。
+| **V1.0** | 2026-08-20 | ❌ **不合格，需返工** | 首轮全量检查（commit `97fd7fda` 交付）：发现 **P1~P10 共 10 项问题**——值级硬伤 6 项（P1 大小写 / P2 direction / P3 vector / P4 sc_expansion / P5 ids_charge / P6 缺行）+ 说明类 2 项（P7 supply_noise / P8 batch_v2）+ 结构性 2 项（P9 I/O 形状 / P10 coverage_report）。退回生成方返工。 |
+| **V2.0** | 2026-08-24 | 🟡 **基本达标，仅剩小项** | 生成方提交修复 commit `a2b5d36` 后复检（44 PASS / 2 FAIL / 1 WARN）：**P1/P2/P3/P6/P8 已修复、P7 已说明、P4/P5/P10 大部分修复**；**本轮仅剩 3 个小项需修改**（R1 sc_expansion 12 名 null / R2 parasitic 12 电路缺 in_* / R3 ids_charge 11 个复制残留，均小量级）。**新增 P9 I/O 实证**：Rust benchmark 实测 46 电路 18 种形状，当前数据仅覆盖 ~22% → P9 升级为 Rust 集成最高阻塞。 |
 
 ---
 
-## 二、问题清单（按严重度排序，每条含「问题所在 → Rust 集成影响 → 修复要求」）
+## 一、V1.0 首轮问题清单（2026-08-20，10 项）
+
+> 首轮数据：batch_v2（290 电路，损坏子集）+ batch_v2_full（8,860 电路 / 69,439 行）。下表为总览，「状态」列是 V2.0 复检结果；详细条目见下。
+
+| # | 问题 | 严重度 | V2.0 状态 |
+|---|---|---|---|
+| P1 | 大小写不一致：JSON key `x_*` vs 网表 `X_*` | 🔴 致命 | ✅ 已修复 |
+| P2 | direction 带 `.sp` 后缀（`rise.sp`/`fall.sp`） | 🔴 高 | ✅ 已修复 |
+| P3 | vector 切换位恒为 1（rise 行应为 0） | 🔴 高 | ✅ 已修复 |
+| P4 | sc_expansion.json 2716/8909 条目 null（30.5%，几乎全是 JOIN） | 🟠 中高 | 🟡 大部分（剩 12 名 = R1） |
+| P5 | ids_charge == ids_avg（100% 复制） | 🟠 中 | 🟡 基本（剩 0.005% = R3） |
+| P6 | 缺行：`candidate_expr8089_0014` 只有 7 行 | 🟡 低 | ✅ 已修复（剔除 181 个不完整电路） |
+| P7 | supply_noise 全零（100%） | 🟡 低 | ✅ 已说明（ideal-supply 合法） |
+| P8 | batch_v2 损坏子集（input_pins_json 全空） | 🟡 低 | ✅ 已废弃（文件删除） |
+| P9 | I/O 形状未达任意 N(1~16)/M(1~6)（全 4 入 1 出） | 🟠 结构性 | ❌ 未修（V2.0 实证为 Rust 集成最高阻塞） |
+| P10 | coverage_report_v2.json 自身问题（假 100%） | 🟠 中 | 🟡 大部分（值级项已加，2 处口径残留） |
 
 ### P1 🔴 大小写不一致：JSON key `x_*` vs 网表 `X_*`（最致命）
 
@@ -46,7 +46,7 @@
   Rust 侧 `expr_to_hierarchical_spice` 输出就是大写 `X_1`，serve.py 按 Rust 网表名构造特征——
   **训练数据 key 小写、推理时大写，特征名空间系统性错位，模型静默退化成无路径/无结构信息版**。
 - **修复要求**：JSON 中所有实例名 key（gate_states / parasitic_caps / transistor_wave.gate / pin_loads 等）与网表
-  `X_*` 大小写完全一致。
+  `X_*` 大小写完全一致。✅ **V2.0 已修**（复检 3000/3000 一致）。
 
 ### P2 🔴 direction 带 `.sp` 后缀（`rise.sp` / `fall.sp`）
 
@@ -55,7 +55,7 @@
 - **Rust 集成影响**：Rust 侧 `SimuVector.timing_sense` 是纯 `rise`/`fall`。GNN 训练学到的是 `rise.sp` 脏值；
   serve.py 推理时从 Rust 拿到真 `rise` → **推理值在训练分布之外（OOV）**，direction 特征编码失效。
   且 V2 规格明确 `direction ∈ {rise, fall}`，9.2 data_loader 按 direction 做特征与 avg 聚合，脏值污染口径。
-- **修复要求**：`direction` 值去掉 `.sp` 后缀（一行 `replace('.sp','')` 级别）。
+- **修复要求**：`direction` 值去掉 `.sp` 后缀（一行 `replace('.sp','')` 级别）。✅ **V2.0 已修**（原始值 = {rise, fall}）。
 
 ### P3 🔴 vector 切换位恒为 1（rise 行应为 0）
 
@@ -65,7 +65,7 @@
 - **Rust 集成影响**：Rust vector 语义 = **初始逻辑电平**（`SimuVector` truth_table_idx 决定非切换引脚，
   切换引脚初始态 rise→0 / fall→1）。GNN 自 8.5 起把 vector 解码为 per-pin 逻辑状态特征，
   训练学到的映射与 Rust 推理喂来的初始电平**语义相反** → rise 场景排序直接错。
-- **修复要求**：vector 按初始电平生成（rise 行切换位=0，fall 行=1），非切换位按 truth_table_idx。
+- **修复要求**：vector 按初始电平生成（rise 行切换位=0，fall 行=1），非切换位按 truth_table_idx。✅ **V2.0 已修**（20000/20000 一致）。
 
 ### P4 🟠 sc_expansion.json：2716/8909 条目值为 null（30.5%），几乎全是 SC_JOIN_*
 
@@ -79,7 +79,7 @@
   **Rust 的 cell 命名是另一套**（`SC_JOIN_AND_AND` 等，7.2 已证 5/7 OOV）——V2 自己的名字都查不到展开，
   Rust 的名字更查不到 → 结构特征全回退。对应 `GNN_RUST_DATA_DIFF.md` 9.3 待办「OOV 名结构精度」：
   要么补 sc_expansion 覆盖，要么改走路线 A 完整版（从 Rust `.sp` 的 `M_` 行直接解析晶体管结构）。
-- **修复要求**：所有出现过的 SC_ 名 subcircuit 非空可展开；coverage_report 如实报告。
+- **修复要求**：所有出现过的 SC_ 名 subcircuit 非空可展开；coverage_report 如实报告。🟡 **V2.0 大部分**（null 30.5%→0.28%，剩 12 名 = 本轮 R1）。
 
 ### P5 🟠 ids_charge == ids_avg（100% 完全相等）
 
@@ -89,7 +89,7 @@
   `ids_charge` 是规格标注的「直接决定延迟的物理量」。7 个子字段 1 个是假值 → 模型学到「电荷=平均电流」的错误相关性。
   wave 是 **train-only**（Rust 推理拿不到），计划走蒸馏（teacher 有 wave → student 无 wave）——
   假 ids_charge 让 teacher 物理信号带噪，蒸馏收益打折；若 Rust 侧以后真算 ids_charge（正确量纲），分布立刻漂移。
-- **修复要求**：ids_charge 按翻转窗口 ∫|Ids|dt 重算，不得等于 ids_avg。
+- **修复要求**：ids_charge 按翻转窗口 ∫|Ids|dt 重算，不得等于 ids_avg。🟡 **V2.0 基本**（改为 peak×rise_time/1000 fC，剩 0.005% = 本轮 R3）。
 
 ### P6 🟡 缺行：`candidate_expr8089_0014` 只有 7 行（缺 a/fall）
 
@@ -97,7 +97,7 @@
 - **问题所在**：该 (pin,dir) 仿真行缺失——仿真失败被过滤或输出不翻转被跳过。
 - **Rust 集成影响**：破坏行数公式 → 该电路 avg_delay 聚合（对齐 Rust avg_delay）少一个样本，
   **聚合口径与其它电路不一致**，组内排序比较产生系统性偏差。Rust 侧 `simulate_all_outputs_for_expr` 每 (output,pin) 都有 arc。
-- **修复要求**：补全该行；或生成侧加「行数完整性」自检（每电路 = 2×N_in×M）。
+- **修复要求**：补全该行；或生成侧加「行数完整性」自检（每电路 = 2×N_in×M）。✅ **V2.0 已修**（剔除 181 个不完整电路，0 不匹配）。
 
 ### P7 🟡 supply_noise 全零（100%）
 
@@ -105,7 +105,7 @@
 - **问题所在**：提取逻辑未接入（或翻转窗口内未测到），直接写 0.0 占位。规格允许 0.0 为有效值，但全零 = 字段无信息量。
 - **Rust 集成影响**：13.5 消融已证 supply_noise 无贡献（Spearman 0.237），且为 train-only → **对当前集成影响最小**。
   隐患：训练学到「噪声恒 0」偏置，若 Rust 阶段 2 真提取噪声喂入，分布立刻漂移。
-- **修复要求**：要么真实提取翻转窗口内的 droop/bounce，要么在规格中将该字段标注为「当前交付为占位」。
+- **修复要求**：要么真实提取翻转窗口内的 droop/bounce，要么在规格中将该字段标注为「当前交付为占位」。✅ **V2.0 已说明**（ideal-supply，VDD/GND 理想源物理上即 0，符合规格 §六 方案 D）。
 
 ### P8 🟡 batch_v2 损坏子集（input_pins_json 全空、网表无输入引脚）
 
@@ -114,38 +114,16 @@
 - **问题所在**：该批走了与 full 不同的生成路径，静态表未写输入引脚。与 full 的 290 个电路完全重复。
 - **Rust 集成影响**：误用则 `parse_netlist` 拿空输入 → 图构建失败；与 full 混用不 dedup 则双重计数
   （检查脚本首版即踩坑：16 行/重复行全是它造成的假象）。Rust 侧任意 I/O 的引脚来自 INORDER 列表，该批连列表都没有。
-- **修复要求**：**废弃该批**（full 已含全部电路），或修复后交付。
+- **修复要求**：**废弃该批**（full 已含全部电路），或修复后交付。✅ **V2.0 已废弃**（文件已删除，仅交付 full）。
 
-### P9 🔴 I/O 形状未达 V2 规格（结构性缺口，非值级 bug）—— 2026-08-24 Rust benchmark 实测实证
+### P9 🔴 I/O 形状未达 V2 规格（结构性缺口，非值级 bug）—— 实证见 V2.0 第 2.4 节
 
-> **这是 Rust 集成路径上最大的阻塞项**：值级问题（P1-P8）修复版已基本清零，唯独 I/O 形状没有、也不可能被「重生成一遍」顺带修掉——它决定 GNN 9.1~9.3 代码改动有没有数据可训。
-
-- **现象/证据**：
-  1. **V2 规格要求**（`DATA_SPEC_V2.md` L4/L28-29/L172/L190）：任意 N-in（1~16）/ M-out（1~6），输入分桶 1~2/3~4/5~8/9~16 **各 ~25%**，输出 1/2/3+ 三档，**多输出 ≥20%**。
-  2. **Rust benchmark 实测**（`NetlistOpt/testbench/tl_cells/`，46 个 .tl，level0~4，2026-08-24 逐一解析 INORDER/OUTORDER）：**18 种不同 I/O 形状**，输入 1~16、输出 1~6，**多输出 11 个（~24%）**；`tl_opt_smoke` 测试实际跑 `level4/ADD4_OVF.tl`（**9 入 6 出**）。→ **规格与 Rust 实测一致，问题完全在生成侧。**
-  3. **当前交付 batch_v2_full**：修复版（8679 电路）**全部 4 入 1 出**（分桶 3~4 档 100%，5~8 / 9~16 档 0，多输出 0）→ **只覆盖 benchmark 46 个电路中的 10 个（~22%）**。
-
-  **Rust benchmark I/O 形状实测分布（46 个 .tl）**：
-
-  | n_in | n_out | 电路数 | 例子 |
-  |---|---|---|---|
-  | 1 | 1 | 1 | INV1 |
-  | 2 | 1 | 7 | AND2、XOR2、OR2、EQ2… |
-  | 3 | 1 | 9 | MUX2、OAI21、FA_COUT、MAJ3… |
-  | **4** | **1** | **10** | AOI22、EQ4、SHARE1/2、SEL_AND… ← 唯一被当前数据覆盖的形状 |
-  | 5 | 1 | 3 | AOI221、OAI221、DEPTH_MIX |
-  | 8 | 1 | 2 | AND8、OR8 |
-  | 9 | 1 | 2 | OVF、ovf1 |
-  | 16 | 1 | 1 | AND16 |
-  | 2/3/5 | 2 | 4 | HA、FA、CSA_3_2、ALU_SLICE_SMALL |
-  | 2/4/8 | 3 | 3 | COMP1、ENC4、COMP4 |
-  | 7/8 | 4 | 2 | ALU2、ENC8 |
-  | 5 | 5 | 1 | SHIFTER4 |
-  | 9 | 6 | 1 | **ADD4_OVF（tl_opt_smoke 实测电路）** |
-
-- **问题所在**：生成批次仍是 V1 时代的 4-pin 枚举（修复版剔除 181 个不完整电路后，连 1~3 入的电路也没了，反而更单一），未按 V2 规格做任意 I/O + 等比例分桶。
-- **Rust 集成影响**：Rust 贪心评估的是**整电路全局延迟**（任意 I/O，含 9 入 6 出 ADD4_OVF）。训练数据全是 4-pin → **GNN 代码侧 9.1~9.3（parse_netlist 任意 I/O、data_loader JSON pin 列、多输出读出）改了也没数据可训**；serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬扛 OOD。**该条是 9.1-9.3 代码改动能落地的唯一前提。**
-- **修复要求**：按 V2 规格分桶生成——输入 1~2/3~4/5~8/9~16 各 ~25%（对齐 benchmark 18 种形状），输出 1/2/3+ 三档，**多输出 ≥20%**；至少覆盖 benchmark 全部形状（含 ADD4_OVF 的 9 入 6 出）。
+- **现象/证据（V1.0 首轮）**：全部电路 1~4 入 / 1 出（4 入占 98%）；输入分桶 1~2:45 / 3~4:8,815 / 5~8:0 / 9~16:0；多输出 0。
+- **问题所在**：生成批次仍是 V1 时代的 4-pin 枚举，未按 V2 规格做任意 N(1~16)/M(1~6) + 等比例分桶。
+- **Rust 集成影响**：Rust benchmark 是任意 N 入（ADD4_OVF = 9 入 6 出；简单 baseline 输出名都是 `y`）。
+  训练数据全是 4-pin → **GNN 代码侧 9.1~9.3（parse_netlist 任意 I/O、data_loader JSON pin 列、多输出读出）改了也没数据可训**；
+  serve.py 对 Rust 的 9 入 6 出电路只能硬扛 OOD。**该条是 9.1-9.3 代码改动能落地的唯一前提。**
+- **修复要求**：按 V2 规格分桶生成（输入 1~2/3~4/5~8/9~16 各 ~25%，多输出 ≥20%）。❌ **未修**（V2.0 已用 Rust benchmark 实测实证，见 2.4）。
 
 ### P10 🟠 coverage_report_v2.json 自身问题（随数据交付的覆盖率报告不可信）
 
@@ -157,44 +135,28 @@
 - **Rust 集成影响**：交付方凭该报告自认为合格 → 值级错误（P2/P3/P5）被「100% 覆盖」掩盖，直接进训练/推理会静默出错；接收方也无法用它做验收。
 - **修复要求**：① sc_expansion 覆盖改为「可展开率」口径；② gate_key_match 与网表 `X_*` 大小写敏感比对；③ 增加值级检查（direction ∈ {rise,fall}、vector 切换位、ids_charge≠ids_avg）；④ 或直接改用 `_check_v2_data.py` 作为验收脚本。
 - 注：报告做得好的部分——transistor_wave 7 子字段逐个报告、supply_noise 2 字段、DELAY 范围、per_gate 缺席确认；null 覆盖数据为真（100% 非空是真的，只是「非空 ≠ 值对」）。
+- 🟡 **V2.0 大部分**：已加 `direction.valid_values` / `sc_expansion.expandable 99.7%` / `ids_charge.not_equal_avg 75.2%`（诚实上报）；残留 2 处口径（batch_v2 旧段未清、`subfields_valid` 仍漏 in_* 缺失，见本轮 R2）。
 
 ---
 
-## 三、给生成方的修复优先级清单
+## 二、V2.0 修复版复检（2026-08-24，commit `a2b5d36` "Fix V2 data compliance (P1-P10)"）
 
-| 优先级 | 问题 | 修复动作 | 验证 |
-|---|---|---|---|
-| P0 | P1 大小写 | JSON 实例名 key 与网表 `X_*` 一致 | `_check_v2_data.py` 大小写检查 100% |
-| P0 | P2 direction | 去 `.sp` 后缀 | direction ∈ {rise, fall} |
-| P0 | P3 vector | 切换位 rise→0 / fall→1 | vector 位校验 100% |
-| P1 | P4 sc_expansion | 1456 个空 subcircuit 补齐 | sc_expansion 覆盖 100% 可展开 |
-| P1 | P5 ids_charge | 重算 ∫|Ids|dt | ids_charge ≠ ids_avg（比值≠1） |
-| P1 | P10 coverage_report | 覆盖口径改可展开率 + gate_key 大小写敏感 + 值级检查 | 报告项与 `_check_v2_data.py` 一致 |
-| P2 | P6 缺行 | 补行 + 行数自检 | 每电路 = 2×N_in×M |
-| P2 | P7 supply_noise | 真提取或标注占位 | 非全零 或 规格标注 |
-| P2 | P8 batch_v2 | 废弃 | 交付仅 full |
-| ⏸ 暂缓（**Rust 集成最高阻塞**） | P9 I/O 形状 + 数量 | 任意 N/M 分桶 + 满量 | 分桶分布 + 总量达标（对齐 benchmark 18 种形状、多输出 ≥20%） |
+> **本轮结论：基本达标，只需修改小的方面。** 复检结果：**44 PASS / 2 FAIL / 1 WARN**（首轮 36/4/8）。
+> 数据：8,679 电路 / 69,432 行 / 579 expr（剔除 181 个不完整电路），全部 4 入 1 出、单 corner `s02p0_l01p0`。
 
-**复检**：修复后重新跑 `python _check_v2_data.py data\batch_v2_full`，目标：无 FAIL（WARN 需人工确认）。
-脚本见仓库根目录 `_check_v2_data.py`；首轮明细 `_v2check_full.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
-
----
-
-## 四、修复版复检（2026-08-24，commit `a2b5d36` "Fix V2 data compliance (P1-P10)"）
-
-**复检结果：44 PASS / 2 FAIL / 1 WARN**（`_check_v2_data.py`，明细 `_v2check_fix2.txt`）
+### 2.1 已修复 / 已说明（对照首轮）
 
 | 原问题 | 状态 | 复检证据 |
 |---|---|---|
 | P1 大小写 | ✅ 已修复 | gate_states / parasitic_caps key 与网表 `X_*` 一致（3000/3000）；transistor_wave.gate 大写（2000/2000） |
 | P2 direction | ✅ 已修复 | 原始值 = {rise, fall}（`.sp` 后缀已剥） |
 | P3 vector | ✅ 已修复 | 切换位 20000/20000 与 direction 一致（rise→0 / fall→1 各半） |
-| P6 缺行 | ✅ 已修复 | 每电路 8 行，0 不匹配（181 个不完整电路已剔除 → 8679 电路 / 69,432 行） |
-| P7 supply_noise | ✅ 已说明 | 全零 + coverage_report 注明 ideal-supply（VDD/GND 理想源，物理上即 0，符合规格 §六 方案 D） |
+| P6 缺行 | ✅ 已修复 | 每电路 8 行，0 不匹配（181 个不完整电路已剔除） |
+| P7 supply_noise | ✅ 已说明 | 全零 + coverage_report 注明 ideal-supply（物理上即 0，符合规格 §六 方案 D） |
 | P8 batch_v2 | ✅ 已废弃 | 文件已删除，仅交付 batch_v2_full |
-| P10 coverage_report | 🟡 大部分 | 新增值级项：`direction.valid_values` / `sc_expansion.expandable 99.7%` / `ids_charge.not_equal_avg 75.2%`（诚实上报）；残留：batch_v2 旧段未清、`subfields_valid` 声称 100% 仍漏 in_* 缺失（见 R2） |
+| P10 coverage_report | 🟡 大部分 | 值级项已加（direction / expandable / ids_charge 诚实上报）；残留 2 处口径（见本轮 R2 附注） |
 
-**残留问题（3 项，均小量级）**：
+### 2.2 本轮需修改的小项（3 项）
 
 - **R1（FAIL）sc_expansion 12 个 SC_ 名仍为 null**（V2 用到的 3586 名中 0.33%，全文件 25 个 null）：
   `SC_BRIDGE`（使用 686 次）、`SC_JOIN_WIRE_WIRE`（378）、`SC_JOIN_BRIDGE__BRIDGE`（170）、`SC_JOIN_BRIDGE`（81）等，
@@ -205,7 +167,50 @@
   （charge = ids_peak × ids_rise_time / 1000 与 avg 同取整），**真复制残留仅 11 / 23 万激活管（0.005%）**，可忽略。
   新公式物理量级合理（例：21μA × 20ps → 0.42 fC）✅。
 
-**结论**：修复版**基本达标，可用于训练**。P1/P2/P3/P6/P7/P8 全部修复；残留 3 项：
-R1（0.33% cell 回退）、R2（0.4% 电路 parasitic 缺子字段）建议生成方下轮顺手补掉（BRIDGE 类高频 cell 的结构特征受影响），R3 无需处理。
-**P9（任意 I/O）经 Rust benchmark 实测实证为最高阻塞**（当前数据只覆盖 46 个 benchmark 电路中的 10 个，~22%）+ 数量问题仍按约定暂缓——
-当前数据仍是 4-pin/1-out、8679 电路，**V2 训练（4-pin 口径）可启动，但 Rust 任意 I/O 集成必须等生成方按分桶规格产任意 I/O + 多输出数据**。
+### 2.3 本轮新增实证：P9 I/O 形状（Rust benchmark 实测，2026-08-24）
+
+> 数据来源：`NetlistOpt/testbench/tl_cells/`（46 个 .tl，level0~4），逐一解析 INORDER/OUTORDER 实测。
+
+**三组对照**：
+1. **V2 规格要求**（`DATA_SPEC_V2.md` L4/L28-29/L172/L190）：任意 N-in（1~16）/ M-out（1~6），输入分桶 1~2/3~4/5~8/9~16 **各 ~25%**，输出 1/2/3+ 三档，**多输出 ≥20%**。
+2. **Rust benchmark 实测**：**18 种不同 I/O 形状**，输入 1~16、输出 1~6，**多输出 11 个（~24%）**；`tl_opt_smoke` 测试实际跑 `level4/ADD4_OVF.tl`（**9 入 6 出**）。→ **规格与 Rust 实测一致，问题完全在生成侧。**
+3. **当前交付 batch_v2_full**：修复版（8679 电路）**全部 4 入 1 出**（分桶 3~4 档 100%，5~8 / 9~16 档 0，多输出 0）→ **只覆盖 benchmark 46 个电路中的 10 个（~22%）**。
+
+**Rust benchmark I/O 形状实测分布（46 个 .tl）**：
+
+| n_in | n_out | 电路数 | 例子 |
+|---|---|---|---|
+| 1 | 1 | 1 | INV1 |
+| 2 | 1 | 7 | AND2、XOR2、OR2、EQ2… |
+| 3 | 1 | 9 | MUX2、OAI21、FA_COUT、MAJ3… |
+| **4** | **1** | **10** | AOI22、EQ4、SHARE1/2、SEL_AND… ← 唯一被当前数据覆盖的形状 |
+| 5 | 1 | 3 | AOI221、OAI221、DEPTH_MIX |
+| 8 | 1 | 2 | AND8、OR8 |
+| 9 | 1 | 2 | OVF、ovf1 |
+| 16 | 1 | 1 | AND16 |
+| 2/3/5 | 2 | 4 | HA、FA、CSA_3_2、ALU_SLICE_SMALL |
+| 2/4/8 | 3 | 3 | COMP1、ENC4、COMP4 |
+| 7/8 | 4 | 2 | ALU2、ENC8 |
+| 5 | 5 | 1 | SHIFTER4 |
+| 9 | 6 | 1 | **ADD4_OVF（tl_opt_smoke 实测电路）** |
+
+**影响**：Rust 贪心评估的是**整电路全局延迟**（任意 I/O，含 9 入 6 出 ADD4_OVF）。训练数据全是 4-pin →
+GNN 代码侧 9.1~9.3（parse_netlist 任意 I/O、data_loader JSON pin 列、多输出读出）**改了也没数据可训**；
+serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬扛 OOD。**P9 是 Rust 集成路径上最大的阻塞项。**
+
+---
+
+## 三、当前待生成方处理的清单（截至 V2.0）
+
+> 值级硬伤（P1/P2/P3/P6/P8）已清零；**当前需处理的只剩小的方面（R1/R2/R3/P10 残留）+ 一个结构性大项（P9）**。
+
+| 优先级 | 项 | 内容 | 验证 |
+|---|---|---|---|
+| 小项 P0 | R1（P4 残留） | sc_expansion 补 25 个 null 条目（BRIDGE / JOIN-WIRE 类宏展开） | `sc_expansion.expandable` 100% |
+| 小项 P0 | R2（P10 残留） | parasitic_caps 12 电路补 `in_*` 子字段；coverage_report `subfields_valid` 口径补「必需子字段缺失」检查 | 子字段完整 100%，报告与 `_check_v2_data.py` 一致 |
+| 小项 P1 | P10 残留 | coverage_report 清掉 batch_v2 旧段（该批已删） | 报告仅含 batch_v2_full |
+| 小项 P2 | R3（P5 残留） | ids_charge 11 个复制残留 | 可忽略（0.005%），不处理也行 |
+| **大项 ⏸** | **P9 + 数量** | **任意 I/O 分桶生成**（输入 1~2/3~4/5~8/9~16 各 ~25%，输出 1/2/3+ 三档，多输出 ≥20%）+ 满量 | 覆盖 benchmark 18 种形状（含 9 入 6 出）+ 总量达标 |
+
+**复检方法**：`python _check_v2_data.py data\batch_v2_full`，目标：无 FAIL（WARN 需人工确认）。
+脚本见仓库根目录 `_check_v2_data.py`；首轮明细 `_v2check_full.txt`、复检明细 `_v2check_fix2.txt`；I/O 实证脚本 `_check_tl_io.py`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
