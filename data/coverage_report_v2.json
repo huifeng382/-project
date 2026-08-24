@@ -8,8 +8,9 @@
     "cell_types_json.column_nonnull": "290/290 (100.0%)"
   },
   "sc_expansion": {
-    "coverage": "3653/3653 (100.0%)",
-    "sc_cells": "OK (3653)",
+    "coverage": "3586/3586 (100.0%)",
+    "expandable": "3574/3586 (99.7%)",
+    "sc_cells": "OK (3586)",
     "missing": []
   },
   "batch_v2/timing_arcs": {
@@ -38,36 +39,39 @@
     "vector.one_per_group": "OK (100%)"
   },
   "batch_v2_full/circuit_static": {
-    "total_rows": 8860,
+    "total_rows": 8679,
     "parasitic_caps_json.column_present": "OK",
-    "parasitic_caps_json.column_nonnull": "8860/8860 (100.0%)",
-    "parasitic_caps_json.gate_key_match": "8860/8860 (100.0%)",
-    "parasitic_caps_json.subfields_valid": "254456/254456 (100.0%)",
-    "cell_types_json.column_nonnull": "8860/8860 (100.0%)"
+    "parasitic_caps_json.column_nonnull": "8679/8679 (100.0%)",
+    "parasitic_caps_json.gate_key_match": "8679/8679 (100.0%)",
+    "parasitic_caps_json.subfields_valid": "250644/250644 (100.0%)",
+    "cell_types_json.column_nonnull": "8679/8679 (100.0%)"
   },
   "batch_v2_full/timing_arcs": {
-    "total_rows": 69439,
+    "total_rows": 69432,
     "transistor_wave_json.column_present": "OK",
-    "transistor_wave_json.column_nonnull": "69439/69439 (100.0%)",
-    "transistor_wave_json.gate": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.ids_avg": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.ids_peak": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.vds_swing": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.ids_rise_time": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.vgs_swing": "4322508/4322508 (100.0%)",
-    "transistor_wave_json.ids_charge": "4322508/4322508 (100.0%)",
+    "transistor_wave_json.column_nonnull": "69432/69432 (100.0%)",
+    "transistor_wave_json.gate": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.ids_avg": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.ids_peak": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.vds_swing": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.ids_rise_time": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.vgs_swing": "4322088/4322088 (100.0%)",
+    "transistor_wave_json.ids_charge": "4322088/4322088 (100.0%)",
     "supply_noise_json.column_present": "OK",
-    "supply_noise_json.column_nonnull": "69439/69439 (100.0%)",
-    "supply_noise_json.vdd_droop_mV": "69439/69439 (100.0%)",
-    "supply_noise_json.gnd_bounce_mV": "69439/69439 (100.0%)",
+    "supply_noise_json.column_nonnull": "69432/69432 (100.0%)",
+    "supply_noise_json.vdd_droop_mV": "69432/69432 (100.0%)",
+    "supply_noise_json.gnd_bounce_mV": "69432/69432 (100.0%)",
+    "supply_noise_json.NOTE": "ideal-supply (VDD/GND ideal DC source): droop/bounce physically 0.0, reported as valid zeros (DATA_SPEC_V2 \u00a7\u516d \u65b9\u6848D)",
     "gate_states_json.column_present": "OK",
-    "gate_states_json.column_nonnull": "69439/69439 (100.0%)",
+    "gate_states_json.column_nonnull": "69432/69432 (100.0%)",
     "pin_slew_json.column_present": "OK",
-    "pin_slew_json.column_nonnull": "69439/69439 (100.0%)",
+    "pin_slew_json.column_nonnull": "69432/69432 (100.0%)",
     "pin_load_json.column_present": "OK",
-    "pin_load_json.column_nonnull": "69439/69439 (100.0%)",
-    "DELAY.in_range": "69439/69439 (100.0%)",
+    "pin_load_json.column_nonnull": "69432/69432 (100.0%)",
+    "DELAY.in_range": "69432/69432 (100.0%)",
     "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
-    "vector.one_per_group": "OK (100%)"
+    "vector.one_per_group": "OK (100%)",
+    "direction.valid_values": "69432/69432 (100.0%)",
+    "ids_charge.not_equal_avg": "88951/118240 (75.2%)"
   }
 }

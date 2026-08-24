@@ -2,9 +2,9 @@
   "dataset_name": "batch_v2_full",
   "description": "V2 single-corner dataset (DATA_SPEC_V2.md)",
   "corner": "s02p0_l01p0",
-  "n_circuits": 8860,
-  "n_rows": 69439,
-  "rows_per_circuit": 7.8,
+  "n_circuits": 8679,
+  "n_rows": 69432,
+  "rows_per_circuit": 8.0,
   "expr_start": 8000,
   "expr_range": "expr8000+"
 }
