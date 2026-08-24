@@ -24,7 +24,7 @@
 | DELAY | 1.6ps ~ 174ps，在 (1e-12, 1e-8) ✓ | 同上 | ✅ |
 | expr 与 V1 | 不重叠（expr8000+）✓ | 不与 V1 569 重叠 | ✅ |
 | 必需列 | 静态 10 列 / 动态 15 列齐全 ✓ | 见规格 | ✅ |
-| coverage_report_v2.json | 存在且声称 100% | 随数据交付 | ✅（但值级错误测不出，见各 P） |
+| coverage_report_v2.json | 存在且声称 100%，但 3 处口径不可信 | 随数据交付 | ❌ P10 |
 | transistor_wave / gate_states / supply_noise / parasitic_caps | 列非空 100% ✓ | 完整性铁律 | ✅（值级问题见 P1/P5/P7） |
 
 - **batch_v2（290 电路）= batch_v2_full 的子集且本身损坏**（`input_pins_json` 全空、网表 `.SUBCKT DUT` 无输入引脚）→ **该批废弃**，用 full 即可（P8）。
@@ -65,10 +65,12 @@
   训练学到的映射与 Rust 推理喂来的初始电平**语义相反** → rise 场景排序直接错。
 - **修复要求**：vector 按初始电平生成（rise 行切换位=0，fall 行=1），非切换位按 truth_table_idx。
 
-### P4 🟠 sc_expansion.json：1456/3653 个 SC_ 名展开为空（40%）
+### P4 🟠 sc_expansion.json：2716/8909 条目值为 null（30.5%），几乎全是 SC_JOIN_*
 
-- **现象/证据**：V2 数据 `cell_types_json` 共 3653 个 SC_ 名，`sc_expansion.json`（8909 条）中 **0 个缺失，但 1456 个 subcircuit 为空**；
-  且 `coverage_report_v2.json` 声称 100% —— **报告与事实不符**。
+- **现象/证据**：`sc_expansion.json`（8909 条）中 **2716 条（30.5%）值为 null（无 subcircuit）**，前缀分布 JOIN 2701 / BRIDGE 9 / AND 3 / OR 3。
+  V2 数据 `cell_types_json` 用到的 3653 个名字中 **1456 个（39.9%）不可展开**，含高频名 `SC_BRIDGE`（x708）、`SC_JOIN_WIRE_WIRE`（x401）、`SC_JOIN_BRIDGE__BRIDGE`（x183）。
+  可展开条目质量 OK：124,579 个内部实例无缺字段，引用 11 个标准单元全部存在于 `std_cells.lib`（93 单元）——**问题集中在 JOIN 类宏没填**。
+  且 `coverage_report_v2.json` 声称 100% —— 只查名字存在、不查可展开，**报告与事实不符（见 P10）**。
 - **问题所在**：97fd7fda 合并 V1+V2 宏时只加了名字条目，subcircuit 未填（或 V2 新宏尚未展开）。
 - **Rust 集成影响**：STRUCT_MODE 结构特征（n_t/stack/parallel）48% 靠 sc_expansion、52% 回退默认；
   40% V2 名展开为空 → 回退率大幅上升，structrich/structbase 变体退化（structlogic 纯 10 逻辑受影响小）。
@@ -122,6 +124,17 @@
   若按 2026-08-20 讨论与数量问题一并暂缓，则模型侧 V2 训练停摆，只能先推进「无 wave」验证（V1 数据）。
 - **修复要求**：按 V2 规格分桶生成（输入 1~2/3~4/5~8/9~16 各 ~25%，多输出 ≥20%）。
 
+### P10 🟠 coverage_report_v2.json 自身问题（随数据交付的覆盖率报告不可信）
+
+- **现象/证据**：报告声称全部 100%，但三处与事实不符或无效：
+  1. `sc_expansion.coverage = 3653/3653 (100%)` —— 只检查「名字存在于 sc_expansion.json」，**不检查 subcircuit 是否可展开**（实际 1456/3653 值为 null，见 P4）；
+  2. `parasitic_caps_json.gate_key_match = 8860/8860 (100%)` —— **假阳性**：生成方匹配口径未与网表 `X_*`（大写）对齐（数据里 key 是小写 `x_*`），graph_builder 按网表名查必 miss（与 P1 同源）；
+  3. `vector.one_per_group = OK (100%)` —— **假通过**：所有行切换位都错得一致（P3），「每 (circuit,pin,dir) 恰 1 vector」恒成立，掩盖了值错误。
+- **问题所在**：报告只做「列非空 + 结构存在」类检查，**没有任何值级校验**（direction 值、vector 位、ids_charge 语义都查不到）。
+- **Rust 集成影响**：交付方凭该报告自认为合格 → 值级错误（P2/P3/P5）被「100% 覆盖」掩盖，直接进训练/推理会静默出错；接收方也无法用它做验收。
+- **修复要求**：① sc_expansion 覆盖改为「可展开率」口径；② gate_key_match 与网表 `X_*` 大小写敏感比对；③ 增加值级检查（direction ∈ {rise,fall}、vector 切换位、ids_charge≠ids_avg）；④ 或直接改用 `_check_v2_data.py` 作为验收脚本。
+- 注：报告做得好的部分——transistor_wave 7 子字段逐个报告、supply_noise 2 字段、DELAY 范围、per_gate 缺席确认；null 覆盖数据为真（100% 非空是真的，只是「非空 ≠ 值对」）。
+
 ---
 
 ## 三、给生成方的修复优先级清单
@@ -133,6 +146,7 @@
 | P0 | P3 vector | 切换位 rise→0 / fall→1 | vector 位校验 100% |
 | P1 | P4 sc_expansion | 1456 个空 subcircuit 补齐 | sc_expansion 覆盖 100% 可展开 |
 | P1 | P5 ids_charge | 重算 ∫|Ids|dt | ids_charge ≠ ids_avg（比值≠1） |
+| P1 | P10 coverage_report | 覆盖口径改可展开率 + gate_key 大小写敏感 + 值级检查 | 报告项与 `_check_v2_data.py` 一致 |
 | P2 | P6 缺行 | 补行 + 行数自检 | 每电路 = 2×N_in×M |
 | P2 | P7 supply_noise | 真提取或标注占位 | 非全零 或 规格标注 |
 | P2 | P8 batch_v2 | 废弃 | 交付仅 full |
