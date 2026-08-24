@@ -201,8 +201,9 @@ def main():
             pc_sub_ok += 1
     report('PASS' if pc_n > 0 and pc_key_ok == pc_n else 'WARN', 'parasitic_caps key=门实例(抽样)',
            f"{pc_key_ok}/{pc_n} (n={pc_n})")
-    report('PASS' if pc_n > 0 and pc_sub_ok == pc_n else 'WARN', 'parasitic_caps 子字段 in_*/out 且 >0(抽样)',
-           f"{pc_sub_ok}/{pc_n} (n={pc_n})")
+    report('PASS' if pc_n > 0 and pc_sub_ok == pc_n else 'FAIL',
+           'parasitic_caps 子字段 in_*/out 且 >0(抽样)',
+           f"{pc_sub_ok}/{pc_n} (n={pc_n})  — 缺 in_* 或值≤0 的电路")
 
     # pin_loads_json 覆盖所有输入+输出
     pl_ok = 0; pl_n = 0
@@ -331,21 +332,27 @@ def main():
             gs_ok += 1
     report('PASS' if gs_n > 0 and gs_ok == gs_n else 'WARN', 'gate_states key=门实例(抽样)', f"{gs_ok}/{gs_n}")
 
-    # 大小写一致性诊断（gate_states / parasitic_caps / transistor_wave gate 字段 vs 网表 X_*）
-    cs_gs = cs_pc = cs_tw = 0; cs_n = 0
+    # 大小写一致性诊断（gate_states 用动态表 / parasitic_caps 用静态表 / transistor_wave.gate vs 网表 X_*）
+    cs_pc = 0; cs_n = 0
     for _, r in st.sample(min(3000, len(st))).iterrows():
         gates = parse_netlist_gates(r['gate_level_netlist'])
+        pc = load_json(r['parasitic_caps_json'])
         if not gates:
             continue
-        gs = load_json(r.get('gate_states_json'))
-        pc = load_json(r['parasitic_caps_json'])
         cs_n += 1
-        gs_keys = set(gs.keys()) if isinstance(gs, dict) else set()
         pc_keys = set(pc.keys()) if isinstance(pc, dict) else set()
-        if gs_keys and gs_keys == set(gates.keys()):
-            cs_gs += 1
         if pc_keys and pc_keys == set(gates.keys()):
             cs_pc += 1
+    cs_gs = 0; gs_cs_n = 0
+    for _, r in dy.sample(min(3000, len(dy))).iterrows():
+        gates = parse_netlist_gates(nlmap.get(r['circuit_id'], ''))
+        gs = load_json(r['gate_states_json'])
+        if not gates or not isinstance(gs, dict):
+            continue
+        gs_cs_n += 1
+        if set(gs.keys()) == set(gates.keys()):
+            cs_gs += 1
+    cs_tw = 0
     for _, r in dy.sample(min(2000, len(dy))).iterrows():
         tw = load_json(r['transistor_wave_json'])
         if isinstance(tw, dict) and len(tw) > 0:
@@ -353,19 +360,19 @@ def main():
             if gate_vals and all(isinstance(g, str) and g.startswith('X_') for g in gate_vals):
                 cs_tw += 1
     if cs_n:
-        report('PASS' if cs_gs == cs_n else 'FAIL',
-               'gate_states key 与网表 X_* 完全一致(大小写)(抽样)',
-               f"{cs_gs}/{cs_n} (小写 x_* 会被 graph_builder 查不到)")
         report('PASS' if cs_pc == cs_n else 'FAIL',
                'parasitic_caps key 与网表 X_* 完全一致(大小写)(抽样)',
                f"{cs_pc}/{cs_n}")
+    report('PASS' if gs_cs_n > 0 and cs_gs == gs_cs_n else 'FAIL',
+           'gate_states key 与网表 X_* 完全一致(大小写)(抽样, 动态表)',
+           f"{cs_gs}/{gs_cs_n} (小写 x_* 会被 graph_builder 查不到)")
     report('PASS' if cs_tw == 2000 else 'WARN',
            'transistor_wave gate 字段为 X_* 大写(抽样)', f"{cs_tw}/2000")
 
     # transistor_wave_json: 列非空 100% + 子字段齐全 + 值域(抽样)
     tw_nonnull = dy['transistor_wave_json'].notna().sum()
     report('PASS' if tw_nonnull == len(dy) else 'FAIL', 'transistor_wave_json 列非空 100%', f"{tw_nonnull}/{len(dy)}")
-    tw_field_ok = 0; tw_val_ok = 0; tw_n = 0; tw_empty = 0; tw_charge_copy = 0
+    tw_field_ok = 0; tw_val_ok = 0; tw_n = 0; tw_empty = 0; tw_charge_copy = 0; tw_both_zero = 0; tw_active = 0
     for _, r in dy.sample(min(5000, len(dy))).iterrows():
         tw = load_json(r['transistor_wave_json'])
         if not isinstance(tw, dict) or len(tw) == 0:
@@ -383,9 +390,13 @@ def main():
                         vals_good = False; break
                 if not isinstance(sub['gate'], str) or not sub['gate'].startswith('X_'):
                     vals_good = False; break
-                if isinstance(sub['ids_charge'], (int, float)) and isinstance(sub['ids_avg'], (int, float)) \
-                        and abs(sub['ids_charge'] - sub['ids_avg']) < 1e-9:
-                    tw_charge_copy += 1
+                if isinstance(sub['ids_charge'], (int, float)) and isinstance(sub['ids_avg'], (int, float)):
+                    if sub['ids_avg'] == 0 and sub['ids_charge'] == 0:
+                        tw_both_zero += 1            # 非翻转管 0==0 合法
+                    else:
+                        tw_active += 1
+                        if abs(sub['ids_charge'] - sub['ids_avg']) < 1e-9:
+                            tw_charge_copy += 1      # 激活管仍等于 ids_avg = 复制残留
         if fields_good:
             tw_field_ok += 1
         if fields_good and vals_good:
@@ -396,9 +407,10 @@ def main():
            f"{tw_field_ok}/{tw_n}")
     report('PASS' if tw_n > 0 and tw_val_ok == tw_n else 'WARN', 'transistor_wave 值域合规(抽样)',
            f"{tw_val_ok}/{tw_n}")
-    report('WARN' if tw_charge_copy == 0 else 'FAIL',
-           'ids_charge ≠ ids_avg(应为电荷积分而非平均电流的复制)',
-           f"ids_charge==ids_avg 的晶体管数 {tw_charge_copy}/{tw_n} 行×每管")
+    report('PASS' if tw_charge_copy == 0 else ('WARN' if tw_charge_copy / max(tw_active, 1) < 0.01 else 'FAIL'),
+           'ids_charge ≠ ids_avg(激活管; 0==0 非翻转管不计)',
+           f"复制残留 {tw_charge_copy}/{tw_active} 激活管 (非翻转 0==0 {tw_both_zero} 个正常); "
+           f"<1% 记 WARN, ≥1% 记 FAIL")
 
     # supply_noise_json: 列非空 100% + 子字段 + ≥0(抽样)
     sn_nonnull = dy['supply_noise_json'].notna().sum()

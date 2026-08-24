@@ -1,8 +1,10 @@
-# DATA_SPEC_V2 数据合规问题清单（首轮检查，2026-08-20）
+# DATA_SPEC_V2 数据合规问题清单（首轮检查 2026-08-20 + 修复版复检 2026-08-24）
 
-> **结论：不合格，需返工。** 检查对象为 GitHub `10.3.3-fix-earlystop` @ `97fd7fda` 交付的 V2 数据
+> **首轮结论：不合格，需返工。** 检查对象为 GitHub `10.3.3-fix-earlystop` @ `97fd7fda` 交付的 V2 数据
 > （`data/batch_v2` + `data/batch_v2_full`）。检查方法：`_check_v2_data.py` 逐项对照
 > `DATA_SPEC_V2.md`（定稿）自动校验，明细见 `_v2check_full.txt`。
+>
+> **修复版复检（2026-08-24, commit `a2b5d36`）：基本达标，残留 3 项小问题（见第四节），可用于训练。**
 >
 > **范围说明**：生成**数量**问题（规格 ~5 万电路 / 60 万行 / 4000 expr，实际 8860 / 69,439 / 591，
 > 约 12%）按 2026-08-20 讨论**暂缓**，不在本清单展开；本清单只列值级与结构性问题。
@@ -154,3 +156,34 @@
 
 **复检**：修复后重新跑 `python _check_v2_data.py data\batch_v2_full`，目标：无 FAIL（WARN 需人工确认）。
 脚本见仓库根目录 `_check_v2_data.py`；首轮明细 `_v2check_full.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
+
+---
+
+## 四、修复版复检（2026-08-24，commit `a2b5d36` "Fix V2 data compliance (P1-P10)"）
+
+**复检结果：44 PASS / 2 FAIL / 1 WARN**（`_check_v2_data.py`，明细 `_v2check_fix2.txt`）
+
+| 原问题 | 状态 | 复检证据 |
+|---|---|---|
+| P1 大小写 | ✅ 已修复 | gate_states / parasitic_caps key 与网表 `X_*` 一致（3000/3000）；transistor_wave.gate 大写（2000/2000） |
+| P2 direction | ✅ 已修复 | 原始值 = {rise, fall}（`.sp` 后缀已剥） |
+| P3 vector | ✅ 已修复 | 切换位 20000/20000 与 direction 一致（rise→0 / fall→1 各半） |
+| P6 缺行 | ✅ 已修复 | 每电路 8 行，0 不匹配（181 个不完整电路已剔除 → 8679 电路 / 69,432 行） |
+| P7 supply_noise | ✅ 已说明 | 全零 + coverage_report 注明 ideal-supply（VDD/GND 理想源，物理上即 0，符合规格 §六 方案 D） |
+| P8 batch_v2 | ✅ 已废弃 | 文件已删除，仅交付 batch_v2_full |
+| P10 coverage_report | 🟡 大部分 | 新增值级项：`direction.valid_values` / `sc_expansion.expandable 99.7%` / `ids_charge.not_equal_avg 75.2%`（诚实上报）；残留：batch_v2 旧段未清、`subfields_valid` 声称 100% 仍漏 in_* 缺失（见 R2） |
+
+**残留问题（3 项，均小量级）**：
+
+- **R1（FAIL）sc_expansion 12 个 SC_ 名仍为 null**（V2 用到的 3586 名中 0.33%，全文件 25 个 null）：
+  `SC_BRIDGE`（使用 686 次）、`SC_JOIN_WIRE_WIRE`（378）、`SC_JOIN_BRIDGE__BRIDGE`（170）、`SC_JOIN_BRIDGE`（81）等，
+  总计 **1414 次 cell 使用**落到 STRUCT_MODE 默认特征回退。修复：补 25 个 null 条目（BRIDGE / JOIN-WIRE 类宏展开）。
+- **R2（FAIL）parasitic_caps 12 个电路（抽样 3000 中 12 个）某门缺 `in_*` 子字段**（如 `X_51: {"out": 0.2}` 缺 in_a）——
+  与 R1 的 BRIDGE 单输入门疑似同源；coverage_report `subfields_valid` 却声称 100%（口径只数「已有子字段非空」，漏「必需子字段缺失」）。
+- **R3（WARN）ids_charge 激活管 0.72% == ids_avg**：核实 1706 个中 1695 个是**2 位小数取整巧合**
+  （charge = ids_peak × ids_rise_time / 1000 与 avg 同取整），**真复制残留仅 11 / 23 万激活管（0.005%）**，可忽略。
+  新公式物理量级合理（例：21μA × 20ps → 0.42 fC）✅。
+
+**结论**：修复版**基本达标，可用于训练**。P1/P2/P3/P6/P7/P8 全部修复；残留 3 项：
+R1（0.33% cell 回退）、R2（0.4% 电路 parasitic 缺子字段）建议生成方下轮顺手补掉（BRIDGE 类高频 cell 的结构特征受影响），R3 无需处理。
+**P9（任意 I/O）+ 数量问题仍按约定暂缓**——当前数据仍是 4-pin/1-out、8679 电路，**V2 训练（4-pin 口径）可启动，但 Rust 任意 I/O 集成仍需等满量任意 I/O 数据**。
