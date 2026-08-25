@@ -1,5 +1,5 @@
 #!/bin/bash
-# 用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2>
+# 用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2|struct*|v2wave42|v2nowave42|...>
 # 基于 10.7 分支起一个 per_gate 实验，noWave + 独立缓存，后台训练。
 set -e
 V="$1"
@@ -132,6 +132,15 @@ fi
 if [ "$V" = "cornerattn" ]; then        # Corner注意力池化
   sed -i 's/^USE_CORNER_ATTN = .*/USE_CORNER_ATTN = True/' config.py
 fi
+# V2 数据 wave/no-wave 变体（15.1.x：USE_V2=True 默认生效 + logic_only 自动）
+# 用法：v2wave42 / v2nowave123 等，后缀即 TRAIN_SEED；v2nowave 关 wave（Rust 推理拿不到 wave 的验证）
+case "$V" in
+  v2wave[0-9]*)
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2wave}/" config.py ;;
+  v2nowave[0-9]*)
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2nowave}/" config.py ;;
+esac
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
