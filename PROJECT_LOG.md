@@ -584,6 +584,13 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **判读规则**：midpoint regret < 4~5% 且两 seed 一致 → 胜出进 Phase B 调参；> 6% → 蒸馏路线存疑，转 GNN_RUST_DATA_DIFF 5.6 阶段 2 兜底。
 
+**当前状态（2026-08-25 晚）**：✅ **4 个 student 槽已全部启动运行**（15.2.3 修复 v2kd 启动的 KD_TEACHER_DIR 导出后）。日志：
+```bash
+tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123/rr123 同理
+```
+- 每 run 预计 ~4-5h（同 wave/nowave 量级，CPU 24 核）；等全部出 SUMMARY 后按判读规则决定 **Phase B（调 λ/κ）** 还是 **5.6 阶段 2 兜底**。
+- 关注点：student 是否追平 teacher 的排序（wave123 regret 0.12~0.21%）；reg vs rr 谁更稳（κ 排序监督是否带来增益）。
+
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
 2. 阶段2：新 120 万行，4 vector/condition，全部 v9 格式，新 expr 不与已有 569 个重叠。总计 ~180 万行，val 组数翻倍。
