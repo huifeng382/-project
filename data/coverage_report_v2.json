@@ -1,49 +1,17 @@
 {
-  "batch_v2/circuit_static": {
-    "total_rows": 290,
-    "parasitic_caps_json.column_present": "OK",
-    "parasitic_caps_json.column_nonnull": "290/290 (100.0%)",
-    "parasitic_caps_json.gate_key_match": "290/290 (100.0%)",
-    "parasitic_caps_json.subfields_valid": "19016/19016 (100.0%)",
-    "cell_types_json.column_nonnull": "290/290 (100.0%)"
-  },
   "sc_expansion": {
     "coverage": "3586/3586 (100.0%)",
-    "expandable": "3574/3586 (99.7%)",
+    "expandable": "3586/3586 (100.0%)",
     "sc_cells": "OK (3586)",
     "missing": []
-  },
-  "batch_v2/timing_arcs": {
-    "total_rows": 1834,
-    "transistor_wave_json.column_present": "OK",
-    "transistor_wave_json.column_nonnull": "1834/1834 (100.0%)",
-    "transistor_wave_json.gate": "292504/292504 (100.0%)",
-    "transistor_wave_json.ids_avg": "292504/292504 (100.0%)",
-    "transistor_wave_json.ids_peak": "292504/292504 (100.0%)",
-    "transistor_wave_json.vds_swing": "292504/292504 (100.0%)",
-    "transistor_wave_json.ids_rise_time": "292504/292504 (100.0%)",
-    "transistor_wave_json.vgs_swing": "292504/292504 (100.0%)",
-    "transistor_wave_json.ids_charge": "292504/292504 (100.0%)",
-    "supply_noise_json.column_present": "OK",
-    "supply_noise_json.column_nonnull": "1834/1834 (100.0%)",
-    "supply_noise_json.vdd_droop_mV": "1834/1834 (100.0%)",
-    "supply_noise_json.gnd_bounce_mV": "1834/1834 (100.0%)",
-    "gate_states_json.column_present": "OK",
-    "gate_states_json.column_nonnull": "1834/1834 (100.0%)",
-    "pin_slew_json.column_present": "OK",
-    "pin_slew_json.column_nonnull": "1834/1834 (100.0%)",
-    "pin_load_json.column_present": "OK",
-    "pin_load_json.column_nonnull": "1834/1834 (100.0%)",
-    "DELAY.in_range": "1834/1834 (100.0%)",
-    "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
-    "vector.one_per_group": "OK (100%)"
   },
   "batch_v2_full/circuit_static": {
     "total_rows": 8679,
     "parasitic_caps_json.column_present": "OK",
     "parasitic_caps_json.column_nonnull": "8679/8679 (100.0%)",
     "parasitic_caps_json.gate_key_match": "8679/8679 (100.0%)",
-    "parasitic_caps_json.subfields_valid": "250644/250644 (100.0%)",
+    "parasitic_caps_json.subfields_valid": "8679/8679 (100.0%)",
+    "parasitic_caps_json.subfield_values_valid": "250681/250681 (100.0%)",
     "cell_types_json.column_nonnull": "8679/8679 (100.0%)"
   },
   "batch_v2_full/timing_arcs": {
