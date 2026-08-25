@@ -1,8 +1,8 @@
 # DATA_SPEC_V2 数据合规问题清单（版本记录式）
 
-> 检查方法：`_check_v2_data.py` 逐项对照 `DATA_SPEC_V2.md`（定稿）自动校验；检查对象为 GitHub
+> 检查方法：`scripts/diag/_check_v2_data.py` 逐项对照 `DATA_SPEC_V2.md`（定稿）自动校验；检查对象为 GitHub
 > `10.3.3-fix-earlystop` 分支交付的 V2 数据（`data/batch_v2_full` + `data/batch_v2_io`）。
-> 明细：首轮 `_v2check_full.txt`、复检 `_v2check_fix2.txt`、V3.0 `_chk_full3.txt`/`_chk_io.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
+> 明细：首轮 `reports/_v2check_full.txt`、复检 `reports/_v2check_fix2.txt`、V3.0 `reports/_chk_full3.txt`/`reports/_chk_io.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
 >
 > **范围说明**：生成**数量**问题在 V1.0/V2.0 按 2026-08-20 讨论暂缓；**V3.0/V3.1（2026-08-25）起数量与 I/O 覆盖绑定、列为正式要求**（见第四节）；
 > **V3.1 决策：现有 `batch_v2_full` + `batch_v2_io`（968 expr）不计入总数，正式交付重新生成完整 ~4,000 expr / ~60 万行（见 4.3）**。
@@ -135,7 +135,7 @@
   3. `vector.one_per_group = OK (100%)` —— **假通过**：所有行切换位都错得一致（P3），「每 (circuit,pin,dir) 恰 1 vector」恒成立，掩盖了值错误。
 - **问题所在**：报告只做「列非空 + 结构存在」类检查，**没有任何值级校验**（direction 值、vector 位、ids_charge 语义都查不到）。
 - **Rust 集成影响**：交付方凭该报告自认为合格 → 值级错误（P2/P3/P5）被「100% 覆盖」掩盖，直接进训练/推理会静默出错；接收方也无法用它做验收。
-- **修复要求**：① sc_expansion 覆盖改为「可展开率」口径；② gate_key_match 与网表 `X_*` 大小写敏感比对；③ 增加值级检查（direction ∈ {rise,fall}、vector 切换位、ids_charge≠ids_avg）；④ 或直接改用 `_check_v2_data.py` 作为验收脚本。
+- **修复要求**：① sc_expansion 覆盖改为「可展开率」口径；② gate_key_match 与网表 `X_*` 大小写敏感比对；③ 增加值级检查（direction ∈ {rise,fall}、vector 切换位、ids_charge≠ids_avg）；④ 或直接改用 `scripts/diag/_check_v2_data.py` 作为验收脚本。
 - 注：报告做得好的部分——transistor_wave 7 子字段逐个报告、supply_noise 2 字段、DELAY 范围、per_gate 缺席确认；null 覆盖数据为真（100% 非空是真的，只是「非空 ≠ 值对」）。
 - 🟡 **V2.0 大部分**：已加 `direction.valid_values` / `sc_expansion.expandable 99.7%` / `ids_charge.not_equal_avg 75.2%`（诚实上报）；残留 2 处口径（batch_v2 旧段未清、`subfields_valid` 仍漏 in_* 缺失，见本轮 R2）。
 
@@ -213,10 +213,10 @@ serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬�
 | **大项 P0** | **G1 缺 benchmark 形状** | **补 5 个缺失形状：9入6出（ADD4_OVF，tl_opt_smoke 实测电路）、8入4出（ENC8）、7入4出（ALU2）、5入5出（SHIFTER4）、4入3出（ENC4）——当前 ≥4 输出形状零覆盖** | batch_v2_io 覆盖全部 18 种 benchmark 形状 |
 | **大项 P0** | **G2 退化/小组** | batch_v2_io 36 个单变体组 + 3 个小组（共 39 组，10%）不合 10~15 规格；退化组应剔除或补变体 | 全部组 ≥10 变体 |
 | 中项 P1 | G3 分桶 9~16 偏低 | batch_v2_io 分桶 1~2:23.4% / 3~4:24.3% / 5~8:35.4% / 9~16:16.8%（9~16 应 ~25%） | 分桶各 ~25% |
-| **大项 ⏸** | **完整数据重新生成（V3.1）** | **全新生成 ~4,000 expr / ~60 万行（不计入现有 968），按 4.4 分桶（20/25/25/30）+ 多输出 ≥20% + M≥4 每个 ≥30 组 + 补 G1 缺失形状 + 无退化组；expr 编号与现有不重叠** | `_check_v2_data.py` 全绿 + 分桶分布达标 |
+| **大项 ⏸** | **完整数据重新生成（V3.1）** | **全新生成 ~4,000 expr / ~60 万行（不计入现有 968），按 4.4 分桶（20/25/25/30）+ 多输出 ≥20% + M≥4 每个 ≥30 组 + 补 G1 缺失形状 + 无退化组；expr 编号与现有不重叠** | `scripts/diag/_check_v2_data.py` 全绿 + 分桶分布达标 |
 
-**复检方法**：`python _check_v2_data.py data\batch_v2_full` / `python _check_v2_data.py data\batch_v2_io`，目标：无 FAIL（WARN 需人工确认）。
-脚本见仓库根目录 `_check_v2_data.py`（V3.0 起含多输出行身份扩展）；明细 `_v2check_full.txt`、`_v2check_fix2.txt`、`_chk_full3.txt`、`_chk_io.txt`；I/O 实证脚本 `_check_tl_io.py`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
+**复检方法**：`python scripts/diag/_check_v2_data.py data\batch_v2_full` / `python scripts/diag/_check_v2_data.py data\batch_v2_io`，目标：无 FAIL（WARN 需人工确认）。
+脚本见仓库根目录 `scripts/diag/_check_v2_data.py`（V3.0 起含多输出行身份扩展）；明细 `reports/_v2check_full.txt`、`reports/_v2check_fix2.txt`、`reports/_chk_full3.txt`、`reports/_chk_io.txt`；I/O 实证脚本 `scripts/diag/_check_tl_io.py`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
 
 ---
 
@@ -235,7 +235,7 @@ serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬�
   commit `8ca3004` 声称「18 I/O shapes incl. 9-in 6-out」，**实际交付没有 9入6出**——数据最大输出仅 3（9入3出 19 个 / 16入3出 5 个），多输出读出（GNN 9.3）最需要的 M≥4 场景零覆盖。
 - **G2（大项）36 个退化组 + 3 个小组**：batch_v2_io 共 389 组，中位 12，但 36 组仅 1 变体（无组内排序价值）+ 3 组 3~5 变体，共 39 组（10%）不合 10~15 规格。
 - **G3（中项）分桶 9~16 偏低**：1~2:23.4% / 3~4:24.3% / 5~8:35.4% / 9~16:16.8%（目标各 ~25%，9~16 差 ~8pp）。
-- **G4（小项）ids_charge 检查口径**：io 批 1.02%「相等」中 99% 为 2 位小数取整巧合（charge=peak×rise_time/1000 与 avg 同取整），**真复制残留 26/27.5 万激活管（0.009%）**——`_check_v2_data.py` ≥1% 阈值触发 FAIL 是口径问题，非数据问题。
+- **G4（小项）ids_charge 检查口径**：io 批 1.02%「相等」中 99% 为 2 位小数取整巧合（charge=peak×rise_time/1000 与 avg 同取整），**真复制残留 26/27.5 万激活管（0.009%）**——`scripts/diag/_check_v2_data.py` ≥1% 阈值触发 FAIL 是口径问题，非数据问题。
 - **数量（大项）总量仅规格 ~1/4**：见 4.3。
 
 ### 4.3 总量口径（V3.1 决策：现有数据不计入总数，重新生成完整数据）
@@ -251,7 +251,7 @@ serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬�
    多输出 ≥20%、**M≥4 每个形状 ≥30 组**、**覆盖全部 18 种 benchmark 形状（含 G1 缺失的 9入6出 等）**、
    全部组 ≥10 变体（**无退化组**）。
 3. **expr 编号**：与现有 968 expr **不重叠**（建议从 expr10000+ 起或生成方自定义新段），避免误混。
-4. **值级标准**：沿用 V2.0/V3.0 已验证的检查项（`_check_v2_data.py` 全绿：大小写 / direction / vector / ids_charge /
+4. **值级标准**：沿用 V2.0/V3.0 已验证的检查项（`scripts/diag/_check_v2_data.py` 全绿：大小写 / direction / vector / ids_charge /
    sc_expansion / parasitic_caps / 行数公式等）。
 5. **现有数据去向**：保留作开发集；交付时可选随正式数据附送作 bonus（不计入正式总量与分桶统计）。
 

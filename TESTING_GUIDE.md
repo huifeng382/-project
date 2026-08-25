@@ -122,7 +122,7 @@ Config: ... BEST_METRIC=... SPLIT_SEED=... TRAIN_SEED=...
 
 ### 4-seed 等权平均（验证 13.6 现成结果）
 ```bash
-cd ~/project-107-rank && git pull && ~/venv/bin/python3 _ens4.py
+cd ~/project-107-rank && git pull && ~/venv/bin/python3 scripts/diag/_ens4.py
 ```
 读 rank/seed123/seed2024/seed456 的 test_predictions.npz，输出 4-seed 平均 + 各单 seed 指标。
 

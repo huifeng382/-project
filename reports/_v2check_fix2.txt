@@ -1,0 +1,69 @@
+﻿发现 1 个批次:
+  data\batch_v2_full
+
+static 行数: 8679   dynamic 行数: 69432  电路数: 8679
+
+===== 一、circuit_static.parquet =====
+[PASS] 静态必需列齐全
+[PASS] 输入引脚数 1~16  — 分布: {4: 8679}
+[PASS] 输出引脚数 1~6  — 分布: {1: 8679}
+[PASS] 电源/地不出现在 I/O 引脚列表  — 违规电路 0
+[PASS] I/O 引脚 JSON 全部有效  — 无效 0
+[PASS] circuit_id 格式 candidate_*  — 不合规 0
+[PASS] transistor_count 全部 > 0  — min=18
+[PASS] 网表含 .SUBCKT/.ENDS  — 8679/8679
+[PASS] 网表含 X_ 实例行  — 总 X_ 行 63894
+[PASS] cell_types_json 与网表门名一致  — 不一致 0/8679 (检查 8679)
+[PASS] parasitic_caps_json 列非空 100%  — 8679/8679
+[PASS] parasitic_caps key=门实例(抽样)  — 3000/3000 (n=3000)
+[FAIL] parasitic_caps 子字段 in_*/out 且 >0(抽样)  — 2986/3000 (n=3000)  — 缺 in_* 或值≤0 的电路
+[PASS] pin_loads_json 覆盖全部 I/O 引脚(抽样)  — 3000/3000 (n=3000)
+
+===== 二、timing_arcs.parquet =====
+[PASS] 动态必需列齐全
+[PASS] 单 corner = s02p0_l01p0  — {'s02p0_l01p0': 69432}
+[PASS] per_gate_timing_json 已废弃(不应存在)
+[PASS] direction ∈ {rise, fall}(去 .sp 后缀后)  — 原始值: {'rise', 'fall'} → 归一后: {'rise', 'fall'}
+[PASS] DELAY 范围 (1e-12, 1e-08)  — min=1.638e-12 max=1.740e-10
+[PASS] slew_s 全部 > 0
+[PASS] output_load_f 全部 > 0
+[PASS] switching_pin ∈ input_pins_json  — 0/69432
+[PASS] vector 长度 = 输入数(前2万行)  — 20000/20000
+[PASS] vector 切换位与 direction 一致(前2万行, 去.sp)  — 20000/20000 (切换位=1 占比 10000/20000 —— 若≈100% 说明 rise 行也是 1, 不合规)
+[PASS] 每电路行数 = 2×N_in×M  — 不匹配 0/8679 (例如: )
+[PASS] 每 (circuit,pin,dir) 恰 1 个 vector  — 违规组 0/69432
+[PASS] 无重复样本行  — 重复 0
+[PASS] gate_states_json 列非空 100%  — 69432/69432
+[PASS] gate_states key=门实例(抽样)  — 3000/3000
+[PASS] parasitic_caps key 与网表 X_* 完全一致(大小写)(抽样)  — 3000/3000
+[PASS] gate_states key 与网表 X_* 完全一致(大小写)(抽样, 动态表)  — 3000/3000 (小写 x_* 会被 graph_builder 查不到)
+[PASS] transistor_wave gate 字段为 X_* 大写(抽样)  — 2000/2000
+[PASS] transistor_wave_json 列非空 100%  — 69432/69432
+[PASS] transistor_wave 非空 JSON(抽样)  — 空/无效 0/5000
+[PASS] transistor_wave 7 子字段齐全(抽样)  — 5000/5000
+[PASS] transistor_wave 值域合规(抽样)  — 5000/5000
+[WARN] ids_charge ≠ ids_avg(激活管; 0==0 非翻转管不计)  — 复制残留 1668/231378 激活管 (非翻转 0==0 79839 个正常); <1% 记 WARN, ≥1% 记 FAIL
+[PASS] supply_noise_json 列非空 100%  — 69432/69432
+[PASS] supply_noise 子字段 + ≥0(抽样)  — 3000/3000
+[PASS] pin_slew_json key=输入 & 切换=slew_s & 非切换=0(抽样)  — 3000/3000
+[PASS] pin_load_json key=输入 & 非负(抽样)  — 3000/3000
+
+===== 三、组规模 & 总量 =====
+[PASS] 每组变体数 10~15  — 中位 15 范围 [10,15] 合规 100.0%
+  expr 组数: 579   电路数: 8679   dynamic 行数: 69432
+  输入分桶: {'3~4': 8679, '1~2': 0, '5~8': 0, '9~16': 0}
+  输出分布: {1: 8679}
+[PASS] expr 不与 V1(569) 重叠  — 重叠 0 个: 
+[PASS] 批次间无电路重叠  — 重叠 0 个
+[FAIL] sc_expansion.json 覆盖全部 SC_ 名(命名一致铁律)  — SC_ 名 3586 个, 缺 0: , 展开为空 12
+[PASS] coverage_report 存在 (data/coverage_report_v2.json)
+  coverage_report keys: ['batch_v2/circuit_static', 'sc_expansion', 'batch_v2/timing_arcs', 'batch_v2_full/circuit_static', 'batch_v2_full/timing_arcs']
+[PASS] coverage_report 全部 100%  — 非100% 0 项
+
+===== 汇总 =====
+PASS 44 | FAIL 2 | WARN 1
+FAIL 项:
+  ✗ parasitic_caps 子字段 in_*/out 且 >0(抽样)
+  ✗ sc_expansion.json 覆盖全部 SC_ 名(命名一致铁律)
+WARN 项（建议人工复核）:
+  ~ ids_charge ≠ ids_avg(激活管; 0==0 非翻转管不计)

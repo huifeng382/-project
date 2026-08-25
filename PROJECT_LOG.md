@@ -395,7 +395,7 @@
 
 > 前 4 个（2468/456/1357/2024）遗憾 ≤2.22%，是集成主力；3579/9012/rank 明显偏弱、被裁掉。**2468 是迄今最优单 seed（1.93%，甚至低于旧裁剪平均 2.08%）**。
 
-**8-seed 裁剪扫描（按遗憾排序 keep top-K，_trim8.py）**：
+**8-seed 裁剪扫描（按遗憾排序 keep top-K，scripts/diag/_trim8.py）**：
 
 | 组合 | 遗憾 | Spearman | top1 | 捕获率 | 成对>10% |
 |---|---|---|---|---|---|
@@ -502,7 +502,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 | **structlogic2468** | **1.72%** | 0.657 | 78.0% | 89.7% | **92.6%** | 193 |
 | **structlogic456** | **1.78%** | 0.686 | **83.0%** | 89.0% | 90.0% | 327 |
 
-**3-seed 集成（structlogic seed 42+2468+456，等权平均，`_ens_struct.py`）：**
+**3-seed 集成（structlogic seed 42+2468+456，等权平均，`scripts/diag/_ens_struct.py`）：**
 
 | 组合 | 遗憾 | Spearman | top1 | 捕获率 | recall@2 A | recall@3 A | <2% 成对 |
 |---|---|---|---|---|---|---|---|
@@ -522,7 +522,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 ### 14.4.5 V2 数据首轮合规检查（2026-08-20，不合格，需返工）
 
-> 数据来源：GitHub `10.3.3-fix-earlystop` 分支 commit 4a0c18f（Add V2 dataset）+ 97fd7fda（sc_expansion 合并 8909 类）。本地 `git checkout 97fd7fda -- data/` 拉取。检查脚本：`_check_v2_data.py`（对照 DATA_SPEC_V2 逐项，输出 `_v2check_full.txt`）。
+> 数据来源：GitHub `10.3.3-fix-earlystop` 分支 commit 4a0c18f（Add V2 dataset）+ 97fd7fda（sc_expansion 合并 8909 类）。本地 `git checkout 97fd7fda -- data/` 拉取。检查脚本：`scripts/diag/_check_v2_data.py`（对照 DATA_SPEC_V2 逐项，输出 `reports/_v2check_full.txt`）。
 
 **数据概况（batch_v2_full，交付主体）**：
 - 8860 电路 / 69,439 行 / 591 expr（expr8000+，与 V1 569 无重叠 ✓）
@@ -541,7 +541,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 8. ⚠️ **I/O 形状未达 V2 规格**：全部 1~4 入 / 1 出（4 入占 98%），无 5~16 入、无多输出、无分桶——「任意 I/O 对齐 Rust」核心目标未实现。
 9. ⚠️ **规模仅规格的 ~12%**：8860 电路 / 69K 行 / 591 expr vs 规格 5 万电路 / 60 万行 / 4000 expr。
 
-**结论**：结构层（列、单 corner、DELAY 范围、组大小、无重复、覆盖率声明）基本就位，但**值级硬伤（方向后缀、大小写、vector 位、ids_charge）任一都会让训练/推理静默出错**，加 I/O 形状与规模未达规格 → **本轮不合格，退回生成方修复**。PASS 36 / FAIL 4 / WARN 8 明细见 `_v2check_full.txt`。
+**结论**：结构层（列、单 corner、DELAY 范围、组大小、无重复、覆盖率声明）基本就位，但**值级硬伤（方向后缀、大小写、vector 位、ids_charge）任一都会让训练/推理静默出错**，加 I/O 形状与规模未达规格 → **本轮不合格，退回生成方修复**。PASS 36 / FAIL 4 / WARN 8 明细见 `reports/_v2check_full.txt`。
 
 **对模型侧影响**：修复 1-6 是生成方的事；8/9（任意 I/O + 满量）决定能否启动 V2 训练。数据到位前，V2 训练无从谈起，唯一可推进的是 14.4 待办 #1「无 wave 验证」（V1 数据即可跑）。
 
@@ -590,6 +590,23 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 ```
 - 每 run 预计 ~4-5h（同 wave/nowave 量级，CPU 24 核）；等全部出 SUMMARY 后按判读规则决定 **Phase B（调 λ/κ）** 还是 **5.6 阶段 2 兜底**。
 - 关注点：student 是否追平 teacher 的排序（wave123 regret 0.12~0.21%）；reg vs rr 谁更稳（κ 排序监督是否带来增益）。
+
+### 项目文件归类规范（2026-08-25 起长期有效）
+
+> 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**
+
+| 类别 | 位置 | 示例 |
+|---|---|---|
+| 核心代码 | 根目录 / `src/` | `main.py`、`config.py`、`setup_exp.sh`、`src/*.py` |
+| 文档 | 根目录（*.md） | `PROJECT_LOG.md`、`DATA_SPEC_V2.md`、`GNN_RUST_DATA_DIFF.md` |
+| 诊断/分析/集成脚本 | `scripts/diag/` | `_check_v2_data.py`、`_ens_struct.py`、`_smoke_v2.py`、`_check_tl_io.py` |
+| 检查/评估报告输出 | `reports/` | `_v2check_full.txt`、`_chk_io.txt`、`_v2check_fix2.txt` |
+
+**规则**：
+1. 新写的 `_*.py` 诊断脚本 → `scripts/diag/`；脚本输出的一次性 `.txt` 报告 → `reports/`（有价值的）或直接删除（临时的）。
+2. 运行示例：`python scripts/diag/_check_v2_data.py data\batch_v2_full`（脚本从项目根目录跑，路径不变）。
+3. 一次性调试输出（`_*.out.txt` 之类）**不得进 git**——`.gitignore` 已统一收编 `*.log` 与 `cache_smoke_*/`。
+4. 2026-08-25 已清理：删除 14 个一次性 txt + `新建 文本文档.txt`；14 个诊断脚本移入 `scripts/diag/`、4 份检查报告移入 `reports/`，文档引用路径同步更新。
 
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
