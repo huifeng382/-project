@@ -6,8 +6,8 @@ DATA_DIR = "data"
 CIRCUIT_CSV = os.path.join(DATA_DIR, "circuit_dataset.csv")
 STATIC_JSON = os.path.join(DATA_DIR, "static_features.json")
 CELL_LUT_JSON = os.path.join(DATA_DIR, "std_cells_lut.json")
-CACHE_DIR = "cache"
-OUTPUT_DIR = "outputs"
+CACHE_DIR = os.environ.get('CACHE_DIR', 'cache')
+OUTPUT_DIR = os.environ.get('OUTPUT_DIR', 'outputs')
 
 # 模型超参数
 HIDDEN_DIM = 256
@@ -25,7 +25,7 @@ RANDOM_SEED = 42
 
 # 种子解耦：切分与训练分开，便于「同一切分、不同初始化」做集成/方差
 SPLIT_SEED = 42            # 只控制 train/val/test 切分（固定→测试集不变，可集成）
-TRAIN_SEED = 42            # 只控制模型初始化+训练shuffle（变它→不同模型，同切分）
+TRAIN_SEED = int(os.environ.get('TRAIN_SEED', '42'))   # 只控制模型初始化+训练shuffle（变它→不同模型，同切分）
 
 # best_model 选点指标：val_rel_err / val_loss / smoothed_rel_err(滑动平均去噪)
 # 12.x 实测 smoothed_rel_err(bmsm) 排序全指标最好、无短板 → 设为默认
@@ -82,7 +82,7 @@ V2_STRUCT_MODE = 'logic_only'
 
 # 新物理特征开关（delivery1 数据已提供，独立控制，默认全关=纯基线）
 USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
-USE_TRANSISTOR_WAVE = True     # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认）
+USE_TRANSISTOR_WAVE = os.environ.get('USE_TRANSISTOR_WAVE', '1') == '1'   # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认；0=no-wave）
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
 # 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
