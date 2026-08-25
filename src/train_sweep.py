@@ -71,7 +71,7 @@ def _pairwise_rank_loss(pred_log, target_log, grp):
     return loss / max(n, 1)
 
 
-def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False):
+def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=False, teacher_preds=None):
     model.train()
     total_loss = 0
     total_batches = len(loader)
@@ -89,6 +89,14 @@ def train_one_epoch(model, loader, optimizer, device, delta=1.0, show_progress=F
                                   delta * (abs_res - 0.5 * delta))
         weights = torch.tensor([PIN_WEIGHTS.get(pin, 1.0) for pin in data.switching_pin], device=device)
         loss = (sample_loss * weights).mean()
+        # 蒸馏项（KD）：软标签回归 + teacher 排序监督（teacher 预测按 row_idx 索引，log10 空间）
+        if KD_ENABLED and teacher_preds is not None and hasattr(data, 'row_idx'):
+            _tlog = torch.tensor(teacher_preds[data.row_idx.cpu().numpy()],
+                                 dtype=torch.float, device=device)
+            if KD_MODE in ('reg', 'reg+rank'):
+                loss = loss + KD_LAMBDA * F.mse_loss(out, _tlog)
+            if KD_MODE in ('rank', 'reg+rank') and hasattr(data, 'grp'):
+                loss = loss + KD_RANK_W * _pairwise_rank_loss(out, _tlog, data.grp)
         # 组内成对排序损失：同组变体真实 t_i<t_j 时，推动 pred_i<pred_j（间隔 margin）
         if RANK_LOSS_W > 0 and hasattr(data, 'grp'):
             loss = loss + RANK_LOSS_W * _pairwise_rank_loss(out, target_log, data.grp)
@@ -440,6 +448,17 @@ def main():
     test_dataset = DelayDataset(static_parquets, dynamic_parquets, test_ids, scaler, CACHE_DIR)
     print(f"Dataset: train={len(train_dataset)}, val={len(val_dataset)}, test={len(test_dataset)}")
 
+    # ---------- 蒸馏：加载 teacher 预测（KD_ENABLED 时；按 dataset row_idx 对齐） ----------
+    _kd_teacher = None
+    if KD_ENABLED and not KD_PREDS_ONLY:
+        _kd_path = os.path.join(KD_TEACHER_DIR, 'kd_teacher_preds_train.npy')
+        assert os.path.exists(_kd_path), f"[KD] 未找到 teacher 预测: {_kd_path}"
+        _kd_teacher = np.load(_kd_path).astype(np.float32)
+        assert len(_kd_teacher) == len(train_dataset), \
+            f"[KD] teacher 预测长度 {len(_kd_teacher)} != train 样本数 {len(train_dataset)}"
+        print(f"[KD] 已加载 teacher 预测: {_kd_path} ({len(_kd_teacher)} 行, KD_MODE={KD_MODE}, "
+              f"λ={KD_LAMBDA}, κ={KD_RANK_W})")
+
     # 空 edge_index 检查
     print("Checking test dataset for empty edge_index...")
     empty_circuits = set()
@@ -510,6 +529,48 @@ def main():
     in_dim = sample_data.x.shape[1]
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Input dim: {in_dim}, Device: {device}")
+
+    # ---------- 蒸馏：teacher 预测导出模式（KD_PREDS_ONLY=1，一次性，在 teacher 目录跑） ----------
+    # 输出 kd_teacher_preds_{train,val,test}.npy（log10 空间，按下标 idx 对齐 student dataset）
+    # 并对拍 test 排序指标（应与该 checkpoint 的 SUMMARY 一致），对拍通过再用于蒸馏训练。
+    if KD_PREDS_ONLY:
+        assert KD_TEACHER_CKPT, '[KD] KD_PREDS_ONLY=1 需要 KD_TEACHER_CKPT=<checkpoint 路径>'
+        os.makedirs(KD_TEACHER_DIR, exist_ok=True)
+        t_model = DelayGNN(in_dim=in_dim, hidden_dim=HIDDEN_DIM, num_layers=NUM_LAYERS,
+                           dropout=DROPOUT, num_gate_types=num_gate_types,
+                           gate_embed_dim=GATE_EMBED_DIM).to(device)
+        t_model.load_state_dict(torch.load(KD_TEACHER_CKPT, map_location=device, weights_only=False))
+        t_model.eval()
+        for _name, _ds in [('train', train_dataset), ('val', val_dataset), ('test', test_dataset)]:
+            _ld = DataLoader(_ds, batch_size=BATCH_SIZE, num_workers=2)
+            _pl = []
+            with torch.no_grad():
+                for _d in _ld:
+                    _d = _d.to(device)
+                    _corner = _d.corner_cond.to(device) if hasattr(_d, 'corner_cond') else None
+                    _csig = _d.circuit_sig.to(device) if hasattr(_d, 'circuit_sig') else None
+                    _out, _ = t_model(_d.x, _d.edge_index, _d.batch, _corner, _csig,
+                                      getattr(_d, 'struct_prior', None))
+                    _pl.append(_out.cpu().numpy())
+            _arr = np.concatenate(_pl).astype(np.float32)
+            _p = os.path.join(KD_TEACHER_DIR, f'kd_teacher_preds_{_name}.npy')
+            np.save(_p, _arr)
+            print(f"[KD] saved {_p} ({len(_arr)} rows)")
+        # 对拍校验：test 预测复算排序指标（应与 teacher SUMMARY 一致）
+        _td = test_dataset.dynamic_df.reset_index(drop=True)
+        _tp = np.clip(10 ** np.load(os.path.join(KD_TEACHER_DIR, 'kd_teacher_preds_test.npy')),
+                      1e-12, 1e-8)
+        _tt = test_dataset.dynamic_df['DELAY'].to_numpy(dtype=np.float64)
+        _rk = ranking_metrics(_td, _tp, _tt, avg_delay=USE_V2)
+        _hi = _rk.get('hi_spread', _rk)
+        print(f"[KD] 对拍 test(全局): regret={_rk.get('regret_pct', float('nan')):.2f}% "
+              f"sp={_rk.get('spearman', 0):.3f} cap={_rk.get('capture_rate', 0)*100:.1f}% "
+              f"r2={_rk.get('recall_at_2_A', 0)*100:.1f}%")
+        print(f"[KD] 对拍 test(spread>10%): regret={_hi.get('regret_pct', float('nan')):.2f}% "
+              f"sp={_hi.get('spearman', 0):.3f} cap={_hi.get('capture_rate', 0)*100:.1f}% "
+              f"r2={_hi.get('recall_at_2_A', 0)*100:.1f}%")
+        print('[KD] 应与 teacher 的 SUMMARY 一致；对拍通过后再用于蒸馏训练。')
+        return
 
     # ---------- 离群点清洗 ----------
     if OUTLIER_CLEANING and len(train_dataset) > 100:
@@ -655,7 +716,8 @@ def main():
     print("\nStart training...")
     t_train_start = time.time()
     for epoch in range(EPOCHS):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA,
+                                     teacher_preds=_kd_teacher)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
 
         current_lr = optimizer.param_groups[0]['lr']

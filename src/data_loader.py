@@ -523,6 +523,8 @@ class DelayDataset(Dataset):
         data.per_gate_in_slew = pg_in_slew
         # 组ID（成对排序损失用）：同组=同功能同激励的不同变体
         data.grp = torch.tensor([self.group_ids[idx]], dtype=torch.long)
+        # 行号（蒸馏用）：teacher 预测 npz 按 dataset 行 idx 对齐（Subset 离群清洗后仍指向原 idx）
+        data.row_idx = torch.tensor([idx], dtype=torch.long)
         return data
     def extract_features(self, idx):
         """

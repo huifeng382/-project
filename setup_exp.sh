@@ -142,8 +142,30 @@ case "$V" in
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2nowave}/" config.py ;;
 esac
 
+# 蒸馏变体（15.2，DISTILL_PLAN.md）：v2kd<teacher><mode><seed>
+#   teacher: 123=wave123 | ENS=wave42+123 平均；mode: reg(纯软标签) | rr(reg+rank)
+# 例: v2kd123reg42 / v2kd123rr123 / v2kdENSrr42
+case "$V" in
+  v2kd[0-9]*|v2kdENS*)
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    sed -i "s/^KD_ENABLED = .*/KD_ENABLED = True/" config.py
+    case "$V" in
+      v2kdENSrr*)  sed -i "s/^KD_MODE = .*/KD_MODE = 'reg+rank'/" config.py; _S="${V#v2kdENSrr}" ;;
+      v2kdENSreg*) sed -i "s/^KD_MODE = .*/KD_MODE = 'reg'/" config.py;      _S="${V#v2kdENSreg}" ;;
+      v2kd123rr*)  sed -i "s/^KD_MODE = .*/KD_MODE = 'reg+rank'/" config.py; _S="${V#v2kd123rr}" ;;
+      v2kd123reg*) sed -i "s/^KD_MODE = .*/KD_MODE = 'reg'/" config.py;      _S="${V#v2kd123reg}" ;;
+      *) echo "未知 v2kd 变体: $V（应为 v2kd123reg|v2kd123rr|v2kdENSreg|v2kdENSrr + seed）"; exit 1 ;;
+    esac
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+esac
+
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
 ulimit -n 8192
-OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
+# 蒸馏变体默认 teacher 预测目录（可被 KD_TEACHER_DIR 环境变量覆盖）
+KD_ENVS=""
+if [[ "$V" == v2kd* ]]; then
+  KD_ENVS="KD_TEACHER_DIR=${KD_TEACHER_DIR:-$HOME/project-107-v2wave123/outputs} "
+fi
+OMP_NUM_THREADS=6 $KD_ENVS nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
 echo "launched 107-$V  pid=$!  dir=$D"

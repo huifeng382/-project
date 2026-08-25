@@ -85,6 +85,17 @@ USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
 USE_TRANSISTOR_WAVE = os.environ.get('USE_TRANSISTOR_WAVE', '1') == '1'   # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认；0=no-wave）
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
+# 蒸馏（KD）：teacher 有 wave → student 无 wave（Rust 集成用，见 DISTILL_PLAN.md）
+# student 训练时按 dataset row_idx 索引 teacher 预测；KD_ENABLED=1 生效
+KD_ENABLED = os.environ.get('KD_ENABLED', '0') == '1'          # 1=启用蒸馏损失
+KD_TEACHER_DIR = os.environ.get('KD_TEACHER_DIR', '')          # kd_teacher_preds_{train,val,test}.npy 所在目录
+KD_LAMBDA = float(os.environ.get('KD_LAMBDA', '1.0'))          # 软标签回归权重（MSE on log10 预测）
+KD_RANK_W = float(os.environ.get('KD_RANK_W', '1.0'))          # teacher 排序监督权重（复用 _pairwise_rank_loss）
+KD_MODE = os.environ.get('KD_MODE', 'reg+rank')                # 'reg' | 'rank' | 'reg+rank'
+# teacher 预测导出模式（一次性，在 teacher 目录跑）：KD_PREDS_ONLY=1 KD_TEACHER_CKPT=<ckpt> KD_TEACHER_DIR=<out>
+KD_PREDS_ONLY = os.environ.get('KD_PREDS_ONLY', '0') == '1'
+KD_TEACHER_CKPT = os.environ.get('KD_TEACHER_CKPT', '')        # teacher checkpoint（midpoint_ep*.pt / best_model.pt）
+
 # 结构先验特征（Task #8 分析：transistor_count + SC_AND/SC_INV_WIRE 计数 -> 图级残差）
 USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差形式注入 pooling 后（13.4 采纳为默认）
 
