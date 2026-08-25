@@ -303,18 +303,23 @@ def main():
     report('PASS' if len(mism) == 0 else 'FAIL', '每电路行数 = 2×N_in×M',
            f"不匹配 {len(mism)}/{len(merged)} (例如: {mism.head(3).to_dict('index') if len(mism) else ''})")
 
-    # vector=1: (circuit, corner, switching_pin, direction) 唯一 vector
-    if 'corner' in dy.columns:
-        gk = ['circuit_id', 'corner', 'switching_pin', 'direction']
+    # vector=1: (circuit, corner, switching_pin, direction, [output]) 唯一 vector
+    # P9: 多输出电路每个输出一行（规格 §三 "多输出 per-output"），vector 按
+    # Rust build_simu_vectors 是 per-(output,pin) 的 break 语义，行身份须含 output。
+    gk = ['circuit_id', 'corner', 'switching_pin', 'direction']
+    if 'output' in dy.columns:
+        gk = gk + ['output']
     else:
-        gk = ['circuit_id', 'switching_pin', 'direction']
+        gk = gk
     nvec = dy.groupby(gk)['vector'].nunique()
-    report('PASS' if (nvec == 1).all() else 'FAIL', '每 (circuit,pin,dir) 恰 1 个 vector',
+    report('PASS' if (nvec == 1).all() else 'FAIL', '每 (circuit,pin,dir[,output]) 恰 1 个 vector',
            f"违规组 {(nvec != 1).sum()}/{len(nvec)}")
 
-    # 无重复行 (circuit_id, corner, switching_pin, direction, vector)
-    dup = dy.duplicated(subset=['circuit_id', 'corner', 'switching_pin', 'direction', 'vector']).sum() \
-        if 'corner' in dy.columns else dy.duplicated(subset=['circuit_id', 'switching_pin', 'direction', 'vector']).sum()
+    # 无重复行 (circuit_id, corner, switching_pin, direction, vector[, output])
+    dup_sub = ['circuit_id', 'corner', 'switching_pin', 'direction', 'vector']
+    if 'output' in dy.columns:
+        dup_sub = dup_sub + ['output']
+    dup = dy.duplicated(subset=dup_sub).sum()
     report('PASS' if dup == 0 else 'FAIL', '无重复样本行', f"重复 {dup}")
 
     # gate_states_json: 列非空 100% + key 集合 = 门实例(抽样)
