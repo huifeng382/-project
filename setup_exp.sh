@@ -163,9 +163,8 @@ sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
 ulimit -n 8192
 # 蒸馏变体默认 teacher 预测目录（可被 KD_TEACHER_DIR 环境变量覆盖）
-KD_ENVS=""
 if [[ "$V" == v2kd* ]]; then
-  KD_ENVS="KD_TEACHER_DIR=${KD_TEACHER_DIR:-$HOME/project-107-v2wave123/outputs} "
+  export KD_TEACHER_DIR="${KD_TEACHER_DIR:-$HOME/project-107-v2wave123/outputs}"
 fi
-OMP_NUM_THREADS=6 $KD_ENVS nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
+OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
 echo "launched 107-$V  pid=$!  dir=$D"
