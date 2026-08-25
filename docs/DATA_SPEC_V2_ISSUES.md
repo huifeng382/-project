@@ -1,8 +1,8 @@
 # DATA_SPEC_V2 数据合规问题清单（版本记录式）
 
-> 检查方法：`scripts/diag/_check_v2_data.py` 逐项对照 `DATA_SPEC_V2.md`（定稿）自动校验；检查对象为 GitHub
+> 检查方法：`scripts/diag/_check_v2_data.py` 逐项对照 `docs/DATA_SPEC_V2.md`（定稿）自动校验；检查对象为 GitHub
 > `10.3.3-fix-earlystop` 分支交付的 V2 数据（`data/batch_v2_full` + `data/batch_v2_io`）。
-> 明细：首轮 `reports/_v2check_full.txt`、复检 `reports/_v2check_fix2.txt`、V3.0 `reports/_chk_full3.txt`/`reports/_chk_io.txt`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
+> 明细：首轮 `reports/_v2check_full.txt`、复检 `reports/_v2check_fix2.txt`、V3.0 `reports/_chk_full3.txt`/`reports/_chk_io.txt`；检查记录见 `docs/PROJECT_LOG.md` 14.4.5 节。
 >
 > **范围说明**：生成**数量**问题在 V1.0/V2.0 按 2026-08-20 讨论暂缓；**V3.0/V3.1（2026-08-25）起数量与 I/O 覆盖绑定、列为正式要求**（见第四节）；
 > **V3.1 决策：现有 `batch_v2_full` + `batch_v2_io`（968 expr）不计入总数，正式交付重新生成完整 ~4,000 expr / ~60 万行（见 4.3）**。
@@ -79,7 +79,7 @@
 - **Rust 集成影响**：STRUCT_MODE 结构特征（n_t/stack/parallel）48% 靠 sc_expansion、52% 回退默认；
   40% V2 名展开为空 → 回退率大幅上升，structrich/structbase 变体退化（structlogic 纯 10 逻辑受影响小）。
   **Rust 的 cell 命名是另一套**（`SC_JOIN_AND_AND` 等，7.2 已证 5/7 OOV）——V2 自己的名字都查不到展开，
-  Rust 的名字更查不到 → 结构特征全回退。对应 `GNN_RUST_DATA_DIFF.md` 9.3 待办「OOV 名结构精度」：
+  Rust 的名字更查不到 → 结构特征全回退。对应 `docs/GNN_RUST_DATA_DIFF.md` 9.3 待办「OOV 名结构精度」：
   要么补 sc_expansion 覆盖，要么改走路线 A 完整版（从 Rust `.sp` 的 `M_` 行直接解析晶体管结构）。
 - **修复要求**：所有出现过的 SC_ 名 subcircuit 非空可展开；coverage_report 如实报告。🟡 **V2.0 大部分**（null 30.5%→0.28%，剩 12 名 = 本轮 R1）。
 
@@ -174,7 +174,7 @@
 > 数据来源：`NetlistOpt/testbench/tl_cells/`（46 个 .tl，level0~4），逐一解析 INORDER/OUTORDER 实测。
 
 **三组对照**：
-1. **V2 规格要求**（`DATA_SPEC_V2.md` L4/L28-29/L172/L190）：任意 N-in（1~16）/ M-out（1~6），输入分桶 1~2/3~4/5~8/9~16 **各 ~25%**，输出 1/2/3+ 三档，**多输出 ≥20%**。
+1. **V2 规格要求**（`docs/DATA_SPEC_V2.md` L4/L28-29/L172/L190）：任意 N-in（1~16）/ M-out（1~6），输入分桶 1~2/3~4/5~8/9~16 **各 ~25%**，输出 1/2/3+ 三档，**多输出 ≥20%**。
 2. **Rust benchmark 实测**：**18 种不同 I/O 形状**，输入 1~16、输出 1~6，**多输出 11 个（~24%）**；`tl_opt_smoke` 测试实际跑 `level4/ADD4_OVF.tl`（**9 入 6 出**）。→ **规格与 Rust 实测一致，问题完全在生成侧。**
 3. **当前交付 batch_v2_full**：修复版（8679 电路）**全部 4 入 1 出**（分桶 3~4 档 100%，5~8 / 9~16 档 0，多输出 0）→ **只覆盖 benchmark 46 个电路中的 10 个（~22%）**。
 
@@ -216,7 +216,7 @@ serve.py 对 benchmark 46 个中 36 个（含全部 11 个多输出）只能硬�
 | **大项 ⏸** | **完整数据重新生成（V3.1）** | **全新生成 ~4,000 expr / ~60 万行（不计入现有 968），按 4.4 分桶（20/25/25/30）+ 多输出 ≥20% + M≥4 每个 ≥30 组 + 补 G1 缺失形状 + 无退化组；expr 编号与现有不重叠** | `scripts/diag/_check_v2_data.py` 全绿 + 分桶分布达标 |
 
 **复检方法**：`python scripts/diag/_check_v2_data.py data\batch_v2_full` / `python scripts/diag/_check_v2_data.py data\batch_v2_io`，目标：无 FAIL（WARN 需人工确认）。
-脚本见仓库根目录 `scripts/diag/_check_v2_data.py`（V3.0 起含多输出行身份扩展）；明细 `reports/_v2check_full.txt`、`reports/_v2check_fix2.txt`、`reports/_chk_full3.txt`、`reports/_chk_io.txt`；I/O 实证脚本 `scripts/diag/_check_tl_io.py`；检查记录见 `PROJECT_LOG.md` 14.4.5 节。
+脚本见仓库根目录 `scripts/diag/_check_v2_data.py`（V3.0 起含多输出行身份扩展）；明细 `reports/_v2check_full.txt`、`reports/_v2check_fix2.txt`、`reports/_chk_full3.txt`、`reports/_chk_io.txt`；I/O 实证脚本 `scripts/diag/_check_tl_io.py`；检查记录见 `docs/PROJECT_LOG.md` 14.4.5 节。
 
 ---
 

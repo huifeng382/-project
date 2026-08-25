@@ -85,7 +85,7 @@ USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
 USE_TRANSISTOR_WAVE = os.environ.get('USE_TRANSISTOR_WAVE', '1') == '1'   # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认；0=no-wave）
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
-# 蒸馏（KD）：teacher 有 wave → student 无 wave（Rust 集成用，见 DISTILL_PLAN.md）
+# 蒸馏（KD）：teacher 有 wave → student 无 wave（Rust 集成用，见 docs/DISTILL_PLAN.md）
 # student 训练时按 dataset row_idx 索引 teacher 预测；KD_ENABLED=1 生效
 KD_ENABLED = os.environ.get('KD_ENABLED', '0') == '1'          # 1=启用蒸馏损失
 KD_TEACHER_DIR = os.environ.get('KD_TEACHER_DIR', '')          # kd_teacher_preds_{train,val,test}.npy 所在目录

@@ -457,7 +457,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **目标**：把 GNN 排序模型接到 Rust 贪心优化器（NetlistOpt，`tl_opt_smoke` → `optimize_tl_text`），替代昂贵的 SPICE 仿真来给候选排序。
 
-**Rust 侧关键调查发现**（详见 `GNN_RUST_DATA_DIFF.md`）：
+**Rust 侧关键调查发现**（详见 `docs/GNN_RUST_DATA_DIFF.md`）：
 1. **贪心是全局择优**：window 只是「在哪生成 rewrite」的搜索单元；候选评估是「代回整个电路 → 仿真 → 全局 avg_delay」。
 2. **仿真条件固定**（`asap7.sp`）：单 corner（2ps slew / 1fF load）、所有输入 t=0 同时翻转、**单 vector**（`build_simu_vectors_for_simulation` 里 `break` 只取第一个能翻转输出的 truth_table_idx）、延迟 = avg_delay（多输出 rise/fall 平均）。
 3. **I/O 形状**：任意 N入(1~16)/M出(1~6)，不是固定 4pin（benchmark 48 个 .tl 电路，多输出 11 个）。
@@ -467,7 +467,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 - 结构特征（n_t/stack/parallel）48% 来自 sc_expansion、52% 回退默认值——**质量瑕疵非阻塞**，structrich 单 seed 遗憾 2.85% 证明够用。
 - STRUCT_MODE 四模式（`config.STRUCT_MODE`）：base/logic_only/rich/elec。structrich 2.85%、structlogic 3.64% 均优于旧 638 名嵌入 5.67%（单 seed 42，待多 seed 确认）。
 
-**DATA_SPEC_V2（新文件，对齐 Rust，原 DATA_SPEC.md 保留作 V1 存档）**：
+**DATA_SPEC_V2（新文件，对齐 Rust，原 docs/DATA_SPEC.md 保留作 V1 存档）**：
 - I/O 任意 + JSON 列（pin_slew/pin_load，删 arrival——Rust 全 t=0）。
 - 单 corner + 全 t=0 + vector=1。
 - 细粒度 DELAY（per-pin/dir/vector）+ 平均聚合（对齐 avg_delay，非 V1 的「最坏」）。
@@ -486,7 +486,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 **待办（下一步，按优先级）**：
 1. **验证「无 wave」模型精度**（最高优先）：wave 是 game-changer 但 train-only（Rust 推理拿不到），跑 `USE_TRANSISTOR_WAVE=False` 一个 seed 看 regret 掉多少；掉多（>5%）则上蒸馏（teacher 有 wave → student 无 wave）。
 2. ✅ **structrich/structlogic 多 seed 确认**（已完成，2026-08-20，结果见 14.4.4）：structlogic 两 seed 全面胜出 → V2 重训默认 `STRUCT_MODE='logic_only'`，structrich/elec 不再投入。
-3. **GNN 代码侧 4 项改动**（`GNN_RUST_DATA_DIFF.md` 第九节）：parse_netlist 任意 I/O、data_loader JSON 列、DelayGNN 多输出读出、评估口径 avg。
+3. **GNN 代码侧 4 项改动**（`docs/GNN_RUST_DATA_DIFF.md` 第九节）：parse_netlist 任意 I/O、data_loader JSON 列、DelayGNN 多输出读出、评估口径 avg。
 4. **数据生成方确认项**：4000 expr 是否可行；用不用 expr_to_hierarchical_spice 统一命名（可选优化，非必须）。
 
 > 本节的「当前方向/待办」已由上面的待办清单取代；下方旧的「当前方向/待办」一节作历史保留。
@@ -564,7 +564,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 ### 15.2.0/15.2.1 蒸馏方案落地（2026-08-25，commit 7494d82 / eb66c4d）
 
-- 方案文档：`DISTILL_PLAN.md`（teacher 有 wave → student 无 wave；约束：不改 Rust、推理零仿真）。
+- 方案文档：`docs/DISTILL_PLAN.md`（teacher 有 wave → student 无 wave；约束：不改 Rust、推理零仿真）。
 - 代码：config.py +7 KD_* 开关（env 可覆盖）；data_loader 加 `row_idx`；train_sweep 加 `KD_PREDS_ONLY` 导出模式（teacher 预测 npz + 对拍校验）+ `train_one_epoch` 蒸馏损失（λ·MSE 软标签 + κ·teacher 排序监督，复用 `_pairwise_rank_loss`）；setup_exp.sh 加 `v2kd<teacher><mode><seed>` 变体。
 - 15.2.1：修复对拍打印的指标 key（captured_pct / recall_at_k）。
 
@@ -598,15 +598,16 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 | 类别 | 位置 | 示例 |
 |---|---|---|
 | 核心代码 | 根目录 / `src/` | `main.py`、`config.py`、`setup_exp.sh`、`src/*.py` |
-| 文档 | 根目录（*.md） | `PROJECT_LOG.md`、`DATA_SPEC_V2.md`、`GNN_RUST_DATA_DIFF.md` |
+| 文档（*.md） | `docs/` | `docs/PROJECT_LOG.md`、`docs/DATA_SPEC_V2.md`、`docs/GNN_RUST_DATA_DIFF.md` |
 | 诊断/分析/集成脚本 | `scripts/diag/` | `_check_v2_data.py`、`_ens_struct.py`、`_smoke_v2.py`、`_check_tl_io.py` |
 | 检查/评估报告输出 | `reports/` | `_v2check_full.txt`、`_chk_io.txt`、`_v2check_fix2.txt` |
 
 **规则**：
 1. 新写的 `_*.py` 诊断脚本 → `scripts/diag/`；脚本输出的一次性 `.txt` 报告 → `reports/`（有价值的）或直接删除（临时的）。
-2. 运行示例：`python scripts/diag/_check_v2_data.py data\batch_v2_full`（脚本从项目根目录跑，路径不变）。
-3. 一次性调试输出（`_*.out.txt` 之类）**不得进 git**——`.gitignore` 已统一收编 `*.log` 与 `cache_smoke_*/`。
-4. 2026-08-25 已清理：删除 14 个一次性 txt + `新建 文本文档.txt`；14 个诊断脚本移入 `scripts/diag/`、4 份检查报告移入 `reports/`，文档引用路径同步更新。
+2. **所有文档（*.md，含本记录）一律放 `docs/`**，不再放根目录。
+3. 运行示例：`python scripts/diag/_check_v2_data.py data\batch_v2_full`（脚本从项目根目录跑，路径不变）。
+4. 一次性调试输出（`_*.out.txt` 之类）**不得进 git**——`.gitignore` 已统一收编 `*.log` 与 `cache_smoke_*/`。
+5. 2026-08-25 已清理：删除 14 个一次性 txt + `新建 文本文档.txt`；14 个诊断脚本移入 `scripts/diag/`、4 份检查报告移入 `reports/`、9 份 .md 移入 `docs/`；文档/代码内引用路径全部同步更新（md 间引用统一写 `docs/xxx.md`）。
 
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。

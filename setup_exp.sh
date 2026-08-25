@@ -142,7 +142,7 @@ case "$V" in
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2nowave}/" config.py ;;
 esac
 
-# 蒸馏变体（15.2，DISTILL_PLAN.md）：v2kd<teacher><mode><seed>
+# 蒸馏变体（15.2，docs/DISTILL_PLAN.md）：v2kd<teacher><mode><seed>
 #   teacher: 123=wave123 | ENS=wave42+123 平均；mode: reg(纯软标签) | rr(reg+rank)
 # 例: v2kd123reg42 / v2kd123rr123 / v2kdENSrr42
 case "$V" in
