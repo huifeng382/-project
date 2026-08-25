@@ -75,8 +75,8 @@ QUICK_MIN_DELTA = 1.0      # best err 在窗口内至少下降这么多百分点
 FOUR_PIN_ONLY = True       # True=只保留4引脚电路（去掉~12%），False=保留全部
 
 # V2 数据模式（15.1.0 起）：True=用 batch_v2_full(4-pin) + batch_v2_io(任意I/O)，False=旧 delivery1+2
-# V2 下自动关闭 FOUR_PIN_ONLY（io 含任意形状）、评估用 avg_delay 口径（对齐 Rust）
-USE_V2 = False
+# 15.1.1 起默认 True：训练只使用 V2 两个新数据集
+USE_V2 = True
 # V2 训练推荐（14.4.4 结论）：STRUCT_MODE='logic_only'（干净 10 逻辑最优）；cornerattn 保留默认
 V2_STRUCT_MODE = 'logic_only'
 
