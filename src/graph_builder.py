@@ -176,48 +176,57 @@ def rebuild_gate_types(cell_types):
     GATE_TYPES = LOGIC_TYPES + reserved
     GATE_TO_IDX = {gt: i for i, gt in enumerate(GATE_TYPES)}
 
-def parse_netlist(netlist_str):
+def parse_netlist(netlist_str, input_pins=None, output_pins=None):
+    """解析网表 → (nodes, edges)。
+
+    input_pins / output_pins：显式引脚列表（V2 从 circuit_static 的
+    input_pins_json / output_pins_json 传入，支持任意 N 入 / M 出，含多输出）。
+    缺省时从网表推导：输入取 .SUBCKT DUT 头（排除 vdd/gnd/vss），
+    输出取「是某门输出、但从未被任何门当输入」的 sink net（V1 的 'out' 即此）。
+    """
     lines = netlist_str.strip().split('\n')
     gates = {}
     wire_to_driver = {}
-    input_pins = []
 
     for line in lines:
         stripped = line.strip()
-        if stripped.upper().startswith('.SUBCKT DUT'):
-            parts = stripped.split()
-            if len(parts) >= 3:
-                input_pins = [
-                    p for p in parts[2:]
-                    if p.lower() not in ('vdd', 'gnd', 'vss', 'out')
-                ]
-            continue
         if not stripped.startswith('X_'):
             continue
         tokens = stripped.split()
         if len(tokens) < 3:
             continue
         inst = tokens[0]
-        # SPICE 实例行格式: X_<inst> <nets...> <subckt_name>
-        # 最后一个 token 是 subckt 名称（门类型）
         gtype = tokens[-1]
-        # 中间的 nets：去掉实例名和门类型
         io_tokens = tokens[1:-1]
         if len(io_tokens) < 1:
             continue
-        # 按 SPICE 惯例，最后一个 net 是输出，前面的是输入
         output = io_tokens[-1]
         inputs = io_tokens[:-1]
         gates[inst] = {'type': gtype, 'inputs': inputs, 'output': output}
         wire_to_driver[output] = inst
 
+    if input_pins is None or output_pins is None:
+        header_pins = []
+        for line in lines:
+            s = line.strip()
+            if s.upper().startswith('.SUBCKT DUT'):
+                parts = s.split()
+                if len(parts) >= 3:
+                    header_pins = [p for p in parts[2:] if p.lower() not in ('vdd', 'gnd', 'vss')]
+                break
+        if output_pins is None:
+            consumed = {inp for info in gates.values() for inp in info['inputs']}
+            output_pins = [o for o in wire_to_driver if o not in consumed]
+        if input_pins is None:
+            input_pins = [p for p in header_pins if p not in output_pins]
+
     nodes = {}
     for inst, info in gates.items():
         nodes[inst] = {'type': info['type'], 'is_input': False, 'is_output': False}
-
     for pin in input_pins:
         nodes[pin] = {'type': 'INPUT_PIN', 'is_input': True, 'is_output': False}
-    nodes['out'] = {'type': 'OUTPUT_PIN', 'is_input': False, 'is_output': True}
+    for op in output_pins:
+        nodes[op] = {'type': 'OUTPUT_PIN', 'is_input': False, 'is_output': True}
 
     edges = []
     for inst, info in gates.items():
@@ -227,17 +236,17 @@ def parse_netlist(netlist_str):
     for inst, info in gates.items():
         for inp in info['inputs']:
             if inp in wire_to_driver and wire_to_driver[inp] != inst:
-                driver_inst = wire_to_driver[inp]
-                edges.append((driver_inst, inst))
-    for inst, info in gates.items():
-        if info['output'] == 'out':
-            edges.append((inst, 'out'))
+                edges.append((wire_to_driver[inp], inst))
+    # 门输出 → 输出引脚节点（多输出：每个输出引脚一条边）
+    for op in output_pins:
+        if op in wire_to_driver:
+            edges.append((wire_to_driver[op], op))
 
     edges = list(set(edges))
     return nodes, edges
 
-def build_static_graph(circuit_id, netlist_str):
-    nodes, edges = parse_netlist(netlist_str)
+def build_static_graph(circuit_id, netlist_str, input_pins=None, output_pins=None):
+    nodes, edges = parse_netlist(netlist_str, input_pins, output_pins)
     node_names = list(nodes.keys())
     
     # 如果没有边，添加自环边

@@ -61,6 +61,11 @@ class DelayGNN(nn.Module):
         self.dropout = dropout
 
     def forward(self, x, edge_index, batch, corner_cond=None, circuit_sig=None, struct_prior=None):
+        # 多输出支持说明（9.3）：
+        # 读出为「gate_mask 掩码后的全局池化」，对任意节点数（含 M 个输出节点）天然适用；
+        # V2 多输出电路按「per-row 训练（每行 = 一个 (pin,dir,vector,output) 的 DELAY）+ 评估按电路取均值
+        # 对齐 Rust avg_delay」处理（见 utils.ranking_metrics avg_delay=True），因此模型无需改读出结构，
+        # 也保持旧 checkpoint 兼容。
         gate_idx = x[:, 0].long()
         struct_dyn = x[:, 1:]
         gate_emb = self.gate_embed(gate_idx)

@@ -70,9 +70,9 @@ class DelayDataset(Dataset):
                         df = df.rename(columns={col: 'DELAY'})
                         break
 
-            # 确保 vector 列存在且格式正确
+            # vector 列存在则保留原样（V1 固定 5 位 / V2 任意 N 位，禁止 zfill 改写——会移位破坏位到引脚映射）
             if 'vector' in df.columns:
-                df['vector'] = df['vector'].astype(str).str.zfill(5)
+                df['vector'] = df['vector'].astype(str)
 
             # 过滤非法延迟值（<1e-12s 视为物理不可行噪声，log10 会出极端值）
             if 'DELAY' in df.columns:
@@ -109,9 +109,9 @@ class DelayDataset(Dataset):
         if 'DELAY' in self.dynamic_df.columns:
             self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
 
-        # 确保 vector 列格式正确（再次保证）
+        # 确保 vector 列格式正确（保持原样，不 zfill）
         if 'vector' in self.dynamic_df.columns:
-            self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str).str.zfill(5)
+            self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str)
 
         # 组ID：同 (expr,corner,switching_pin,direction,vector) = 同功能同激励下的不同变体（成对排序用）
         def _col(name):
@@ -149,6 +149,46 @@ class DelayDataset(Dataset):
             actual_pins = set(self.dynamic_df['switching_pin'].dropna().unique())
             self.pins = [p for p in candidate_pins if p in actual_pins]
 
+        # ---- 每电路引脚（V2 任意 I/O：不同电路引脚集合不同，按电路取，不用全局并集）----
+        # self._circuit_pins[cid] = (input_pins 列表, output_pins 列表)
+        self._circuit_pins = {}
+        for cid, srow in self.static_df.iterrows():
+            ip, op = None, None
+            try:
+                ip = json.loads(srow['input_pins_json']) if isinstance(srow['input_pins_json'], str) else srow['input_pins_json']
+            except Exception:
+                ip = None
+            try:
+                op = json.loads(srow['output_pins_json']) if isinstance(srow['output_pins_json'], str) else srow['output_pins_json']
+            except Exception:
+                op = None
+            if not isinstance(ip, list) or not ip or not isinstance(op, list) or not op:
+                # 从网表头推导（V1 兼容：.SUBCKT DUT 后的非电源引脚；输出=sink net）
+                nl = str(srow.get('gate_level_netlist', ''))
+                header = []
+                for line in nl.split('\n'):
+                    s = line.strip()
+                    if s.upper().startswith('.SUBCKT DUT'):
+                        parts = s.split()
+                        if len(parts) >= 3:
+                            header = [p for p in parts[2:] if p.lower() not in ('vdd', 'gnd', 'vss')]
+                        break
+                if not isinstance(ip, list) or not ip:
+                    ip = header
+                if not isinstance(op, list) or not op:
+                    # sink net = 某门输出但从未被任何门当输入
+                    outs = set(); consumed = set()
+                    for line in nl.split('\n'):
+                        s = line.strip()
+                        if not s.startswith('X_'):
+                            continue
+                        t = s.split()
+                        if len(t) < 3:
+                            continue
+                        outs.add(t[-2]); consumed.update(t[1:-2])
+                    op = [o for o in outs if o not in consumed] or header
+            self._circuit_pins[str(cid)] = (list(ip), list(op))
+
         self.scaler = scaler
         self.cache_dir = cache_dir
         self.graph_cache = {}
@@ -180,20 +220,38 @@ class DelayDataset(Dataset):
                 node_names, node_static, edge_index = torch.load(cache_path, weights_only=False)
             else:
                 netlist = self.static_df.loc[cid, 'gate_level_netlist']
-                node_names, node_static, edge_index = build_static_graph(cid, netlist)
+                ip, op = self._circuit_pins.get(str(cid), (None, None))
+                node_names, node_static, edge_index = build_static_graph(cid, netlist, ip or None, op or None)
                 torch.save((node_names, node_static, edge_index), cache_path)
             self.graph_cache[cid] = (node_names, node_static, edge_index)
 
     def _get_static(self, cid):
         return self.graph_cache[cid]
 
-    def _get_dynamic_features(self, row, pin_loads_dict):
-        pins = self.pins
+    def _get_dynamic_features(self, row, pin_loads_dict, pins=None):
+        pins = pins if pins is not None else self.pins
         switching = row['switching_pin']
         direction = row['direction']
         # 从 direction 推断 switching_pin 的切换前状态
         # rise: 0 -> 1，切换前为 0; fall: 1 -> 0，切换前为 1
         switching_before = 0.0 if direction == 'rise' else 1.0
+
+        # V2 per-pin JSON 列（任意 I/O 用；V1 无此列时回退固定列）
+        pin_slew, pin_load = {}, {}
+        try:
+            _v = row.get('pin_slew_json')
+            _v = json.loads(_v) if isinstance(_v, str) else _v
+            if isinstance(_v, dict):
+                pin_slew = {str(k): v for k, v in _v.items()}
+        except Exception:
+            pass
+        try:
+            _v = row.get('pin_load_json')
+            _v = json.loads(_v) if isinstance(_v, str) else _v
+            if isinstance(_v, dict):
+                pin_load = {str(k): v for k, v in _v.items()}
+        except Exception:
+            pass
 
         # 全局动态参数（来自 timing_arcs，每个向量不同）
         global_slew = row.get('slew_s', 0.0) if pd.notna(row.get('slew_s')) else 0.0
@@ -212,32 +270,36 @@ class DelayDataset(Dataset):
         except (IndexError, ValueError):
             pass
 
-        # vector 编码：5位字符串，每位对应一个引脚的逻辑状态
-        vector_str = str(row.get('vector', '00000')).zfill(5)
+        # vector 编码：N 位字符串，第 i 位对应第 i 个输入引脚（INORDER 序，不 zfill）
+        vector_str = str(row.get('vector', ''))
 
         dyn_feats = {}
         for pin in pins:
-            # 负载逻辑：
-            # 1. 输出引脚用全局 output_load_f
-            # 2. 输入引脚优先读动态列 load_{pin}，否则从静态字典
-            pl = pin.lower()
-            if pl.startswith('out'):
-                load_val = global_out_load
+            # 负载：V2 优先 pin_load_json；否则固定列 load_{pin}；否则静态字典
+            if pin in pin_load:
+                load_val = pin_load[pin]
             else:
-                load_col = f'load_{pin}'
-                if load_col in row.index and pd.notna(row[load_col]):
-                    load_val = row[load_col]
+                pl = pin.lower()
+                if pl.startswith('out'):
+                    load_val = global_out_load
                 else:
-                    load_val = pin_loads_dict.get(pin, 0.0)
+                    load_col = f'load_{pin}'
+                    if load_col in row.index and pd.notna(row[load_col]):
+                        load_val = row[load_col]
+                    else:
+                        load_val = pin_loads_dict.get(pin, 0.0)
 
-            # 获取 slew（切换引脚有输入 slew，其他引脚优先读 per-pin 列）
-            slew_col = f'slew_{pin}'
-            if slew_col in row.index and pd.notna(row[slew_col]):
-                slew_val = row[slew_col]
-            elif pin == switching:
-                slew_val = global_slew
+            # slew：V2 优先 pin_slew_json；否则固定列；否则仅切换引脚用全局 slew
+            if pin in pin_slew:
+                slew_val = pin_slew[pin]
             else:
-                slew_val = 0.0
+                slew_col = f'slew_{pin}'
+                if slew_col in row.index and pd.notna(row[slew_col]):
+                    slew_val = row[slew_col]
+                elif pin == switching:
+                    slew_val = global_slew
+                else:
+                    slew_val = 0.0
 
             # 获取 arrival_time（仅切换引脚有意义，非切换引脚为静态→填0）
             if pin == switching:
@@ -290,7 +352,8 @@ class DelayDataset(Dataset):
         cid = row['circuit_id']
         node_names, node_static, edge_index = self._get_static(cid)
         pin_loads_dict = self.static_df.loc[cid, 'pin_loads_dict']
-        dyn_feats, corner_cond = self._get_dynamic_features(row, pin_loads_dict)
+        circuit_pins, circuit_outputs = self._circuit_pins.get(str(cid), (self.pins, []))
+        dyn_feats, corner_cond = self._get_dynamic_features(row, pin_loads_dict, circuit_pins)
 
         num_nodes = len(node_names)
         num_dyn_feats = 7
@@ -314,7 +377,7 @@ class DelayDataset(Dataset):
             pass
 
         if not gate_states:
-            vector_str = str(row.get('vector', '00000')).zfill(5)
+            vector_str = str(row.get('vector', ''))
             sw = row['switching_pin']
             gate_cache_path = os.path.join(self._gate_cache_dir,
                                             f"{cid}_{vector_str}_{sw}_gate.pt")
@@ -336,7 +399,7 @@ class DelayDataset(Dataset):
                     type_idx = int(node_static[j, 0].item())
                     node_types[n] = GATE_TYPES[type_idx] if type_idx < len(GATE_TYPES) else 'UNKNOWN'
                 gate_states = compute_gate_states(node_names, node_types, edge_index,
-                                                   vector_str, self.pins, sw)
+                                                   vector_str, circuit_pins, sw)
                 try:
                     with open(gate_cache_path, 'w') as f:
                         json.dump(gate_states, f)
@@ -348,7 +411,7 @@ class DelayDataset(Dataset):
             key = str(n).lower()
             if key in gate_states_lc:
                 x[i, -1] = float(gate_states_lc[key])
-            elif n == 'out':
+            elif n in circuit_outputs:
                 x[i, -1] = 1.0
 
         # ---- 新物理特征（delivery1 提供，config 开关控制，均作为额外节点特征）----
@@ -471,6 +534,7 @@ class DelayDataset(Dataset):
         node_names, node_static, edge_index = self._get_static(cid)
         node_static_np = node_static.numpy()
         num_nodes = node_static_np.shape[0]
+        pins = self._circuit_pins.get(str(cid), (self.pins, []))[0]
         
         # ----- 1. 图级静态统计 -----
         fanout = node_static_np[:, 1]  # 绝对索引（静态特征位置固定）
@@ -533,10 +597,14 @@ class DelayDataset(Dataset):
         for u, v in edge_index.t().tolist():
             if u < len(node_names) and v < len(node_names):
                 reverse_adj[node_names[v]].append(node_names[u])
-        
+
+        out_nodes = self._circuit_pins.get(str(cid), (None, ['out']))[1] or ['out']
         dist_to_out = {n: float('inf') for n in node_names}
-        dist_to_out['out'] = 0
-        q = deque(['out'])
+        q = deque()
+        for on in out_nodes:
+            if on in node_names:
+                dist_to_out[on] = 0
+                q.append(on)
         while q:
             u = q.popleft()
             for prev in reverse_adj.get(u, []):

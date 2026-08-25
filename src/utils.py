@@ -65,9 +65,12 @@ def _spearman(pred, true):
     return float(np.corrcoef(rp, rt)[0, 1])
 
 
-def ranking_metrics(test_dyn, preds, targets):
+def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
     """等价变体择优任务的排序评估。
-    按 (expr, corner) 分组，每个变体取「最坏情况延迟」= max over (pin/dir/vector)。
+    按 (expr, corner) 分组（V2 单 corner 下等价于按 expr 分组），每个变体取延迟聚合：
+      - avg_delay=False（V1 默认）：最坏情况延迟 = max over (pin/dir/vector)；
+      - avg_delay=True（V2 对齐 Rust）：平均延迟 = mean over 所有行（pin/dir/vector/output），
+        = Rust `simulate_all_outputs_for_expr` 的 avg_delay。
     组内(≥2 变体)算：Spearman、选择遗憾、top-1、捕获率、变体延迟差；
     并做「成对分辨准确率(按真实相对差分档)」——贪心细粒度重写成败的关键。"""
     import pandas as pd
@@ -78,8 +81,9 @@ def ranking_metrics(test_dyn, preds, targets):
         else df['circuit_id'].astype(str).map(_expr_of)
     if 'corner' not in df.columns:
         df['corner'] = 'x'
+    _agg = 'mean' if avg_delay else 'max'
     wc = df.groupby(['_expr', 'corner', 'circuit_id']).agg(
-        pred=('_pred', 'max'), true=('_true', 'max')).reset_index()
+        pred=('_pred', _agg), true=('_true', _agg)).reset_index()
     sps, regrets, top1s, spreads, captured = [], [], [], [], []
     recA = {2: [], 3: []}; recB = {2: [], 3: []}   # recall@K: A=真#1进前K, B=前K有真前K之一(只统计非平凡组 size>=K+1)
     bins = [(0.0, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, np.inf)]

@@ -220,35 +220,37 @@ def main():
     create_dir(CACHE_DIR)
     create_dir(OUTPUT_DIR)
 
-    # ---------- 数据集路径：新生成 ~10w+ 样本 ----------
-    # batch1: 手选电路全sweep (150电路, 30 corners) → ~58K
-    # batch2: e-graph稀疏sweep (325电路, 9 corners) → ~43K
+    # ---------- 数据集路径：V2（batch_v2_full + batch_v2_io）或旧 V1（delivery1+2） ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    # delivery1 + delivery2 合并（~54 万行，1,437 电路。旧数据在 archive_v13.1/）
     import glob
     static_parquets = []
     dynamic_parquets = []
-    for prefix in ['data/delivery1', 'data/delivery2']:
-        for b in ['batch1', 'batch2', 'batch3']:
-            sp = os.path.join(data_dir, f"{prefix}/{b}/circuit_static.parquet")
-            dp = os.path.join(data_dir, f"{prefix}/{b}/timing_arcs.parquet")
+    if USE_V2:
+        # 15.1.0：V2 数据（batch_v2_full 4-pin 口径 + batch_v2_io 任意 I/O 口径）
+        for batch in ['batch_v2_full', 'batch_v2_io']:
+            sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
+            dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
             if os.path.exists(sp) and os.path.exists(dp):
                 static_parquets.append(sp); dynamic_parquets.append(dp)
-                continue
-            # delivery2/batch3 只有 part 文件，逐个加载
-            sparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/circuit_static_part*.parquet")))
-            dparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/timing_arcs_part*.parquet")))
-            if sparts and dparts:
-                static_parquets.extend(sparts); dynamic_parquets.extend(dparts)
-    for batch in []:
-        sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
-        dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
-        if os.path.exists(sp) and os.path.exists(dp):
-            static_parquets.append(sp)
-            dynamic_parquets.append(dp)
-            print(f"Found optional data: {batch}")
-        else:
-            print(f"Optional data not found, skipping: {batch}")
+                print(f"V2 data: {batch}")
+            else:
+                print(f"V2 data not found, skipping: {batch}")
+        four_pin_only_eff = False   # io 含任意 I/O，V2 下不做 4-pin 过滤
+    else:
+        # delivery1 + delivery2 合并（~54 万行，1,437 电路。旧数据在 archive_v13.1/）
+        for prefix in ['data/delivery1', 'data/delivery2']:
+            for b in ['batch1', 'batch2', 'batch3']:
+                sp = os.path.join(data_dir, f"{prefix}/{b}/circuit_static.parquet")
+                dp = os.path.join(data_dir, f"{prefix}/{b}/timing_arcs.parquet")
+                if os.path.exists(sp) and os.path.exists(dp):
+                    static_parquets.append(sp); dynamic_parquets.append(dp)
+                    continue
+                # delivery2/batch3 只有 part 文件，逐个加载
+                sparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/circuit_static_part*.parquet")))
+                dparts = sorted(glob.glob(os.path.join(data_dir, f"{prefix}/{b}/timing_arcs_part*.parquet")))
+                if sparts and dparts:
+                    static_parquets.extend(sparts); dynamic_parquets.extend(dparts)
+        four_pin_only_eff = FOUR_PIN_ONLY
     # 启动时检查：如果代码或数据变了，自动清除过期缓存
     check_and_clear_cache(static_parquets, dynamic_parquets)
 
@@ -282,8 +284,8 @@ def main():
     dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
     print(f"清洗后样本数: {len(dynamic_df)}, 电路数: {dynamic_df['circuit_id'].nunique()}")
 
-    # ---------- 可选：只保留4引脚标准电路（在划分前过滤，避免空split）----------
-    if FOUR_PIN_ONLY:
+    # ---------- 可选：只保留4引脚标准电路（在划分前过滤，避免空split；V2 下跳过）----------
+    if four_pin_only_eff:
         static_check = pd.concat([pd.read_parquet(p) for p in static_parquets])
         for col in ['candidate', 'candidate_id']:
             if col in static_check.columns:
@@ -340,7 +342,17 @@ def main():
         pins = sorted(actual)
     print(f"引脚: {pins}")
 
-    # ---------- Scaler 拟合（匹配 DelayDataset._get_dynamic_features 逻辑）----------
+    # ---------- Scaler 拟合（匹配 DelayDataset._get_dynamic_features 逻辑；V2 用每电路引脚 + JSON 列）----------
+    # 每电路引脚（V2 任意 I/O 用；V1 回退全局 pins）
+    def _cell_pins(cid):
+        try:
+            ip = json.loads(static_df.loc[cid, 'input_pins_json']) if isinstance(static_df.loc[cid, 'input_pins_json'], str) \
+                else static_df.loc[cid, 'input_pins_json']
+            if isinstance(ip, list) and ip:
+                return list(ip)
+        except Exception:
+            pass
+        return pins
     train_dynamic = dynamic_df[dynamic_df['circuit_id'].isin(train_ids)]
     all_cont_features = []
     for _, row in train_dynamic.iterrows():
@@ -348,22 +360,39 @@ def main():
         global_slew = row.get('slew_s', 0.0)
         out_load = row.get('output_load_f', 0.0)
         loads_dict = pin_loads_map.get(row['circuit_id'], {})
+        row_pins = _cell_pins(row['circuit_id'])
+        # V2 per-pin JSON 列
+        pin_slew, pin_load = {}, {}
+        try:
+            _v = json.loads(row.get('pin_slew_json')) if isinstance(row.get('pin_slew_json'), str) else row.get('pin_slew_json')
+            if isinstance(_v, dict): pin_slew = {str(k): v for k, v in _v.items()}
+        except Exception: pass
+        try:
+            _v = json.loads(row.get('pin_load_json')) if isinstance(row.get('pin_load_json'), str) else row.get('pin_load_json')
+            if isinstance(_v, dict): pin_load = {str(k): v for k, v in _v.items()}
+        except Exception: pass
 
-        for pin in pins:
-            # 匹配 data_loader 逻辑：优先 per-pin slew 列，否则只有切换引脚用全局 slew
-            slew_col = f'slew_{pin}'
-            if slew_col in row.index and pd.notna(row[slew_col]):
-                slew_val = row[slew_col]
-            elif pin == switching:
-                slew_val = global_slew
+        for pin in row_pins:
+            # 匹配 data_loader 逻辑：优先 per-pin slew（JSON 或列），否则只有切换引脚用全局 slew
+            if pin in pin_slew:
+                slew_val = pin_slew[pin]
             else:
-                slew_val = 0.0
-            # 匹配 data_loader 逻辑：优先 per-pin load，否则静态字典
-            load_col = f'load_{pin}'
-            if load_col in row.index and pd.notna(row[load_col]):
-                load_val = row[load_col]
+                slew_col = f'slew_{pin}'
+                if slew_col in row.index and pd.notna(row[slew_col]):
+                    slew_val = row[slew_col]
+                elif pin == switching:
+                    slew_val = global_slew
+                else:
+                    slew_val = 0.0
+            # 匹配 data_loader 逻辑：优先 per-pin load（JSON 或列），否则静态字典
+            if pin in pin_load:
+                load_val = pin_load[pin]
             else:
-                load_val = loads_dict.get(pin, 0.0)
+                load_col = f'load_{pin}'
+                if load_col in row.index and pd.notna(row[load_col]):
+                    load_val = row[load_col]
+                else:
+                    load_val = loads_dict.get(pin, 0.0)
             # 匹配 data_loader 逻辑：仅切换引脚有 arrival_time
             if pin == switching:
                 arrival_col = f'arrival_time_{pin}'
@@ -398,6 +427,12 @@ def main():
     import src.graph_builder as gb
     num_gate_types = len(gb.GATE_TYPES)
     print(f"Gate types: {len(all_cell_types)} unique cell types -> gate vocabulary rebuilt ({num_gate_types} total)")
+
+    # V2 推荐结构模式（14.4.4 结论：logic_only 最优；在 DelayDataset 构建前生效）
+    if USE_V2 and V2_STRUCT_MODE:
+        import config as _cfg
+        _cfg.STRUCT_MODE = V2_STRUCT_MODE
+        print(f"[V2] STRUCT_MODE -> {V2_STRUCT_MODE}")
 
     # ---------- 创建数据集 ----------
     train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)
@@ -567,7 +602,7 @@ def main():
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
                 _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
                 mn = min(len(test_dyn), len(mp_preds))
-                mhi = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn]).get('hi_spread', {})
+                mhi = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2).get('hi_spread', {})
                 mrec = mhi.get('recall_at_k', {})
                 mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
                 mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
@@ -674,7 +709,7 @@ def main():
             model.train()
             try:
                 rk = ranking_metrics(val_dataset.dynamic_df.reset_index(drop=True),
-                                     np.concatenate(rp), np.concatenate(rt))
+                                     np.concatenate(rp), np.concatenate(rt), avg_delay=USE_V2)
                 vr = rk['regret_pct'] if BEST_RANK_METRIC == 'regret' else rk['spearman']
                 better = (vr < best_rank_val) if BEST_RANK_METRIC == 'regret' else (vr > best_rank_val)
                 if not np.isnan(vr) and better:
@@ -767,10 +802,18 @@ def main():
             except:
                 return -1
         expr_nums = test_dyn['expr'].apply(_expr_num).values
-        b1_mask = (expr_nums >= 0) & (expr_nums <= 199)     # batch1 + batch1b
-        b2_mask = (expr_nums >= 200) & (expr_nums <= 999)   # batch2
-        b3_mask = expr_nums >= 1000                           # batch3
-        for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
+        if USE_V2:
+            # V2：expr8000~8999 = batch_v2_full(4-pin)，expr9000+ = batch_v2_io(任意I/O)
+            b1_mask = (expr_nums >= 8000) & (expr_nums <= 8999)
+            b2_mask = expr_nums >= 9000
+            b3_mask = np.zeros_like(expr_nums, dtype=bool)
+            batch_labels = [('V2-full(4pin)', b1_mask), ('V2-io(任意IO)', b2_mask)]
+        else:
+            b1_mask = (expr_nums >= 0) & (expr_nums <= 199)     # batch1 + batch1b
+            b2_mask = (expr_nums >= 200) & (expr_nums <= 999)   # batch2
+            b3_mask = expr_nums >= 1000                           # batch3
+            batch_labels = [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]
+        for label, mask in batch_labels:
             if mask.sum() > 0:
                 err = np.abs(preds[mask] - targets[mask]) / targets[mask] * 100
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
@@ -790,7 +833,7 @@ def main():
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
                 _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
                 mn = min(len(test_dyn), len(mp_preds))
-                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn])
+                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2)
                 mhi = mrk.get('hi_spread', {})
                 mr = mhi.get('regret_pct', 100.0)
                 ms = mhi.get('spearman', 0.0)
@@ -843,7 +886,7 @@ def main():
     # ---- 排序（真实任务：等价变体择优。目标: Spearman→1, 遗憾→0%, top1/捕获/成对分辨→100%）----
     try:
         if len(test_dyn) == len(preds):
-            rk = ranking_metrics(test_dyn, preds, targets)
+            rk = ranking_metrics(test_dyn, preds, targets, avg_delay=USE_V2)
             print(f"  [排序] 组(>=2)={rk['n_groups']}  Spearman={rk['spearman']:.3f}(→1)  "
                   f"选择遗憾={rk['regret_pct']:.2f}%(→0)  top1={rk['top1_acc']*100:.1f}%(→100)  "
                   f"捕获率={rk['captured_pct']:.1f}%(→100)  变体差中位={rk['spread_pct']:.1f}%")
@@ -867,8 +910,8 @@ def main():
     except Exception as _e:
         print(f"  [排序] 计算失败: {_e}")
     # 批次误差（安全的，处理 expr 不存在的情况）
-    if 'expr' in test_dyn.columns:
-        for label, mask in [('B1(全sweep)', b1_mask), ('B2(稀疏)', b2_mask), ('B3(新建)', b3_mask)]:
+    if 'expr' in test_dyn.columns and 'batch_labels' in dir():
+        for label, mask in batch_labels:
             if mask.sum() > 0:
                 err = np.mean(np.abs(preds[mask] - targets[mask]) / targets[mask] * 100)
                 print(f"  {label}: {err:.1f}%")

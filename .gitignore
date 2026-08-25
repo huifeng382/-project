@@ -31,3 +31,4 @@ _verify_fix.py
 _inspect_meta.py
 _tl_io_out.txt
 _check_tl_io.py
+cache_smoke_*/
