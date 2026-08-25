@@ -29,3 +29,5 @@ _meta_out.txt
 _verify_fix.txt
 _verify_fix.py
 _inspect_meta.py
+_tl_io_out.txt
+_check_tl_io.py
