@@ -545,6 +545,45 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **对模型侧影响**：修复 1-6 是生成方的事；8/9（任意 I/O + 满量）决定能否启动 V2 训练。数据到位前，V2 训练无从谈起，唯一可推进的是 14.4 待办 #1「无 wave 验证」（V1 数据即可跑）。
 
+### 15.1.3 V2 训练：wave vs nowave（2026-08-25，4 runs，Rust 蒸馏决策依据）
+
+> 数据：batch_v2_full + batch_v2_io（12927 电路 / 127196 行 / 968 expr，SPLIT_SEED=42）；配置：LR=1e-4 HUBER=0.3 BATCH=80 BEST_METRIC=smoothed_rel_err；每 run 约 4~5h（CPU，24 核）。
+
+| run | wave | Test Rel Err | regret（全局/spread） | Spearman（全局/spread） | 最佳 mid | 停止 |
+|---|---|---|---|---|---|---|
+| v2wave42 | ✅ | 10.73% | 0.48% / 0.64% | 0.667 / 0.775 | ep50 | early_stop@137 |
+| v2nowave42 | ❌ | 33.8% | 6.70% / 8.07% | 0.390 / 0.438 | ep100 | plateau@194 |
+| v2wave123 | ✅ | 11.9% | 0.21% / 0.12% | 0.801 / 0.864 | ep150 | early_stop@176 |
+| v2nowave123 | ❌ | 31.33% | 6.83% / 8.25% | 0.365 / 0.409 | ep100 | early_stop@147 |
+
+**结论**：
+1. **wave 是决定性特征**：regret 0.12~0.48% vs 6.7~8.3%（掉 ~7~8pt，远超 14.4 定的 5% 阈值），两 seed 一致 → **蒸馏触发**。
+2. nowave 全指标崩塌（Spearman 0.36~0.44、recall@2 跌至 49~57%）→ 无 wave 模型不可直接交付 Rust。
+3. wave123 综合最优（score 46.36，spread 档 recall@3 B=100%）；wave42 最佳 mid 是 ep50、wave123 是 ep150 → midpoint 需按 run 各自选点。
+4. V2-io（任意 I/O）比 V2-full 难 ~3~5pt（wave123: 15.0% vs 10.5%）→ 后续可针对性攻坚。
+
+### 15.2.0/15.2.1 蒸馏方案落地（2026-08-25，commit 7494d82 / eb66c4d）
+
+- 方案文档：`DISTILL_PLAN.md`（teacher 有 wave → student 无 wave；约束：不改 Rust、推理零仿真）。
+- 代码：config.py +7 KD_* 开关（env 可覆盖）；data_loader 加 `row_idx`；train_sweep 加 `KD_PREDS_ONLY` 导出模式（teacher 预测 npz + 对拍校验）+ `train_one_epoch` 蒸馏损失（λ·MSE 软标签 + κ·teacher 排序监督，复用 `_pairwise_rank_loss`）；setup_exp.sh 加 `v2kd<teacher><mode><seed>` 变体。
+- 15.2.1：修复对拍打印的指标 key（captured_pct / recall_at_k）。
+
+### 15.2.2 蒸馏实验（Running，2026-08-25 起）
+
+**Step ① teacher 预测导出（已完成）**：在 `~/project-107-v2wave123` 用 `KD_PREDS_ONLY=1 KD_TEACHER_CKPT=outputs/midpoint_ep150.pt` 导出 3 个 npz（train 89546 / val 19130 / test 18520 行，float32 log10 预测）。
+- **对拍通过**：test regret 0.21%（全局）/ 0.12%（spread）、Spearman 0.801 / 0.864 —— 与 v2wave123 SUMMARY 分毫不差 → 行对齐正确，npz 可用。
+
+**Step ② 4 槽 2×2（Running）**：方法（reg 纯软标签 / rr=reg+rank）× seed（42/123），teacher=wave123：
+
+| 槽 | run | 方法 | seed |
+|---|---|---|---|
+| 1 | v2kd123reg42 | reg（λ=1.0） | 42 |
+| 2 | v2kd123rr42 | reg+rank（λ=1.0, κ=1.0） | 42 |
+| 3 | v2kd123reg123 | reg | 123 |
+| 4 | v2kd123rr123 | reg+rank | 123 |
+
+**判读规则**：midpoint regret < 4~5% 且两 seed 一致 → 胜出进 Phase B 调参；> 6% → 蒸馏路线存疑，转 GNN_RUST_DATA_DIFF 5.6 阶段 2 兜底。
+
 ### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
 2. 阶段2：新 120 万行，4 vector/condition，全部 v9 格式，新 expr 不与已有 569 个重叠。总计 ~180 万行，val 组数翻倍。
