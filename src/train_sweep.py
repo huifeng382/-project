@@ -563,12 +563,13 @@ def main():
         _tt = test_dataset.dynamic_df['DELAY'].to_numpy(dtype=np.float64)
         _rk = ranking_metrics(_td, _tp, _tt, avg_delay=USE_V2)
         _hi = _rk.get('hi_spread', _rk)
+        def _r2(x): return x.get('recall_at_k', {}).get(2, {}).get('strict', {}).get('hit_pct', 0.0)
         print(f"[KD] 对拍 test(全局): regret={_rk.get('regret_pct', float('nan')):.2f}% "
-              f"sp={_rk.get('spearman', 0):.3f} cap={_rk.get('capture_rate', 0)*100:.1f}% "
-              f"r2={_rk.get('recall_at_2_A', 0)*100:.1f}%")
+              f"sp={_rk.get('spearman', 0):.3f} cap={_rk.get('captured_pct', 0)*100:.1f}% "
+              f"r2={_r2(_rk)*100:.1f}%")
         print(f"[KD] 对拍 test(spread>10%): regret={_hi.get('regret_pct', float('nan')):.2f}% "
-              f"sp={_hi.get('spearman', 0):.3f} cap={_hi.get('capture_rate', 0)*100:.1f}% "
-              f"r2={_hi.get('recall_at_2_A', 0)*100:.1f}%")
+              f"sp={_hi.get('spearman', 0):.3f} cap={_hi.get('captured_pct', 0)*100:.1f}% "
+              f"r2={_r2(_hi)*100:.1f}%")
         print('[KD] 应与 teacher 的 SUMMARY 一致；对拍通过后再用于蒸馏训练。')
         return
 
