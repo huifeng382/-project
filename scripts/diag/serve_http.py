@@ -32,8 +32,10 @@ class RankHandler(BaseHTTPRequestHandler):
             self._send(404, {'error': 'not found'}); return
         try:
             ln = int(self.headers.get('Content-Length', 0))
-            body = json.loads(self.rfile.read(ln) or b'{}')
-            cands = body.get('candidates', [])
+            data = json.loads(self.rfile.read(ln) or b'{}')
+            cands = data.get('candidates', data) if isinstance(data, dict) else data
+            if not isinstance(cands, list):
+                cands = []
         except Exception as e:
             self._send(400, {'error': f'bad request: {e}'}); return
         results = []
