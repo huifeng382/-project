@@ -591,6 +591,18 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 - 每 run 预计 ~4-5h（同 wave/nowave 量级，CPU 24 核）；等全部出 SUMMARY 后按判读规则决定 **Phase B（调 λ/κ）** 还是 **5.6 阶段 2 兜底**。
 - 关注点：student 是否追平 teacher 的排序（wave123 regret 0.12~0.21%）；reg vs rr 谁更稳（κ 排序监督是否带来增益）。
 
+### 15.2.3 蒸馏判定：失败（根本性，非代码 bug）+ serve.py 启动（2026-08-26）
+
+**4 个 student 结果（spread>10% 遗憾）**：reg42=9.43% / rr42=8.56% / reg123=8.61% / rr123=9.54% —— **全部 >6% 阈值，且都差于对应 nowave（8.07/8.25%）** → 按判读规则**转 5.6 阶段 2 兜底**。
+
+**代码核查（全对，非 bug）**：学生确实 no-wave（setup:150 关 wave）；KD 启用+teacher 目录正确；teacher 预测对拍通过；`row_idx` 对齐正确（Subset 传全量索引）；KD 损失（软标签 MSE log10 + rank）正确。
+
+**根因（信息论天花板）**：teacher 的 0.12% 全来自 wave 特征，学生输入无 wave → 软标签是「学生够不着」的目标。主损失朝真实延迟推（可达）、KD 朝 teacher 近似推（不可达）→ 两目标竞争，λ=1.0 放大噪声 → 略差于 nowave。**软标签无法凭空补缺失的输入特征，调参救不了。**
+
+**决策**：接受 no-wave 排序器（regret ~8%）做 **Rust 粗筛**（先砍候选 → top-K 再 SPICE 精排，省 ~90% 仿真；放弃「零仿真完全替代」约束）。
+
+**serve.py 启动（Phase B）**：`scripts/diag/serve.py` 已写——复用 15.1.0 任意 I/O 路径，给定候选网表+引脚 → 每 (pin,dir) 预测延迟 → 线性平均=avg_delay → 排序。特征用 5.6 阶段 1 极简（slew=2ps/load=1fF/vector 切换位/gate_states BFS），本地冒烟通过（多输出任意 I/O 电路）。**待办**：① no-wave 集成模型定稿 ② serve 加载真实 checkpoint 在 Rust 候选上跑通 ③ Rust 侧接入粗筛（top-K SPICE 精排）④ 46 benchmark 验证（最终电路差异 + 仿真节省）。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**

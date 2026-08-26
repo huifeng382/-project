@@ -1,0 +1,3 @@
+﻿������·: in= 8 out= 3
+avg_delay = 9.99999993922529e-09 | finite: True
+SMOKE OK
