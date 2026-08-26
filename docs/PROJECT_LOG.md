@@ -620,6 +620,19 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 
 **下一步（定稿交付模型）**：`scripts/diag/_ens_struct.py` 全 6-seed 等权平均（不剪枝，见 15.2.3 决策）→ 确认集成遗憾（预期 ~7.5~8%，略低于单 seed 最优）→ 作为 serve.py 加载的 no-wave 交付模型。集成命令：`~/venv/bin/python3 scripts/diag/_ens_struct.py v2nowave42 v2nowave123 v2nowave456 v2nowave2468 v2nowave1357 v2nowave2024`。
 
+### 15.2.10 no-wave 交付模型定稿：6-seed 等权集成（2026-08-26）
+
+**集成结果（全 6-seed 等权，不剪枝，test 组>=2=139 / spread>10%=110）**：
+- **hi_spread：遗憾 8.78% / Spearman 0.440 / top1 49.1% / 捕获 77.7% / recall@2 A=61.8% / recall@3 A=65.5%**
+- 全局：遗憾 7.27% / Spearman 0.403 / 成对 >10%=78%
+
+**诚实解读**：
+1. **集成没降遗憾、反而略升**（8.07%→8.78% hi）——newwave 教训复现：6 个 no-wave seed 误差高度相关（都缺 wave→同向偏置），平均消不掉偏置、平滑了最优 seed（42）的峰值。
+2. **但 recall@2 提升到 61.8%**（比单 seed 最好 2024=59.1% +2.7pp）——**对粗筛「top-K 再 SPICE 精排」更关键**（真最优进前 K 就能被精排捞回）。
+3. 8.78% vs 8.07% 在 110 组内属噪声范围 → 集成不是实质变差。
+
+**决策（交付模型）**：**6-seed 等权集成 = no-wave 粗筛模型**（serve.py 加载）。召回（recall@2）是粗筛主指标，集成的 61.8% 优于单 seed；遗憾持平（噪声内）。serve 时对每个候选跑 6 个模型预测取平均（CPU 开销小）。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**
