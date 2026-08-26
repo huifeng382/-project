@@ -16,7 +16,7 @@ candidates.json: [{"id": "...", "netlist": "...", "input_pins": [...], "output_p
 ranked.json:     [{"id": "...", "avg_delay": 3.2e-11}, ...] 按 avg_delay 升序
 """
 import sys, os, json, argparse
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 import numpy as np
 import torch
 
