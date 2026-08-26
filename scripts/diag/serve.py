@@ -26,6 +26,9 @@ config.USE_TRANSISTOR_WAVE = False
 config.USE_SUPPLY_NOISE = False
 config.USE_PARASITIC_CAPS = False
 config.USE_V2 = True
+# STRUCT_MODE 必须与 checkpoint 训练一致（no-wave 交付用 logic_only，in_dim 才能对上）；
+# 可被 STRUCT_MODE 环境变量覆盖（服务其它 STRUCT_MODE 的 checkpoint 时）
+config.STRUCT_MODE = os.environ.get('STRUCT_MODE', 'logic_only')
 
 from src.model import DelayGNN
 from src.graph_builder import build_static_graph, rebuild_gate_types
@@ -98,8 +101,9 @@ def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, swit
         return {}
 
 
-def predict_avg_delay(model, netlist, input_pins, output_pins, scaler, device):
-    """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。"""
+def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device):
+    """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。
+    models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。"""
     node_names, node_static, edge_index, pins, outs = build_candidate_tensors(
         netlist, input_pins, output_pins, scaler)
     node_static = node_static.to(device)
@@ -123,21 +127,24 @@ def predict_avg_delay(model, netlist, input_pins, output_pins, scaler, device):
                     x[i, -1] = float(gs_lc[str(n).lower()])
                 elif n in outs:
                     x[i, -1] = 1.0
-            model.eval()
             with torch.no_grad():
                 corner = torch.tensor([CORNER], dtype=torch.float, device=device)
                 csig = torch.tensor([[float(len(node_names)), 0.0, float(len(pins))]],
                                     dtype=torch.float, device=device)
-                out, _ = model(x, edge_index, torch.zeros(num_nodes, dtype=torch.long, device=device),
+                row_preds = []
+                for m in models:
+                    m.eval()
+                    out, _ = m(x, edge_index, torch.zeros(num_nodes, dtype=torch.long, device=device),
                                corner, csig, None)
-                pred_lin = float((10 ** out.cpu()).clamp(1e-12, 1e-8).item())
-            preds_lin.append(pred_lin)
+                    row_preds.append(float((10 ** out.cpu()).clamp(1e-12, 1e-8).item()))
+                preds_lin.append(float(np.mean(row_preds)))
     return float(np.mean(preds_lin)) if preds_lin else float('nan')
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument('--ckpt', required=True, help='no-wave 模型 checkpoint（.pt）')
+    ap.add_argument('--ckpt', nargs='+', required=True,
+                    help='no-wave checkpoint(s)（.pt，可多个做等权集成，如 6-seed）')
     ap.add_argument('--scaler', default=os.path.join('outputs', 'scaler.pkl'), help='scaler.pkl 路径')
     ap.add_argument('--in', dest='inp', required=True, help='候选 JSON 列表')
     ap.add_argument('--out', default='ranked.json', help='输出排序 JSON')
@@ -147,28 +154,29 @@ def main():
         cands = json.load(f)
     scaler = load_scaler(args.scaler) if os.path.exists(args.scaler) else None
 
-    # 用第一个候选的图维度确定 in_dim
+    # 用第一个候选的图维度确定 in_dim（STRUCT_MODE 需与 checkpoint 一致）
     c0 = cands[0]
     rebuild_gate_types(_load_cell_types_from_netlist(c0.get('netlist')))
     node_names, node_static, _, _, _ = build_candidate_tensors(
         c0['netlist'], c0.get('input_pins', []), c0.get('output_pins', []), scaler)
     import src.graph_builder as gb
     in_dim = node_static.shape[1] + 7   # 7 动态特征
-    # 若开了 cornerattn 等，in_dim 含 extra（这里 no-wave 无 extra，7 固定）
-    if config.USE_CORNER_ATTN:
-        # corner_attn 不改输入维；struct_prior 是图级注入不进 x
-        pass
-    model = DelayGNN(in_dim=in_dim, hidden_dim=config.HIDDEN_DIM, num_layers=config.NUM_LAYERS,
+    models = []
+    for ck in args.ckpt:
+        m = DelayGNN(in_dim=in_dim, hidden_dim=config.HIDDEN_DIM, num_layers=config.NUM_LAYERS,
                      dropout=config.DROPOUT, num_gate_types=len(gb.GATE_TYPES),
                      gate_embed_dim=config.GATE_EMBED_DIM)
-    model.load_state_dict(torch.load(args.ckpt, map_location='cpu', weights_only=False))
+        m.load_state_dict(torch.load(ck, map_location='cpu', weights_only=False))
+        models.append(m)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model.to(device)
+    for m in models:
+        m.to(device)
+    print(f"[serve] {len(models)} 个模型等权集成, in_dim={in_dim}, STRUCT_MODE={config.STRUCT_MODE}")
 
     results = []
     for c in cands:
         try:
-            ad = predict_avg_delay(model, c['netlist'], c.get('input_pins', []),
+            ad = predict_avg_delay(models, c['netlist'], c.get('input_pins', []),
                                    c.get('output_pins', []), scaler, device)
             results.append({'id': c.get('id', c.get('circuit_id', '?')), 'avg_delay': ad})
         except Exception as e:

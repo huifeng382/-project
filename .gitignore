@@ -16,3 +16,4 @@ outputs/
 # 临时文件（一次性调试输出不提交；诊断脚本统一放 scripts/diag/，报告放 reports/）
 *.log
 cache_smoke_*/
+models/
