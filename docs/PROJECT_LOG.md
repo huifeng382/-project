@@ -601,7 +601,7 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 
 **决策**：接受 no-wave 排序器（regret ~8%）做 **Rust 粗筛**（先砍候选 → top-K 再 SPICE 精排，省 ~90% 仿真；放弃「零仿真完全替代」约束）。
 
-**serve.py 启动（Phase B）**：`scripts/diag/serve.py` 已写——复用 15.1.0 任意 I/O 路径，给定候选网表+引脚 → 每 (pin,dir) 预测延迟 → 线性平均=avg_delay → 排序。特征用 5.6 阶段 1 极简（slew=2ps/load=1fF/vector 切换位/gate_states BFS），本地冒烟通过（多输出任意 I/O 电路）。**待办**：① no-wave 集成模型定稿 ② serve 加载真实 checkpoint 在 Rust 候选上跑通 ③ Rust 侧接入粗筛（top-K SPICE 精排）④ 46 benchmark 验证（最终电路差异 + 仿真节省）。
+**serve.py 启动（Phase B）**：`scripts/diag/serve.py` 已写——复用 15.1.0 任意 I/O 路径，给定候选网表+引脚 → 每 (pin,dir) 预测延迟 → 线性平均=avg_delay → 排序。特征用 5.6 阶段 1 极简（slew=2ps/load=1fF/vector 切换位/gate_states BFS），本地冒烟通过（多输出任意 I/O 电路）。**待办**：① no-wave 集成模型定稿（`scripts/diag/_ens_struct.py` 已改通用：V2 数据 + avg_delay 口径 + 全等权平均，默认 6-seed）② serve 加载真实 checkpoint 在 Rust 候选上跑通 ③ Rust 侧接入粗筛（top-K SPICE 精排）④ 46 benchmark 验证（最终电路差异 + 仿真节省）⑤ **全量数据到位后：模型/集成选择改用 `val 选择`**（在独立 val 上选 seed/checkpoint，test 保持干净只报告一次，消除 post-hoc 剪枝偏差；届时 val 组数 ~600 选择可靠，替代当前的 test 全等权平均）。
 
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
