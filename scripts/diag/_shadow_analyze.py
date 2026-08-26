@@ -38,11 +38,23 @@ def per_window_metrics(rows):
     order_t = np.argsort(true)
     top3_g = set(order_g[: min(3, n)].tolist())
     top3_t = set(order_t[: min(3, n)].tolist())
+    top2_g = set(order_g[: min(2, n)].tolist())
+    top2_t = set(order_t[: min(2, n)].tolist())
     recall3 = len(top3_g & top3_t) / len(top3_t)
     gnn_best_true = true[order_g[0]]
     true_best = true[order_t[0]]
     regret = (gnn_best_true - true_best) / true_best
     spread_pct = (true.max() - true.min()) / true.min() * 100.0
+    # —— 粗筛视角（recall 是粗筛最重要指标；k=2/3 双口径）——
+    # 严格（实际第1名是否出现在预测前k）：k=2、k=3
+    recall2_strict = 1.0 if order_t[0] in top2_g else 0.0
+    recall3_strict = 1.0 if order_t[0] in top3_g else 0.0
+    # 宽松（预测前k 含 实际前k 之一，出现一个就算）：k=2、k=3
+    recall2_len = 1.0 if (top2_g & top2_t) else 0.0
+    recall3_len = 1.0 if (top3_g & top3_t) else 0.0
+    # 两阶段最终遗憾：GNN 前3 → SPICE 精排 → 选前3内真最优（真#1 在则 = 0）
+    top3_true_best = true[order_g[: min(3, n)]].min()
+    regret_2stage = (top3_true_best - true_best) / true_best
     # Spearman（n>=3 才可靠，n=2 时退化为 ±1，不统计）
     if n >= 3:
         rg = np.empty(n); rt = np.empty(n)
@@ -51,7 +63,10 @@ def per_window_metrics(rows):
     else:
         sp = None
     return {"recall3": recall3, "regret": regret, "spearman": sp, "n": n,
-            "spread_pct": spread_pct}
+            "spread_pct": spread_pct,
+            "recall2_strict": recall2_strict, "recall3_strict": recall3_strict,
+            "recall2_len": recall2_len, "recall3_len": recall3_len,
+            "regret_2stage": regret_2stage}
 
 def main():
     ap = argparse.ArgumentParser()
@@ -99,20 +114,28 @@ def main():
     rg = [s["regret"] for s in sets]
     sp = [s["spearman"] for s in sets if s["spearman"] is not None]
     n_cands = [s["n"] for s in sets]
+    r2s = [s["recall2_strict"] for s in sets]
+    r3s = [s["recall3_strict"] for s in sets]
+    r2l = [s["recall2_len"] for s in sets]
+    r3l = [s["recall3_len"] for s in sets]
+    r2st = [s["regret_2stage"] for s in sets]
 
     print(f"候选集数（≥{args.min_cands} 候选）: {len(sets)}   成功行={ok_rows} 失败行={fail_rows} 小集={small_sets}")
     print(f"候选数分布: min={min(n_cands)} med={statistics.median(n_cands):.0f} max={max(n_cands)}")
+    print(f"\n=== recall 判断标准（k=2/3 双口径，粗筛最重要指标）===")
+    print(f"  前k名中出现实际第1名（严格）:  k=2 {statistics.mean(r2s)*100:6.1f}%   k=3 {statistics.mean(r3s)*100:6.1f}%")
+    print(f"  前k名中出现实际前k之一（宽松）: k=2 {statistics.mean(r2l)*100:6.1f}%   k=3 {statistics.mean(r3l)*100:6.1f}%")
     print(f"\n=== 10.3 判定指标（按候选集汇总）===")
-    print(f"  recall@top-3:   {statistics.mean(r3)*100:6.1f}%   (达标线 ≥90%)  "
-          f"中位 {statistics.median(r3)*100:.1f}%")
-    print(f"  选择遗憾:       {statistics.mean(rg)*100:6.2f}%   (达标线 ≤5%)   "
+    print(f"  选择遗憾（GNN自选top1）: {statistics.mean(rg)*100:6.2f}%   (达标线 ≤5%)   "
           f"中位 {statistics.median(rg)*100:.2f}%")
+    print(f"  两阶段最终遗憾（前3→SPICE精排）: {statistics.mean(r2st)*100:6.2f}%   "
+          f"中位 {statistics.median(r2st)*100:.2f}%")
     if sp:
         print(f"  Spearman:       {statistics.mean(sp):6.3f}   (次判据 ≥0.6)   "
               f"中位 {statistics.median(sp):.3f}  (n={len(sp)} 集)")
     r3_ok = statistics.mean(r3) >= 0.90
     rg_ok = statistics.mean(rg) <= 0.05
-    print(f"\n判定: recall@top-3 {'✅≥90%' if r3_ok else '❌<90%'}  "
+    print(f"\n判定(旧口径参考): recall@top-3(集合版) {'✅≥90%' if r3_ok else '❌<90%'}  "
           f"遗憾 {'✅≤5%' if rg_ok else '❌>5%'}")
     if r3_ok and rg_ok:
         print("→ **两项主判据达标：GNN 可替换逐候选 SPICE 排序**（top-K 精排，仿真省 ≥75%）")
@@ -125,18 +148,27 @@ def main():
         hr3 = [s["recall3"] for s in hi]
         hrg = [s["regret"] for s in hi]
         hsp = [s["spearman"] for s in hi if s["spearman"] is not None]
+        hr2s = [s["recall2_strict"] for s in hi]
+        hr3s = [s["recall3_strict"] for s in hi]
+        hr2l = [s["recall2_len"] for s in hi]
+        hr3l = [s["recall3_len"] for s in hi]
+        hr2st = [s["regret_2stage"] for s in hi]
         print(f"\n=== 跨度>10% 子集（{len(hi)}/{len(sets)} 集，对齐 V2 hi_spread）===")
-        print(f"  recall@top-3:   {statistics.mean(hr3)*100:6.1f}%   选择遗憾: {statistics.mean(hrg)*100:6.2f}%   "
-              f"Spearman: {statistics.mean(hsp):.3f} (n={len(hsp)})")
+        print(f"  严格(实际第1∈预测前k):  k=2 {statistics.mean(hr2s)*100:6.1f}%   k=3 {statistics.mean(hr3s)*100:6.1f}%")
+        print(f"  宽松(前k含实际前k之一): k=2 {statistics.mean(hr2l)*100:6.1f}%   k=3 {statistics.mean(hr3l)*100:6.1f}%")
+        print(f"  两阶段最终遗憾: {statistics.mean(hr2st)*100:6.2f}%   "
+              f"选择遗憾(GNN自选): {statistics.mean(hrg)*100:6.2f}%   Spearman: {statistics.mean(hsp):.3f} (n={len(hsp)})")
     else:
         print("\n（无跨度>10% 的候选集）")
 
     # 明细：按遗憾排序列出每集
-    print("\n=== 每候选集明细（按遗憾升序）===")
+    print("\n=== 每候选集明细（按遗憾升序；#1∈前k=严格, 前k∩真前k=宽松）===")
     for s in sorted(sets, key=lambda x: x["regret"]):
         sps = f"{s['spearman']:.2f}" if s["spearman"] is not None else "-"
         print(f"  {s['circuit']:45s} w={s['window']:3d} n={s['n']:2d} "
-              f"recall@3={s['recall3']*100:5.1f}% regret={s['regret']*100:7.2f}% sp={sps}")
+              f"#1∈前2={'Y' if s['recall2_strict'] else 'n'} 前2∩真={ 'Y' if s['recall2_len'] else 'n'} "
+              f"#1∈前3={'Y' if s['recall3_strict'] else 'n'} 前3∩真={ 'Y' if s['recall3_len'] else 'n'} "
+              f"regret={s['regret']*100:7.2f}% 2stage={s['regret_2stage']*100:6.2f}% sp={sps}")
 
 if __name__ == "__main__":
     main()
