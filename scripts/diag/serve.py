@@ -141,6 +141,22 @@ def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device):
     return float(np.mean(preds_lin)) if preds_lin else float('nan')
 
 
+def load_models(ckpt_paths, scaler, sample_netlist, sample_pins, sample_outs):
+    """加载 N 个 checkpoint（等权集成）。返回 (models, in_dim)。in_dim 由 sample 图维度决定。"""
+    rebuild_gate_types(_load_cell_types_from_netlist(sample_netlist))
+    _, ns, _, _, _ = build_candidate_tensors(sample_netlist, sample_pins, sample_outs, scaler)
+    import src.graph_builder as gb
+    in_dim = ns.shape[1] + 7   # 7 动态特征
+    models = []
+    for ck in ckpt_paths:
+        m = DelayGNN(in_dim=in_dim, hidden_dim=config.HIDDEN_DIM, num_layers=config.NUM_LAYERS,
+                     dropout=config.DROPOUT, num_gate_types=len(gb.GATE_TYPES),
+                     gate_embed_dim=config.GATE_EMBED_DIM)
+        m.load_state_dict(torch.load(ck, map_location='cpu', weights_only=False))
+        models.append(m)
+    return models, in_dim
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ckpt', nargs='+', required=True,
@@ -156,18 +172,8 @@ def main():
 
     # 用第一个候选的图维度确定 in_dim（STRUCT_MODE 需与 checkpoint 一致）
     c0 = cands[0]
-    rebuild_gate_types(_load_cell_types_from_netlist(c0.get('netlist')))
-    node_names, node_static, _, _, _ = build_candidate_tensors(
-        c0['netlist'], c0.get('input_pins', []), c0.get('output_pins', []), scaler)
-    import src.graph_builder as gb
-    in_dim = node_static.shape[1] + 7   # 7 动态特征
-    models = []
-    for ck in args.ckpt:
-        m = DelayGNN(in_dim=in_dim, hidden_dim=config.HIDDEN_DIM, num_layers=config.NUM_LAYERS,
-                     dropout=config.DROPOUT, num_gate_types=len(gb.GATE_TYPES),
-                     gate_embed_dim=config.GATE_EMBED_DIM)
-        m.load_state_dict(torch.load(ck, map_location='cpu', weights_only=False))
-        models.append(m)
+    models, in_dim = load_models(args.ckpt, scaler, c0.get('netlist'),
+                                 c0.get('input_pins', []), c0.get('output_pins', []))
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     for m in models:
         m.to(device)
