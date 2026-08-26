@@ -489,7 +489,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 
 ### 10.4 参考实现
 
-`rust_integration/gnn_shadow.rs`（工作区参考代码，拷入 `NetlistOpt/src/`，`mod gnn_shadow;` 挂载）：
-- `GnnClient`：`std::net::TcpStream` HTTP POST `/rank`，解析 ranked JSON。
-- `ShadowGnnTlEvaluator`：包 `FullCircuitTlEvaluator`，调 GNN + SPICE，写 CSV。
-- 在 `optimize_tl_module` 里按开关换用 Shadow 版本。
+`NetlistOpt/src/gnn_shadow.rs`（已直接写入 NetlistOpt 独立仓库；`Cargo.toml` 加 serde/serde_json、`lib.rs` 挂 `mod gnn_shadow`、`tl_opt.rs` 挂载已就位）：
+- `GnnClient`：`std::net::TcpStream` HTTP POST `/rank`（零依赖），解析 ranked JSON。
+- `ShadowGnnTlEvaluator`：包 `FullCircuitTlEvaluator`（`new` 接收已配好 simulation_cfg 的 inner，因 `design_template` 是 tl_opt 私有字段），调 GNN + SPICE，写 CSV。
+- 挂载：`optimize_tl_text` 里 env `GNN_SHADOW=1` 时换用 Shadow 版本（host/port 可 `GNN_HOST`/`GNN_PORT` 覆盖，默认 10.20.34.16:8000）。
