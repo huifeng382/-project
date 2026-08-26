@@ -42,8 +42,18 @@ LOGIC_TO_IDX = {t: i for i, t in enumerate(LOGIC_TYPES)}
 
 import os as _os
 import json as _json
+import threading as _threading
 
 _SC_EXPANSION = None
+
+# Rust 侧门逻辑覆盖（serve 端按候选设置；thread-local 保证多线程 serve 下各请求互不干扰，
+# 训练路径从不设置 -> 完全不受影响）。
+_gate_logic_override = _threading.local()
+
+
+def set_gate_logic_overrides(mapping):
+    """serve 端设置 {门名 -> 逻辑类(10类)} 覆盖；mapping=None/{} 清空。"""
+    _gate_logic_override.map = dict(mapping) if mapping else {}
 
 
 def _load_sc_expansion():
@@ -122,7 +132,8 @@ def _name_fallback_logic(name):
 
 def gate_struct(name):
     """cell 名 -> dict{logic, n_t, drive, stack, parallel}。
-    优先用 sc_expansion.json 的 ASAP7 展开；查不到回退名字关键字。"""
+    优先用 sc_expansion.json 的 ASAP7 展开；查不到再查 Rust 侧覆盖（serve 端注入）；
+    最后回退名字关键字。"""
     d = {'logic': 'COMPLEX', 'n_t': 6.0, 'drive': 1.0, 'stack': 1.0, 'parallel': 1.0}
     exp = _load_sc_expansion().get(name)
     if isinstance(exp, dict):
@@ -136,6 +147,11 @@ def gate_struct(name):
                 d['stack'] = float(max(f[1] for f in feats))
                 d['parallel'] = float(len(sub))
                 return d
+    # sc_expansion 无/空展开 → Rust 侧覆盖（只作用于 serve 端注入的名字，训练不受影响）
+    ov = getattr(_gate_logic_override, 'map', None) or {}
+    if name in ov:
+        d['logic'] = ov[name]
+        return d
     d['logic'] = _name_fallback_logic(name)
     return d
 

@@ -43,7 +43,7 @@ class RankHandler(BaseHTTPRequestHandler):
             try:
                 ad = S.predict_avg_delay(MODELS, c.get('netlist', ''),
                                          c.get('input_pins', []), c.get('output_pins', []),
-                                         SCALER, DEVICE)
+                                         SCALER, DEVICE, gate_logics=c.get('gate_logics'))
                 results.append({'id': c.get('id', '?'), 'avg_delay': ad})
             except Exception as e:
                 results.append({'id': c.get('id', '?'), 'avg_delay': None, 'error': str(e)})

@@ -493,3 +493,50 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 - `GnnClient`：`std::net::TcpStream` HTTP POST `/rank`（零依赖），解析 ranked JSON。
 - `ShadowGnnTlEvaluator`：包 `FullCircuitTlEvaluator`（`new` 接收已配好 simulation_cfg 的 inner，因 `design_template` 是 tl_opt 私有字段），调 GNN + SPICE，写 CSV。
 - 挂载：`optimize_tl_text` 里 env `GNN_SHADOW=1` 时换用 Shadow 版本（host/port 可 `GNN_HOST`/`GNN_PORT` 覆盖，默认 10.20.34.16:8000）。
+
+### 10.5 服务器仿真环境就绪（2026-08-26，实测）
+
+**结论：SPICE 后端用 yongsheng 的 Xyce（zen5 构建），服务器上零配置跑通。**
+
+- ✅ **yongsheng 的 Xyce**：`/home/yongsheng/Apps/Spack/opt/spack/linux-zen5/xyce-7.10.0-sikno3voapvu34qym5o7gbiysestqq4y/bin/Xyce`（就是本地 `xyce.sh` 的默认路径）——**能跑 ASAP7 BSIM-CMG 模型**，单次瞬态 0.33s。
+- ❌ **/opt/spack 的 Xyce**（`/usr/local/bin/Xyce`，linux-x86_64_v4）：能 load 但**跑不了 ASAP7 模型**——原生 M(MOSFET) 器件未注册（level-1 都报 "no valid model card"）、BSIM-CMG 版本 106.1 落后于模型 107。**排除**。
+- ✅ **Cadence Spectre**：`/opt/rh/SPECTRE201/.../spectre`（ver 20.1）+ license `/opt/rh/cds.lic.dat`——sibo 生产流实际用它，能跑 ASAP7（实测 delay 5.04ns / slew 13.6ps）。作为 Xyce 之外的备用后端。
+- ✅ **模型与 CDL**：`/home/tianlang/asap7/asap7_pdk_r1p7/models/hspice/7nm_TT_160803.pm` + `/home/tianlang/asap7/asap7sc7p5t_28/CDL/LVS/asap7sc7p5t_28_R.cdl`。测试平台把模型**自动拷贝到每个 sim 目录**，无硬编码路径问题。
+- 注意：ASAP7 模型是 Spectre/HSPICE 原生（BSIM-CMG 107）；Xyce 仅 yongsheng 的 zen5 构建可用。
+
+### 10.6 46 电路 shadow 基准（2026-08-26，NetlistOpt commit b253aed）
+
+- 入口：`tests/tl_opt_shadow_batch.rs`（`#[ignore]`，需 `-- --ignored`），遍历 `testbench/tl_cells/level{0..4}/*.tl` 共 46 电路。
+- env：`GNN_SHADOW=1 GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1 TL_MAX_ITERS=<n> TL_ONLY=<分片>`；6 组并行（level 分片）24 核服务器，全程 ~1.5h。
+- `SPICEVIZ_OFF=1`：跳过 spiceviz.py 后台 PNG 渲染（debug 可视化，每 DUT 占一核）。
+- 每个电路 `gnn_shadow.csv` 记 `eval_idx, iter, window, gnn_pred, true_delay, transistors`（window = window_try，10.3 按 (电路, window) 分组）。
+- 结果：**45/46 成功**；`ovf1`（9入1出溢出标志）Xyce 瞬态步长崩溃不收敛（"Step size reached minimum step size bound"，初始设计即失败）——SPICE 自身限制，非代码问题，记为已知失败。
+
+### 10.7 两个推理侧根因 + 修复（2026-08-26，关键）
+
+初跑发现 no-wave GNN 在 Rust 候选上**系统性反向**（Spearman −0.50，recall@top-3 23%，遗憾 51%）。双根因，均已在 serve 侧修复（无需重训）：
+
+1. **gate_states BFS 输出节点硬编码 `'out'`**（`src/logic_sim.py::compute_gate_states`）：Rust 候选输出叫 `y`（output_pins），反向 BFS 从 `'out'` 出发 → 交集空 → **gate_mask 清零全图** → 模型只看 corner+签名，预测全扁平。修复：`outputs` 参数（默认 `['out']` 向后兼容 V1），serve 传真实输出引脚。
+2. **Rust 复合门名域外**（`SC_JOIN_AND_WIRE_...` 不在 sc_expansion.json）→ 全落 COMPLEX 兜底类（n_t/drive/p_g_h 全默认）→ 候选间差异被抹平。修复：Rust 生成器**自产逻辑类**——`spice.rs::classify_subckt_logic`（按表达式结构分类 10 类，保守规则）→ `expr_to_hierarchical_spice_with_logics` 返回 `{subckt名->逻辑类}` → `GnnCandidate.gate_logics` 随候选发出 → serve 用 **thread-local 覆盖**（`graph_builder.set_gate_logic_overrides`，ThreadingHTTPServer 多线程安全；优先级 sc_expansion > 覆盖 > 名字回退，训练路径零影响）。
+
+效果：pre-fix 22.8%/50.8%/−0.50 → post-fix 51.7%/7.38%/+0.14（部分数据 31 电路时 51.1%/10.8%/+0.31）。
+
+### 10.8 最终判定（46 电路全量，2026-08-26）
+
+**统计**：89 个合格候选集（≥4 候选；n 分布 4~33，中位 8），成功行 950、失败行 35。
+
+| 指标 | 均值 | 中位 | 达标线 |
+|---|---|---|---|
+| recall@top-3 | **51.7%** | 66.7% | ≥90% |
+| 选择遗憾 | **7.38%** | **2.88%** | ≤5% |
+| Spearman | 0.140 | 0.200 | ≥0.6 |
+| 跨度>10% 子集（54 集） | 50.0% / 10.80% / 0.267 | | |
+
+**判定：两项主判据均不达标 → GNN 只做启发式预排序（SPICE 全排序 + GNN 先粗排 top-N），不替换逐候选 SPICE。**
+
+解读：
+1. 修复后的排序是**真实信号**（正 Spearman、~40% 候选集遗憾 ≤1%），但强度不够达标线。
+2. 遗憾均值被尾部拉高（OR2/AND4 等大候选集 n=16~33，遗憾 16-62%）。
+3. recall@top-3 均值受大集合稀释（n=33 随机基线仅 3/33≈9%）。
+4. 本质：no-wave 模型在候选集内（延迟差常 <5%）分辨不了——13.x 已确认的 SNR 天花板；10.3 判据按全部 window 集汇总（不筛跨度），比 V2 hi-spread 口径更苛刻。
+5. 分析脚本：`scripts/diag/_shadow_analyze.py`（分组/过滤/判定），输出 `reports/_shadow_bench_final.txt`。

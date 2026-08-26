@@ -32,11 +32,17 @@ config.STRUCT_MODE = os.environ.get('STRUCT_MODE', 'logic_only')
 
 from src.model import DelayGNN
 from src.graph_builder import build_static_graph, rebuild_gate_types
+import src.graph_builder as gb
 from src.utils import load_scaler
 
 SLEW_S = 2e-12      # Rust asap7.sp 固定 2ps
 LOAD_F = 1e-15      # 1fF
 CORNER = (2.0, 1.0) # (slew_cond, load_cond) -> corner_cond
+
+
+def set_gate_logic_overrides(mapping):
+    """设置 {门名 -> 逻辑类} 覆盖（Rust 侧随候选传入；thread-local，多线程安全）。"""
+    gb.set_gate_logic_overrides(mapping)
 
 
 def _load_cell_types_from_netlist(netlist):
@@ -86,8 +92,9 @@ def row_dynamic_features(pins, switching, direction, global_slew, global_load, s
     return dyn, vector_str
 
 
-def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching):
-    """推理时无 gate_states_json：用逻辑仿真 BFS 推算（与训练 fallback 一致）。"""
+def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching, outs):
+    """推理时无 gate_states_json：用逻辑仿真 BFS 推算（与训练 fallback 一致）。
+    outs：输出节点名（Rust 候选用真实输出引脚，非固定 'out'）。"""
     from src.logic_sim import compute_gate_states
     from src.graph_builder import GATE_TYPES
     node_types = {}
@@ -95,15 +102,19 @@ def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, swit
         ti = int(node_static[j, 0].item())
         node_types[n] = GATE_TYPES[ti] if ti < len(GATE_TYPES) else 'UNKNOWN'
     try:
-        gs = compute_gate_states(node_names, node_types, edge_index, vector_str, list(pins), switching)
+        gs = compute_gate_states(node_names, node_types, edge_index, vector_str, list(pins), switching,
+                                 outputs=list(outs))
         return gs if isinstance(gs, dict) else {}
     except Exception:
         return {}
 
 
-def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device):
+def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
+                      gate_logics=None):
     """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。
-    models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。"""
+    models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。
+    gate_logics：可选 {门名 -> 逻辑类}，Rust 侧传入时覆盖 sc_expansion 查不到的门的逻辑类。"""
+    set_gate_logic_overrides(gate_logics)
     node_names, node_static, edge_index, pins, outs = build_candidate_tensors(
         netlist, input_pins, output_pins, scaler)
     node_static = node_static.to(device)
@@ -120,7 +131,7 @@ def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device):
             for i, n in enumerate(node_names):
                 if n in dyn:
                     x[i, -num_dyn:] = torch.tensor(dyn[n], dtype=torch.float, device=device)
-            gs = _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching)
+            gs = _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching, outs)
             gs_lc = {str(k).lower(): v for k, v in gs.items()}
             for i, n in enumerate(node_names):
                 if str(n).lower() in gs_lc:

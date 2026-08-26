@@ -95,7 +95,8 @@ def simulate_circuit(node_names, node_types, edge_index, input_values):
     return values
 
 
-def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, switching_pin):
+def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, switching_pin,
+                        outputs=None):
     """
     通过正反两向 BFS 取交集确定信号路径上的门。
     - 正向：从 switching_pin 可达（信号源）
@@ -103,7 +104,10 @@ def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, sw
     - 交集 = 实际信号路径（排除死分支）
 
     返回: dict, 门名->state (1=在路径上, 0=不在)
+    outputs: 输出节点名列表。默认 ['out']（V1 数据命名）；Rust 候选传真实输出引脚（如 ['y']）。
     """
+    if not outputs:
+        outputs = ['out']
     # 构建正向和反向邻接表
     forward_adj = {n: [] for n in node_names}
     reverse_adj = {n: [] for n in node_names}
@@ -125,11 +129,12 @@ def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, sw
                 fwd_visited.add(v)
                 q.append(v)
 
-    # 反向 BFS：可达 output 的节点
+    # 反向 BFS：可达任一输出的节点
     rev_visited = set()
-    if 'out' in node_names:
-        rev_visited.add('out')
-        q = deque(['out'])
+    seeds = [o for o in outputs if o in node_names]
+    if seeds:
+        rev_visited.update(seeds)
+        q = deque(seeds)
         while q:
             u = q.popleft()
             for v in reverse_adj.get(u, []):
@@ -139,11 +144,13 @@ def compute_gate_states(node_names, node_types, edge_index, vector_str, pins, sw
 
     # 交集 = 信号路径
     gate_states = {n: 0 for n in node_names}
-    gate_states['out'] = 1
+    for o in outputs:
+        if o in node_names:
+            gate_states[o] = 1
     for n in node_names:
         if n in pins:
             gate_states[n] = 0  # 输入引脚不参与 sum
-        elif n != 'out' and n in fwd_visited and n in rev_visited:
+        elif n not in outputs and n in fwd_visited and n in rev_visited:
             gate_states[n] = 1  # 在信号路径上的门
 
     return gate_states

@@ -8,7 +8,9 @@
 
 **Output:** End-to-end delay from switching pin to output.
 
-**Current Best:** Test 24.55% (9.7) — 6-layer GraphConv + path sum readout + corner separation.
+**Current Best（点精度，V1 旧数据）：** Test 24.45% (10.6) — 6-layer GraphConv + path sum readout + corner separation（历史最佳点精度）。
+
+> ⚠️ **本表只反映早期「点精度」阶段**。自 12.0 起项目转向**排序任务**（组内 Spearman/遗憾），13.5+ 用 wave 特征、14.4 起对齐 Rust 切到 **V2 数据**；**当前交付 = V2 no-wave 6-seed 集成粗筛模型（hi 遗憾 8.78%）**，见 15.2.10/15.2.11 及 `docs/GNN_RUST_DATA_DIFF.md`。
 
 ---
 
@@ -198,6 +200,7 @@
 2. **模型在高差异组上可靠**：遗憾 1.6%、top1 63%。贪心重写在结构差异大的等价变换上，靠模型挑没问题。
 3. **单一 seed 不够稳**：seed123 vs seed42 遗憾差 2x（3.23% vs 1.59%）→ 最终决策需 2-3 seed 集成。
 4. **anneal 全面更差**→ 退火到此为止，不再尝试。
+   > ⚠️ **此结论在该 13.4 数据/配置内成立，但被后续推翻**：10.5 深退火（24.45%）与最终交付配置（cornerattn + 深退火 + bmsm，行 256、14.x）均**采纳了深退火**。anneal 差异源于数据/选点配置，非「退火无效」本身。
 5. **所有建模杠杆已穷举**。struct 采纳为默认（13.4.1）。
 6. **<2% 成对分辨 51-58%，四个实验一致**→ SNR 天花板。降遗憾的真正杠杆在数据侧（wave 全覆盖），不在模型侧。
 
@@ -272,7 +275,7 @@
 3. **hard10 遗憾（10.40%）优于等权 rankloss1（15.80%）**——hard-pair 加权确认有效。
 4. **<5% 差加权（hard5）不如 <10% 差**——<5% 信号太弱，加权重引噪。
 
-### 13.7 批次（Running，delivery1+2，~54万行，13.5 newwave 架构 + midpoint 选择）
+### 13.7 批次（Done，delivery1+2，~54万行，13.5 newwave 架构 + midpoint 选择）
 
 > 目的：(1) 还原 13.5 newwave 架构（MODEL_CORNER_ATTN=False），验证单 seed 基线；(2) 测试时间优化；(3) 叠加 hard10；(4) 用 midpoint 选择最优 epoch 取代 checkpoint 选点。
 
@@ -296,7 +299,7 @@
 
 跑完后各用 `_select_best.py` 选最优 epoch。midpoint 选择只会更好或持平（best_model.pt 也在候选集中），不会比原 13.5 最优秀差。
 
-### 13.7.14 集成批次（Running，delivery1+2，4-seed全错开 + midpoint）
+### 13.7.14 集成批次（Done，delivery1+2，4-seed全错开 + midpoint）
 
 > 目的：2 base + 2 hard10 全不同 seed → 4 模型集成，同时拿 base 低遗憾 + hard10 高成对分辨。
 
@@ -485,6 +488,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **待办（下一步，按优先级）**：
 1. **验证「无 wave」模型精度**（最高优先）：wave 是 game-changer 但 train-only（Rust 推理拿不到），跑 `USE_TRANSISTOR_WAVE=False` 一个 seed 看 regret 掉多少；掉多（>5%）则上蒸馏（teacher 有 wave → student 无 wave）。
+   > ⚠️ **条件前提已被证伪（见 15.1.3 / 15.2.3）**：nowave 确认掉 >5%（→ 曾触发蒸馏），但**蒸馏实测失败（根本性，信息论天花板）**，最终决策改为「接受 no-wave 排序器做 Rust 粗筛」（15.2.3）。此待办已由 15.1.3 + 15.2.3 取代、关闭。
 2. ✅ **structrich/structlogic 多 seed 确认**（已完成，2026-08-20，结果见 14.4.4）：structlogic 两 seed 全面胜出 → V2 重训默认 `STRUCT_MODE='logic_only'`，structrich/elec 不再投入。
 3. **GNN 代码侧 4 项改动**（`docs/GNN_RUST_DATA_DIFF.md` 第九节）：parse_netlist 任意 I/O、data_loader JSON 列、DelayGNN 多输出读出、评估口径 avg。
 4. **数据生成方确认项**：4000 expr 是否可行；用不用 expr_to_hierarchical_spice 统一命名（可选优化，非必须）。
@@ -519,6 +523,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 6. **<2% 成对分辨 58%** 仍接近随机——SNR 天花板未破，突破仍靠 V2 数据（wave 全覆盖）。
 
 **状态更新**：14.4 待办 #2 ✅ 完成（cell 策略 = logic_only）；structrich/elec 不再投入。当前最优交付基线不变：cornerattn top-3（1.48%）。structlogic 作为 V2 重训默认架构候选（logic_only）。
+> ⚠️ **已被 15.2.10 取代**：本段在 V1（delivery1+2）数据上的「交付基线」；项目随后切到 V2 数据，**当前 Rust 粗筛交付模型 = V2 no-wave 6-seed 集成（hi 遗憾 8.78%）**，见 15.2.10/15.2.11。cornerattn top-3（1.48%，含 wave）保留作 V1 历史最优。
 
 ### 14.4.5 V2 数据首轮合规检查（2026-08-20，不合格，需返工）
 
@@ -526,6 +531,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **数据概况（batch_v2_full，交付主体）**：
 - 8860 电路 / 69,439 行 / 591 expr（expr8000+，与 V1 569 无重叠 ✓）
+  > ⚠️ **数据卷口径不一致**：15.1.3（行 550）合并口径反推 batch_v2_full = **8,679** 电路 / 69,432 行 / 579 expr，与本处 8860/69,439/591 不同（差 ~181 电路，疑为去重/过滤前后，未说明）。以生成方最终交付的 batch_v2_full 实际落盘为准。
 - 组大小 10~15（中位 15，100% 合规 ✓）；单 corner `s02p0_l01p0` ✓；slew_s=2ps / load=1fF ✓
 - 每电路 8 行 = 2×N_in×M ✓（1 个电路 7 行缺 a/fall）；无重复行 ✓；DELAY 1.6ps~174ps 在范围 ✓
 - batch_v2（290 电路）= full 的子集且本身损坏（input_pins_json 全空、网表缺输入引脚、direction 同样 .sp）→ **该批废弃**，用 full 即可
@@ -558,6 +564,7 @@ regret 主导，recall@2 第二。旧 4 seed 的 mid 是用旧分数选的、未
 
 **结论**：
 1. **wave 是决定性特征**：regret 0.12~0.48% vs 6.7~8.3%（掉 ~7~8pt，远超 14.4 定的 5% 阈值），两 seed 一致 → **蒸馏触发**。
+   > ⚠️ **触发后已证伪（见 15.2.3）**：4 个 student 全部 >6% 阈值、且都差于对应 nowave → 蒸馏失败（根本性，student 无 wave → 软标签是不可达目标）。wave 的收益无法通过蒸馏传给无 wave 的学生，最终接受 no-wave 排序器做粗筛。
 2. nowave 全指标崩塌（Spearman 0.36~0.44、recall@2 跌至 49~57%）→ 无 wave 模型不可直接交付 Rust。
 3. wave123 综合最优（score 46.36，spread 档 recall@3 B=100%）；wave42 最佳 mid 是 ep50、wave123 是 ep150 → midpoint 需按 run 各自选点。
 4. V2-io（任意 I/O）比 V2-full 难 ~3~5pt（wave123: 15.0% vs 10.5%）→ 后续可针对性攻坚。
@@ -633,6 +640,79 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 
 **决策（交付模型）**：**6-seed 等权集成 = no-wave 粗筛模型**（serve.py 加载）。召回（recall@2）是粗筛主指标，集成的 61.8% 优于单 seed；遗憾持平（噪声内）。serve 时对每个候选跑 6 个模型预测取平均（CPU 开销小）。
 
+### 15.2.11 基线对比评估（2026-08-26，Zach 反馈 (1) 落实）
+
+脚本 `scripts/diag/_baseline_eval.py`（server 跑，`~/project-107-v2nowave42/scripts/diag/`），输出 `reports/_baseline_compare.txt`。V2 test（139 组>=2 / 110 hi-spread），avg_delay 口径，每候选一个延迟代理 → 组内排序。
+
+| 方法 | 全局遗憾 | hi遗憾 | Sp(hi) | top1(hi) | recall@2A(hi) |
+|---|---:|---:|---:|---:|---:|
+| GNN wave(2seed, teacher) | 0.50% | 0.48% | 0.844 | 79.1% | 90.0% |
+| **GNN nowave(6seed 交付粗筛)** | **7.27%** | **8.78%** | 0.440 | 49.1% | 61.8% |
+| LE(逻辑努力代理, Σ g·h+p) | 34.71% | 43.40% | 0.140 | 25.5% | 34.5% |
+| Random(20 试平均) | 58.04% | 72.61% | ~0 | ~6% | ~13% |
+| TC(晶体管数, 少=快) | 67.97% | 85.01% | −0.389 | 5.5% | 6.4% |
+
+**解读**：
+1. 随机 = 无信息下限（hi ~72.6%）。
+2. **TC(晶体管数) 比随机差**（hi 85% / Spearman −0.39）——Task#8「更少晶体管→更快」是图级聚合规律，同一函数变体内 drive/fanout/串级更关键，TC 不是变体排序器。
+3. **LE 逻辑努力代理是最好的廉价启发式**（hi 43.4%），但仍比 nowave GNN 差 ~5x。
+4. **no-wave GNN(6seed) hi 8.78%**：比 LE 好 5x、比随机好 8x，是唯一能把粗筛遗憾压到个位数的现成信号 → 粗筛定位成立。
+5. wave(teacher) hi 0.48% 接近理论下限，但需 wave 输入，Rust 粗筛没有 → 仅作天花板参照。
+
+**后续**：Elmore（寄生 RC 模型）基线未做，需 parasitic_caps + RC 延迟模型，列为可选严格对照。回应 Zach：RankNet/排序损失已在 13.x 试过并确认有害（SNR 天花板，非实现问题），基线对比已补齐。
+
+#### 英文叙述版（Baseline Comparison, narrative form）
+
+This evaluation was run on the **V2 test set** (from `batch_v2_full` + `batch_v2_io`, split by expression, seed=42): **18,520 rows / 1,924 circuits**, of which **139 variant-groups have ≥2 variants**, and **110 groups are "high-spread" (hi)**.
+
+Key definitions:
+- **"hi" = the hi_spread subset** — variant-groups where the fastest-vs-slowest delay difference exceeds **10%**. These are the groups coarse-filtering actually cares about; "hi regret" and "Sp(hi)" are computed only within these 110 high-difference groups.
+- **Regret**: the % of achievable delay you give up by choosing the model's pick rather than the true fastest variant of a group. Lower is better; 0% = always pick optimal.
+
+Ordered best to worst:
+
+1. **GNN wave (2-seed ensemble, teacher)** — global regret **0.50%**, hi **0.48%**; hi Spearman **0.844**, hi top1 **79.1%**, recall@2A **90.0%**. Nearly always places the optimal variant in the top two. But it needs **transistor waveform** input, absent in the Rust coarse-filter pipeline → **ceiling reference only**, not usable directly.
+2. **GNN nowave (6-seed ensemble, delivery coarse-filter)** — netlist-topology only, no wave. Global **7.27%**, hi **8.78%**, hi Spearman **0.440**, hi top1 **49.1%**, recall@2A **61.8%**. Brings coarse-filter regret to single digits — the only readily available signal that does.
+3. **LE (logical-effort proxy, Σ g·h+p)** — best cheap heuristic, no training. Global **34.71%**, hi **43.40%**, hi Spearman **0.140**, hi top1 **25.5%**, recall@2A **34.5%**. Clearly better than random, but ~**5× worse** than GNN nowave (43.40% vs 8.78%).
+4. **Random (20-trial average)** — the "no-information" floor: global **58.04%**, hi ~**72.61%**, Spearman ~0, top1 ~6%, recall@2A ~13%. Any method that cannot beat random carries no usable information.
+5. **TC (transistor count, fewer=faster)** — actually **worse than random**: global **67.97%**, hi **85.01%**, Spearman **negative −0.389**, hi top1 **5.5%**, recall@2A **6.4%**. Reason: "fewer transistors → faster" is an aggregate, graph-level pattern; it does not hold for ranking variants of the same function (drive/fanout/series depth matter more than area).
+
+**Overall**: Random is the floor (hi ~72.6%); TC falls below it; LE is the best heuristic but ~5× worse than the GNN; **the no-wave GNN brings coarse-filter regret to 8.78%, validating its role**; wave at 0.48% is the theoretical ceiling.
+
+#### 指标口径表（Metric Glossary）
+
+| Metric | Meaning |
+|---|---|
+| **Global regret** | Selection regret over all test variant-groups: avg delay lost (as % of group delay) choosing the model's pick vs the fastest variant. |
+| **hi regret** | Same, but only within the **hi_spread** subset (fastest-vs-slowest >10%). Primary quality signal for coarse-filtering. |
+| **Spearman (Sp(hi))** | Rank correlation between predicted and true variant ordering within a group, on hi groups only. +1 = perfect, 0 = none, negative = inverse. |
+| **top1 (hi)** | Fraction of hi groups where the top-ranked variant is the true fastest. |
+| **recall@2A (hi)** | Fraction of hi groups where the true fastest variant is inside the **top-2** predictions (strict). Coarse-filter hands top-K to SPICE for fine ranking, so this measures how often the true best is "rescued" into K. |
+| **hi_spread** | Variant-groups whose delay spread (fastest vs slowest) exceeds 10%. |
+| **Regret** | % of achievable delay given up by choosing the model's pick instead of the group's true fastest. |
+
+### 15.2.12 Rust shadow 基准：SPICE 环境就绪 + 46 电路判定（2026-08-26，NetlistOpt b253aed）
+
+**SPICE 环境（服务器 orca 实测）**：✅ yongsheng 的 Xyce（zen5 构建，`~/NetlistOpt` 里 `xyce.sh` 默认路径）能跑 ASAP7 模型，单次 0.33s，**零配置跑通**；❌ `/opt/spack` 的 Xyce 跑不了（M 器件未注册 + BSIM-CMG 106.1 vs 107）；✅ Spectre（`/opt/rh/SPECTRE201` + `/opt/rh/cds.lic.dat`）可作备用。模型/CDL 在 `/home/tianlang/asap7/`（详见 `docs/GNN_RUST_DATA_DIFF.md` 10.5）。
+
+**46 电路基准**（`tests/tl_opt_shadow_batch.rs`，6 组并行 ~1.5h）：45/46 成功，**ovf1 因 Xyce 瞬态步长崩溃不收敛**（SPICE 自身限制）。
+
+**双根因 + 修复（serve 侧，无需重训）**：
+1. `logic_sim.compute_gate_states` 反向 BFS 硬编码 `'out'` → Rust 候选输出叫 `y` → gate_mask 清零全图 → 模型全盲 → 预测扁平。修复：`outputs` 参数传真实输出引脚。
+2. Rust 复合门名（`SC_JOIN_AND_WIRE_...`）不在 sc_expansion → 全落 COMPLEX。修复：Rust 生成器自产逻辑类（`classify_subckt_logic`）随候选发 `gate_logics`，serve 用 thread-local 覆盖（sc_expansion > 覆盖 > 回退，训练零影响）。
+
+**最终判定（89 候选集，10.3 标准）**：
+
+| 指标 | 结果（均值/中位） | 达标线 |
+|---|---|---|
+| recall@top-3 | 51.7% / 66.7% | ≥90% ❌ |
+| 选择遗憾 | 7.38% / **2.88%** | ≤5% ❌ |
+| Spearman | 0.140 / 0.200 | ≥0.6 ❌ |
+
+**→ 双主判据不达标：GNN 只做启发式预排序，不替换逐候选 SPICE。** 修复使排序从系统性反向（pre-fix 22.8%/50.8%/−0.50）变为真实信号（~40% 候选集遗憾 ≤1%、中位 2.88%），但强度不够——候选集内延迟差常 <5%，是 13.x 已确认的 SNR 天花板；10.3 判据不筛跨度，比 V2 hi-spread 口径苛刻。分析脚本 `scripts/diag/_shadow_analyze.py`，明细见 `reports/_shadow_bench_final.txt`。
+
+**ovf1 处理**：接受（SPICE 自身不收敛，不属于粗筛职责；若需可试 `.tran ... UIC` 跳过 DC 工作点，未做）。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**
@@ -651,14 +731,18 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 4. 一次性调试输出（`_*.out.txt` 之类）**不得进 git**——`.gitignore` 已统一收编 `*.log` 与 `cache_smoke_*/`。
 5. 2026-08-25 已清理：删除 14 个一次性 txt + `新建 文本文档.txt`；14 个诊断脚本移入 `scripts/diag/`、4 份检查报告移入 `reports/`、9 份 .md 移入 `docs/`；文档/代码内引用路径全部同步更新（md 间引用统一写 `docs/xxx.md`）。
 
-### DATA_SPEC v9（两阶段交付，14.0.6-14.0.7）
+### DATA_SPEC v9（V1 存档，两阶段交付，14.0.6-14.0.7）
+
+> ⚠️ **V1 旧数据规格，已由 DATA_SPEC_V2（14.4）取代**（对齐 Rust：任意 I/O、单 corner、细粒度 avg_delay）。仅作历史存档。
 1. 阶段1（有前提）：旧 SPICE 波形文件若还在 → 后处理补 3 个新 transistor 字段（ids_rise_time/vgs_swing/ids_charge），零仿真成本。不在则跳过，不重跑 60 万。
 2. 阶段2：新 120 万行，4 vector/condition，全部 v9 格式，新 expr 不与已有 569 个重叠。总计 ~180 万行，val 组数翻倍。
 3. 新 3 字段 + 旧 4 字段 = 7 个 transistor 子字段，全部 100% 覆盖受铁律约束。
 
-### 当前方向/待办
+### 当前方向/待办（历史保留，已过时）
 
-### 当前方向/待办
+> ⚠️ **本段为历史存档，内容已过时**：per_gate 已定死路、wave 已是 train-only game-changer、集成已定稿（15.2.10 6-seed）、#8 已完成。**当前方向/待办以 15.2.10 / 15.2.3 的「待办 ①-⑤」及下方 14.4 待办为准。**
+
+（原「当前方向/待办」正文——历史保留：）
 - **per_gate**：死路，搁置。**LIB**：长线，需 2D-grid 加速再评估。
 - **wave**：信噪比诊断表明突破 <2% 成对分辨需要晶体管全覆盖数据(降模型预测噪声)；现有 wave 28% 稀疏+集中低slew→不可用。DATA_SPEC 已备好全覆盖规格。
 - **集成**：暂缓，优先解决信噪比瓶颈。
@@ -723,7 +807,9 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 
 ---
 
-## LIB/Scheme A/B Roadmap
+## LIB/Scheme A/B Roadmap（历史存档）
+
+> ⚠️ **已过时/被取代**：LIB（Scheme A）依赖 per_gate 监督（已证有害，见 13.x）；TW（Scheme B）虽确认 wave 有效，但 train-only、Rust 推理拿不到，蒸馏失败（15.2.3）→ 走「V2 no-wave 粗筛 + top-K SPICE 精排」路线。保留作历史决策记录。
 
 ### Scheme A (LIB Table Lookup)
 - **Goal:** Model predicts per-gate (slew, load) → LIB table lookup → sum delays.
@@ -738,6 +824,8 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 - **优先级：高**（降模型预测噪声 2-3x，配合更多电路可将 <2% 成对分辨从 52%→70-75%）。
 
 ### Decision Tree
+
+> ⚠️ **已失效（历史存档）**：本路线图按「点精度（%）」预测路线，与后续实际走向不符——wave 在**排序任务**上成功（13.5）、per_gate/TW 在 13.x 被证有害、蒸馏失败（15.2.3），最终路线为「V2 no-wave 6-seed 粗筛 + wave 仅作天花板」。当前方向见 15.2.10/15.2.11 与 `docs/GNN_RUST_DATA_DIFF.md`。
 ```
 New Data Arrives
 ├── SC expansion table → Activate LIB mode (train_lib.py)
@@ -755,6 +843,8 @@ New Data Arrives
 ## Data Organization
 
 ### Current Active Data (on server)
+
+> ⚠️ **本段过时**：以下为 **V1 旧数据（batch1-3）** 结构。**当前活跃数据是 V2**（`data/batch_v2_full/` + `data/batch_v2_io/`，任意 I/O、单 corner s02p0_l01p0、细粒度 DELAY），详见 `docs/DATA_SPEC_V2.md`。
 ```
 data/
 ├── batch1/           # 150 circuits, 30 corners, full sweep
@@ -861,6 +951,8 @@ cd ~/project-NAME && sed -i 's/CACHE_DIR = .*/CACHE_DIR = "cacheNAME"/' config.p
 1. **Input information > architecture:** Corner encoding (-6.5pp) was the biggest gain — it added new INFORMATION, not just better processing. 50+ architecture tweaks combined contributed less.
 2. **GNN node features degrade:** After 6 layers, a node's feature is ~30% self, ~70% neighbor mix. Per-gate prediction fails because individual gates lose identity. This is fundamental to message-passing GNNs.
 3. **Sparse aux data doesn't train:** Transistor data at 28% density (777/2768) can't drive 118K-sample training. Need full coverage.
-4. **LIB is a regularization, not a prediction tool:** PG (24.46%) > 10.2 (25.70%) because LIB chain provides physics-constrained prediction path even if table values are wrong.
+4. ~~**LIB is a regularization, not a prediction tool:** PG (24.46%) > 10.2 (25.70%) because LIB chain provides physics-constrained prediction path even if table values are wrong.~~
+   **⚠️ 已作废**：该条依据 PG(24.46%) 的 per_gate 辅助，但 107 批次结论（本文件上方）已证明**当时 PG 的 per_gate 是 no-op**（hasattr 静默跳过），24.46% 并非 LIB 链的真实效果。真正生效后的 per_gate 实测有害（+4~5pp）。LIB 路径按此结论应重新评估，本教训不再成立。
 5. **Worst corner (l00p2/l00p5) stuck at ~42%:** Corner encoding reaches limit for extreme nonlinearity. Only transistor-level data can capture these.
 6. **Don't retry:** GAT, GIN, gate weighting, corner weighting, physical features beyond p/g/h, gate type merge.
+   > ⚠️ **部分被推翻**：「physical features beyond p/g/h」泛指失败，但 13.5 的 **transistor_wave**（高差异 Spearman 0.182→0.705，game-changer）与 newcaps（寄生电容，+0.03）是**有效的物理输入特征**——差别在于它们是「补充输入信息」而非「架构改动」。本教训应缩小为「架构层面的物理特征」，不含新增数据特征。
