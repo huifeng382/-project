@@ -1,5 +1,7 @@
 # Project Log — GNN Delay Prediction
 
+> ⚠️ **必读（项目最高优先级要求文件）**：`docs/GNN_PROJECT_REQUIREMENTS.md` —— git 提交/GitHub 推送版本号规范（大.小.更小，如 10.0.0）、触发文本「记入要求文件」、仓库布局。**任何新对话处理本项目前先读它。**
+
 ## Project Overview
 
 **Goal:** Predict circuit propagation delay (SPICE-level) from netlist topology + corner conditions.
