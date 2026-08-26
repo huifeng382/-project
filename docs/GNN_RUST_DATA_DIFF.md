@@ -439,3 +439,57 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 - **「任意 I/O + 多输出 + avg_delay」能否训练**：用 V2 数据（单 corner + 任意 I/O + avg_delay）训一个 seed，确认 9.1~9.4 改完后能正常收敛、排序指标合理。
 
 > 注：本节 9.4 同时把 8.4 里「#2 延迟口径」的决策从「最坏情况」明确为「avg_delay」（对齐 V2 spec 的 DELAY 定义）。
+
+---
+
+## 十、Rust 粗筛接入（shadow 并行模式）+ 验证标准（2026-08-26）
+
+> 决策（15.2.3）：蒸馏失败（wave 缺失根本性），接受 **no-wave 6-seed 集成模型**做 Rust 粗筛。
+> 粗筛 = 用 GNN 给候选排序，SPICE 只对 top-K 精排。先跑 **shadow 并行**（GNN + SPICE 都跑，SPICE 仍做决策），
+> 积累 GNN vs SPICE 对照数据，按标准判定「替换」还是「预排序」。
+
+### 10.1 no-wave 粗筛模型（serve.py，已定稿）
+
+- 模型：**6-seed no-wave 等权集成**（42/123/456/2468/1357/2024），hi_spread 遗憾 8.78% / recall@2 61.8%。
+- 服务：`scripts/diag/serve_http.py`（跑 orca，`POST /rank`），6 checkpoint 集成预测 avg_delay。
+- 输入：候选 `{id, netlist(SPICE), input_pins, output_pins}`；输出：`{ranked:[{id, avg_delay}]}` 升序。
+- **绝对延迟被低估 ~2x**（no-wave 点误差特性）——粗筛只看排序，不依赖绝对量。
+
+### 10.2 Rust 接入点（shadow 并行，不改贪心决策）
+
+**核心文件**：`NetlistOpt/src/tl_opt.rs` 的 `FullCircuitTlEvaluator::evaluate()`（每个候选在此跑 SPICE）。
+
+**做法**：包一层 `ShadowGnnTlEvaluator`（包住现有 `FullCircuitTlEvaluator`）：
+1. `evaluate(candidate)`：先调 GNN `/rank` 得 `GNN_pred`；再调内部 SPICE 得 `true_avg_delay`（决策照旧）；
+2. 记录 `(candidate_id, GNN_pred, true_avg_delay, 所在 window)` 到 CSV；
+3. 返回 true metrics —— **贪心行为完全不变**（接受/拒绝仍由 SPICE 真值决定）。
+
+**GNN 客户端**（Rust，零依赖）：
+- `std::net::TcpStream` 手写 HTTP POST `/rank`（Cargo 无 reqwest）；
+- 候选转 GNN 输入：`module.inorder` → input_pins、`module.outorder` → output_pins、
+  `crate::spice::expr_to_hierarchical_spice(expr, &module.outorder)` → netlist；
+- 开关 `GNN_SHADOW`（env 或 TlSearchParams 字段）启用，默认关。
+
+### 10.3 验证标准（跑完 shadow 后判定）
+
+在 46 benchmark（或子集）跑完后，对**每个 window 候选集**（≥4）计算并汇总：
+
+| 指标 | 定义 | 达标线 |
+|---|---|---|
+| **recall@top-3** | GNN top-3 含 SPICE 真 top-3 的比例 | **≥ 90%**（主判据） |
+| **选择遗憾** | (GNN 选最优 − SPICE 真最优)/真最优 | **≤ 5%**（主判据） |
+| Spearman | GNN 排序 vs SPICE 真序秩相关 | ≥ 0.6（次判据） |
+| 仿真节省 | 若 GNN 只排 top-K 能省的 SPICE 比例 | ≥ 75%（收益项） |
+
+**判定**：
+- 两项主判据（recall@top-3 ≥90% 且 遗憾 ≤5%）→ **GNN 替换逐候选 SPICE 排序**：优化改成「GNN 排全部候选 → top-K 才 SPICE 精排 → 接受第一个改善的」，仿真省 ≥75%。
+- 任一主判据不达标 → 保留 SPICE 全排序，GNN 只做**启发式预排序**（先粗排再 SPICE 精排 top-N，仍省部分仿真）。
+
+> 关键：贪心每 window 只接受**第一个**改善候选（`break`），粗筛价值 = 让 GNN 把「该接受的候选」排到前面 → SPICE 只验证 top-K，不丢最优又省仿真。
+
+### 10.4 参考实现
+
+`rust_integration/gnn_shadow.rs`（工作区参考代码，拷入 `NetlistOpt/src/`，`mod gnn_shadow;` 挂载）：
+- `GnnClient`：`std::net::TcpStream` HTTP POST `/rank`，解析 ranked JSON。
+- `ShadowGnnTlEvaluator`：包 `FullCircuitTlEvaluator`，调 GNN + SPICE，写 CSV。
+- 在 `optimize_tl_module` 里按开关换用 Shadow 版本。
