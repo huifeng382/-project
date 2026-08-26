@@ -603,6 +603,23 @@ tail -30 ~/project-107-v2kd123reg42/train107v2kd123reg42.log   # 及 rr42/reg123
 
 **serve.py 启动（Phase B）**：`scripts/diag/serve.py` 已写——复用 15.1.0 任意 I/O 路径，给定候选网表+引脚 → 每 (pin,dir) 预测延迟 → 线性平均=avg_delay → 排序。特征用 5.6 阶段 1 极简（slew=2ps/load=1fF/vector 切换位/gate_states BFS），本地冒烟通过（多输出任意 I/O 电路）。**待办**：① no-wave 集成模型定稿（`scripts/diag/_ens_struct.py` 已改通用：V2 数据 + avg_delay 口径 + 全等权平均，默认 6-seed）② serve 加载真实 checkpoint 在 Rust 候选上跑通 ③ Rust 侧接入粗筛（top-K SPICE 精排）④ 46 benchmark 验证（最终电路差异 + 仿真节省）⑤ **全量数据到位后：模型/集成选择改用 `val 选择`**（在独立 val 上选 seed/checkpoint，test 保持干净只报告一次，消除 post-hoc 剪枝偏差；届时 val 组数 ~600 选择可靠，替代当前的 test 全等权平均）。
 
+### 15.2.9 no-wave 6-seed 全跑完（2026-08-26，待集成定稿）
+
+> 数据 V2（batch_v2_full + batch_v2_io，test 组>=2=139 / spread>10%=110）。配置同 15.1.3。单 seed spread>10% 遗憾：
+
+| seed | 遗憾 | Spearman | top1 | 捕获率 | 最佳 mid | 停止 |
+|---|---|---|---|---|---|---|
+| 42 | 8.07% | 0.438 | — | — | ep100 | early_stop |
+| 123 | 8.25% | 0.409 | — | — | ep100 | early_stop |
+| 1357 | **8.31%** | **0.471** | 47.3% | **82.1%** | ep50 | plateau |
+| 2468 | 8.47% | 0.413 | 47.3% | 77.7% | ep100 | early_stop |
+| 2024 | 8.72% | 0.403 | 49.1% | 77.3% | ep150 | plateau |
+| 456 | 9.17% | 0.448 | 48.2% | 77.3% | ep100 | plateau |
+
+**观察**：6 个 seed 遗憾 8.07~9.17%（跨度 ~1.1pp），Spearman 0.40~0.47——**seed 间差异小、整体稳定**（no-wave 无 wave 信号 → 各 seed 收敛到相近水平）。**1357 综合最优**（遗憾低 + Spearman/cap 最高）。点精度 Test Rel Err 25.7~28.7%（V2-io 比 full 略难）。
+
+**下一步（定稿交付模型）**：`scripts/diag/_ens_struct.py` 全 6-seed 等权平均（不剪枝，见 15.2.3 决策）→ 确认集成遗憾（预期 ~7.5~8%，略低于单 seed 最优）→ 作为 serve.py 加载的 no-wave 交付模型。集成命令：`~/venv/bin/python3 scripts/diag/_ens_struct.py v2nowave42 v2nowave123 v2nowave456 v2nowave2468 v2nowave1357 v2nowave2024`。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**
