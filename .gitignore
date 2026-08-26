@@ -17,3 +17,4 @@ outputs/
 *.log
 cache_smoke_*/
 models/
+NetlistOpt/
