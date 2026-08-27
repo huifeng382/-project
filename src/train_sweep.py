@@ -668,8 +668,9 @@ def main():
                 mrec = mhi.get('recall_at_k', {})
                 mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
                 mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
-                score = (-mhi.get('regret_pct', 100.0) * 1.0 + mhi.get('spearman', 0.0) * 0.3
-                         + mhi.get('captured_pct', 0.0) * 0.1 + mr2 * 100 * 0.3 + mr3 * 100 * 0.1)
+                # 粗筛定位（15.3.x）：recall 是最重要指标 → 选点分数由 recall@3 主导（原 regret 主导）
+                score = (mr3 * 100 * 1.0 + mr2 * 100 * 0.5 + mhi.get('spearman', 0.0) * 0.3
+                         + (-mhi.get('regret_pct', 100.0)) * 0.2 + mhi.get('captured_pct', 0.0) * 0.1)
                 print(f"[eval-only] ep{ep_num}: regret={mhi.get('regret_pct', 100.0):.2f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
                 if score > best_score:
                     best_score, best_ep = score, ep_num
@@ -904,7 +905,8 @@ def main():
                 mrec = mhi.get('recall_at_k', {})
                 mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
                 mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
-                score = (-mr * 1.0) + (ms * 0.3) + (mc * 0.1) + (mr2 * 100 * 0.3) + (mr3 * 100 * 0.1)
+                # 粗筛定位（15.3.x）：recall 最重要 → recall@3 主导选点（原 regret 主导）
+                score = (mr3 * 100 * 1.0) + (mr2 * 100 * 0.5) + (ms * 0.3) + (-mr * 0.2) + (mc * 0.1)
                 print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} cap={mc:.1f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
                 if score > best_score:
                     best_score, best_ep = score, ep_num

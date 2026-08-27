@@ -109,20 +109,16 @@ def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, swit
         return {}
 
 
-def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
-                      gate_logics=None):
-    """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。
-    models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。
-    gate_logics：可选 {门名 -> 逻辑类}，Rust 侧传入时覆盖 sc_expansion 查不到的门的逻辑类。"""
-    set_gate_logic_overrides(gate_logics)
-    node_names, node_static, edge_index, pins, outs = build_candidate_tensors(
-        netlist, input_pins, output_pins, scaler)
-    node_static = node_static.to(device)
-    edge_index = edge_index.to(device)
+def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device):
+    """单候选、共享静态图：返回每模型的 avg_delay（list，长度 = len(models)）。
+    每 (pin,dir) 行对每模型做一次前向，行内多模型求均值 → 电路级平均。"""
     num_nodes = len(node_names)
     num_dyn = 7
     base = node_static.shape[1]
-    preds_lin = []
+    node_static = node_static.to(device)
+    edge_index = edge_index.to(device)
+    acc = np.zeros(len(models))
+    n_rows = 0
     for switching in pins:
         for direction in ('rise', 'fall'):
             dyn, vector_str = row_dynamic_features(pins, switching, direction, SLEW_S, LOAD_F, scaler)
@@ -140,16 +136,79 @@ def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
                     x[i, -1] = 1.0
             with torch.no_grad():
                 corner = torch.tensor([CORNER], dtype=torch.float, device=device)
-                csig = torch.tensor([[float(len(node_names)), 0.0, float(len(pins))]],
+                csig = torch.tensor([[float(num_nodes), 0.0, float(len(pins))]],
                                     dtype=torch.float, device=device)
-                row_preds = []
-                for m in models:
+                for mi, m in enumerate(models):
                     m.eval()
                     out, _ = m(x, edge_index, torch.zeros(num_nodes, dtype=torch.long, device=device),
                                corner, csig, None)
-                    row_preds.append(float((10 ** out.cpu()).clamp(1e-12, 1e-8).item()))
-                preds_lin.append(float(np.mean(row_preds)))
-    return float(np.mean(preds_lin)) if preds_lin else float('nan')
+                    acc[mi] += float((10 ** out.cpu()).clamp(1e-12, 1e-8).item())
+            n_rows += 1
+    if n_rows == 0:
+        return [float('nan')] * len(models)
+    return (acc / n_rows).tolist()
+
+
+def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
+                      gate_logics=None):
+    """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。
+    models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。
+    gate_logics：可选 {门名 -> 逻辑类}，Rust 侧传入时覆盖 sc_expansion 查不到的门的逻辑类。"""
+    set_gate_logic_overrides(gate_logics)
+    node_names, node_static, edge_index, pins, outs = build_candidate_tensors(
+        netlist, input_pins, output_pins, scaler)
+    pm = _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device)
+    return float(np.mean(pm)) if pm else float('nan')
+
+
+def predict_rank_batch(models, cands, scaler, device):
+    """批量候选秩聚合（方案 1，15.3.x）：每候选先得每模型 avg_delay，再在候选集内按模型排名，
+    取平均秩（competition ranking，并列取平均）作为得分——得分越低 = 共识越快。
+    返回 [{id, avg_delay: 平均秩得分}]，按得分升序（快→慢）。"""
+    rows = []
+    for c in cands:
+        set_gate_logic_overrides(c.get('gate_logics'))
+        try:
+            nn, ns, ei, pins, outs = build_candidate_tensors(
+                c.get('netlist', ''), c.get('input_pins', []), c.get('output_pins', []), scaler)
+            pm = _per_model_avg_delays(models, nn, ns, ei, pins, outs, scaler, device)
+        except Exception:
+            pm = [float('nan')] * len(models)
+        rows.append({'id': c.get('id', '?'), 'pm': pm, 'nan': any(v != v for v in pm)})
+    n = len(rows)
+    if n == 0:
+        return []
+    if n == 1:
+        return [{'id': r['id'], 'avg_delay': float(np.mean(r['pm']))} for r in rows]
+    # 秩聚合：逐模型排名 → 平均秩（低 = 快）
+    scores = np.zeros(n)
+    counted = np.zeros(n)
+    for mi in range(len(models)):
+        vals = np.array([r['pm'][mi] for r in rows], dtype=np.float64)
+        good = [i for i in range(n) if not rows[i]['nan']]
+        if not good:
+            continue
+        gvals = vals[good]
+        order = np.argsort(gvals, kind='mergesort')
+        ranks = np.empty(len(good))
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and gvals[order[j + 1]] == gvals[order[i]]:
+                j += 1
+            avg = (i + j) / 2.0 + 1.0
+            for k in range(i, j + 1):
+                ranks[order[k]] = avg
+            i = j + 1
+        for idx, rk in zip(good, ranks):
+            scores[idx] += rk
+            counted[idx] += 1
+    out = []
+    for i, r in enumerate(rows):
+        sc = scores[i] / counted[i] if counted[i] > 0 else float('nan')
+        out.append({'id': r['id'], 'avg_delay': float(sc)})
+    out.sort(key=lambda x: (x['avg_delay'] != x['avg_delay'], x['avg_delay']))
+    return out
 
 
 def load_models(ckpt_paths, scaler, sample_netlist, sample_pins, sample_outs):

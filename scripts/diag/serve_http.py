@@ -39,14 +39,18 @@ class RankHandler(BaseHTTPRequestHandler):
         except Exception as e:
             self._send(400, {'error': f'bad request: {e}'}); return
         results = []
-        for c in cands:
-            try:
-                ad = S.predict_avg_delay(MODELS, c.get('netlist', ''),
-                                         c.get('input_pins', []), c.get('output_pins', []),
-                                         SCALER, DEVICE, gate_logics=c.get('gate_logics'))
-                results.append({'id': c.get('id', '?'), 'avg_delay': ad})
-            except Exception as e:
-                results.append({'id': c.get('id', '?'), 'avg_delay': None, 'error': str(e)})
+        if len(cands) >= 2:
+            # 批量 → 秩聚合（方案 1：逐模型排名取平均秩，共识 top-K 更稳）
+            results = S.predict_rank_batch(MODELS, cands, SCALER, DEVICE)
+        else:
+            for c in cands:
+                try:
+                    ad = S.predict_avg_delay(MODELS, c.get('netlist', ''),
+                                             c.get('input_pins', []), c.get('output_pins', []),
+                                             SCALER, DEVICE, gate_logics=c.get('gate_logics'))
+                    results.append({'id': c.get('id', '?'), 'avg_delay': ad})
+                except Exception as e:
+                    results.append({'id': c.get('id', '?'), 'avg_delay': None, 'error': str(e)})
         results.sort(key=lambda r: (r['avg_delay'] is None, r['avg_delay']))
         self._send(200, {'ranked': results})
 
