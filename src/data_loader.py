@@ -109,6 +109,11 @@ class DelayDataset(Dataset):
         if 'DELAY' in self.dynamic_df.columns:
             self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
 
+        # 固定 wave 行掩蔽（WAVE_COVERAGE<1 时模拟部分仿真；跨 epoch 不变）
+        self._wave_mask = None
+        if config.USE_TRANSISTOR_WAVE and config.WAVE_COVERAGE < 1.0:
+            self._wave_mask = self._build_wave_mask()
+
         # 确保 vector 列格式正确（保持原样，不 zfill）
         if 'vector' in self.dynamic_df.columns:
             self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str)
@@ -119,9 +124,7 @@ class DelayDataset(Dataset):
                 else pd.Series([''] * len(self.dynamic_df))
         _gk = (_col('expr') + '|' + _col('corner') + '|' + _col('switching_pin')
                + '|' + _col('direction') + '|' + _col('vector'))
-        self.group_ids = pd.factorize(_gk)[0].tolist()
-
-        # 从静态数据中动态推断输入引脚（替代硬编码）
+        self.group_ids = pd.factorize(_gk)[0].tolist()        # 从静态数据中动态推断输入引脚（替代硬编码）
         if 'input_pins_json' in self.static_df.columns:
             all_pins = set()
             for pins_json in self.static_df['input_pins_json']:
@@ -211,6 +214,27 @@ class DelayDataset(Dataset):
             self._circuit_sig[cid] = np.array(sig, dtype=np.float32)
 
         self._prepare_static_graphs()
+
+    def _build_wave_mask(self):
+        """固定 wave 行掩蔽：每电路 (switching_pin, direction) 组合按 WAVE_COVERAGE 比例保留 wave。
+        确定性（seed 由 WAVE_COVERAGE_SEED + circuit_id 派生），跨 epoch 不变；
+        对齐 Rust 推理「部分仿真只跑部分 (pin,dir) 向量」的场景。"""
+        import hashlib, random
+        mask = {}
+        df = self.dynamic_df
+        if 'switching_pin' not in df.columns or 'direction' not in df.columns:
+            return None
+        for cid, grp in df.groupby('circuit_id'):
+            combos = grp[['switching_pin', 'direction']].drop_duplicates().values.tolist()
+            if not combos:
+                continue
+            h = hashlib.md5(f"{config.WAVE_COVERAGE_SEED}|{cid}".encode()).hexdigest()[:8]
+            rng = random.Random(int(h, 16))
+            rng.shuffle(combos)
+            keep = max(1, int(round(len(combos) * config.WAVE_COVERAGE)))
+            for i, (p, d) in enumerate(combos):
+                mask[(str(cid), str(p), str(d))] = i < keep
+        return mask
 
     def _prepare_static_graphs(self):
         for cid in self.dynamic_df['circuit_id'].unique():
@@ -430,36 +454,41 @@ class DelayDataset(Dataset):
             except Exception:
                 pass
             extra_feats.append(pc_feat)
-        # Transistor wave: ids_avg/ids_peak/vds_swing 按 gate 聚合 -> 节点特征
+        # Transistor wave: WAVE_FIELDS 按 gate 聚合 -> 节点特征（子字段选择 + 行覆盖率掩蔽）
         if config.USE_TRANSISTOR_WAVE:
-            tw_dim = 9 if config.WAVE_AGG_RICH else 3
+            tw_dim = (3 if config.WAVE_AGG_RICH else 1) * len(config.WAVE_FIELDS)
             tw_feat = torch.zeros(num_nodes, tw_dim)
             try:
-                tw = row.get('transistor_wave_json')
-                tw = json.loads(tw) if isinstance(tw, str) else tw
-                gate_agg = {}
-                if isinstance(tw, dict):
-                    for _, td in tw.items():
-                        if not isinstance(td, dict): continue
-                        g = str(td.get('gate', '')).lower()
-                        if not g: continue
-                        if g not in gate_agg:
-                            gate_agg[g] = {'ids_avg':[], 'ids_peak':[], 'vds_swing':[]}
-                        for f in ['ids_avg','ids_peak','vds_swing']:
-                            v = td.get(f)
-                            if v is not None: gate_agg[g][f].append(float(v))
-                import numpy as np
-                for i, n in enumerate(node_names):
-                    gkey = str(n).lower()
-                    if gkey in gate_agg:
-                        for fi, f in enumerate(['ids_avg','ids_peak','vds_swing']):
-                            vals = gate_agg[gkey][f]
-                            if not vals: continue
-                            arr = np.array(vals)
-                            tw_feat[i, fi] = arr.mean()
-                            if config.WAVE_AGG_RICH:
-                                tw_feat[i, 3+fi] = arr.max()
-                                tw_feat[i, 6+fi] = arr.std()
+                wave_ok = True
+                if self._wave_mask is not None:
+                    key = (str(row.get('circuit_id')), str(row.get('switching_pin')), str(row.get('direction')))
+                    wave_ok = bool(self._wave_mask.get(key, False))
+                if wave_ok:
+                    tw = row.get('transistor_wave_json')
+                    tw = json.loads(tw) if isinstance(tw, str) else tw
+                    gate_agg = {}
+                    if isinstance(tw, dict):
+                        for _, td in tw.items():
+                            if not isinstance(td, dict): continue
+                            g = str(td.get('gate', '')).lower()
+                            if not g: continue
+                            if g not in gate_agg:
+                                gate_agg[g] = {f: [] for f in config.WAVE_FIELDS}
+                            for f in config.WAVE_FIELDS:
+                                v = td.get(f)
+                                if v is not None: gate_agg[g][f].append(float(v))
+                    import numpy as np
+                    for i, n in enumerate(node_names):
+                        gkey = str(n).lower()
+                        if gkey in gate_agg:
+                            for fi, f in enumerate(config.WAVE_FIELDS):
+                                vals = gate_agg[gkey][f]
+                                if not vals: continue
+                                arr = np.array(vals)
+                                tw_feat[i, fi] = arr.mean()
+                                if config.WAVE_AGG_RICH:
+                                    tw_feat[i, len(config.WAVE_FIELDS)+fi] = arr.max()
+                                    tw_feat[i, 2*len(config.WAVE_FIELDS)+fi] = arr.std()
             except Exception:
                 pass
             extra_feats.append(tw_feat)

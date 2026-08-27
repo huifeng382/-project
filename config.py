@@ -101,6 +101,9 @@ USE_STRUCT_PRIOR = True        # 分析发现的全局结构信号，以残差�
 
 # 新探索：基于 delivery1+2 全量数据的进一步改进
 WAVE_AGG_RICH = False          # 晶体管波形聚合: mean → (mean, max, std)（in_dim 17→23）
+WAVE_FIELDS = [f.strip() for f in os.environ.get('WAVE_FIELDS', 'ids_avg,ids_peak,vds_swing').split(',') if f.strip()]
+WAVE_COVERAGE = float(os.environ.get('WAVE_COVERAGE', '1.0'))   # 行覆盖率（1.0=全；<1 模拟部分仿真）
+WAVE_COVERAGE_SEED = int(os.environ.get('WAVE_COVERAGE_SEED', '42'))  # 固定掩蔽种子（跨 epoch 不变）
 USE_CORNER_ATTN = True         # Corner 感知注意力池化（13.6 内部最优，设为默认）
 
 # 结构特征模式（14.2.2 起：用逻辑类别+结构特征替代 638 类 cell 名嵌入）
