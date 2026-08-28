@@ -234,16 +234,25 @@ def main():
     static_parquets = []
     dynamic_parquets = []
     if USE_V2:
-        # 15.1.0：V2 数据（batch_v2_full 4-pin 口径 + batch_v2_io 任意 I/O 口径）
-        for batch in ['batch_v2_full', 'batch_v2_io']:
+        # V2 数据（默认 batch_v2_full + batch_v2_rest；DATA_BATCHES env 可覆盖；支持 *_partN.parquet）
+        for batch in DATA_BATCHES.split(','):
+            batch = batch.strip()
+            if not batch:
+                continue
             sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
             dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
             if os.path.exists(sp) and os.path.exists(dp):
                 static_parquets.append(sp); dynamic_parquets.append(dp)
                 print(f"V2 data: {batch}")
             else:
-                print(f"V2 data not found, skipping: {batch}")
-        four_pin_only_eff = False   # io 含任意 I/O，V2 下不做 4-pin 过滤
+                sparts = sorted(glob.glob(os.path.join(data_dir, f"data/{batch}/circuit_static_part*.parquet")))
+                dparts = sorted(glob.glob(os.path.join(data_dir, f"data/{batch}/timing_arcs_part*.parquet")))
+                if sparts and dparts:
+                    static_parquets.extend(sparts); dynamic_parquets.extend(dparts)
+                    print(f"V2 data: {batch} (parts)")
+                else:
+                    print(f"V2 data not found, skipping: {batch}")
+        four_pin_only_eff = False   # rest/io 含任意 I/O，V2 下不做 4-pin 过滤
     else:
         # delivery1 + delivery2 合并（~54 万行，1,437 电路。旧数据在 archive_v13.1/）
         for prefix in ['data/delivery1', 'data/delivery2']:
@@ -291,6 +300,15 @@ def main():
     dynamic_df['circuit_id'] = dynamic_df['circuit_id'].astype(str)
     dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
     print(f"清洗后样本数: {len(dynamic_df)}, 电路数: {dynamic_df['circuit_id'].nunique()}")
+
+    # ---------- 组大小过滤：剔除 < MIN_GROUP_SIZE 变体的组（单变体/小组无排序价值，2026-08-28）----------
+    if MIN_GROUP_SIZE > 1 and 'expr' in dynamic_df.columns:
+        gsize = dynamic_df.groupby('expr')['circuit_id'].nunique()
+        keep_exprs = gsize[gsize >= MIN_GROUP_SIZE].index.astype(str)
+        n_before = len(dynamic_df)
+        dynamic_df = dynamic_df[dynamic_df['expr'].astype(str).isin(keep_exprs)]
+        print(f"组大小过滤(>= {MIN_GROUP_SIZE} 变体): 样本 {n_before} -> {len(dynamic_df)}, "
+              f"expr {len(gsize)} -> {len(keep_exprs)}")
 
     # ---------- 可选：只保留4引脚标准电路（在划分前过滤，避免空split；V2 下跳过）----------
     if four_pin_only_eff:

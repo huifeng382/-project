@@ -71,6 +71,17 @@ def main():
           f"5~8={(((n_in>=5)&(n_in<=8)).mean()*100):.1f}% 9~16={((n_in>=9).mean()*100):.1f}%  "
           f"多输出={((n_out>=2).mean()*100):.1f}% M>=4={(n_out>=4).sum()}")
 
+    # 组大小过滤视图（训练默认 MIN_GROUP_SIZE=10）
+    print("\n=== 组大小过滤（训练默认剔除 <10 变体组）===")
+    dyn_all = pd.concat([stats[b][1] for b in batches], ignore_index=True)
+    dyn_all['circuit_id'] = dyn_all['circuit_id'].astype(str)
+    gsize = dyn_all.groupby('expr')['circuit_id'].nunique()
+    for N in [10, 4, 2]:
+        keep = gsize[gsize >= N].index.astype(str)
+        f = dyn_all[dyn_all['expr'].astype(str).isin(keep)]
+        print(f"  >= {N} 变体: 样本={len(f)} 电路={f['circuit_id'].nunique()} expr={len(keep)} "
+              f"(剔 {len(gsize)-len(keep)} 组)")
+
 
 if __name__ == '__main__':
     main()
