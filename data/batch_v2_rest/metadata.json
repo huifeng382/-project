@@ -1,0 +1,10 @@
+{
+  "dataset_name": "batch_v2_rest",
+  "description": "V2 single-corner dataset (DATA_SPEC_V2.md)",
+  "corner": "s02p0_l01p0",
+  "n_circuits": 35183,
+  "n_rows": 568090,
+  "rows_per_circuit": 16.1,
+  "expr_start": 9500,
+  "expr_range": "expr9500+"
+}

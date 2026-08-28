@@ -1,8 +1,8 @@
 {
   "sc_expansion": {
-    "coverage": "2084/2084 (100.0%)",
-    "expandable": "2084/2084 (100.0%)",
-    "sc_cells": "OK (2084)",
+    "coverage": "12912/12912 (100.0%)",
+    "expandable": "12912/12912 (100.0%)",
+    "sc_cells": "OK (12912)",
     "missing": []
   },
   "batch_v2_full/circuit_static": {
@@ -10,8 +10,8 @@
     "parasitic_caps_json.column_present": "OK",
     "parasitic_caps_json.column_nonnull": "8679/8679 (100.0%)",
     "parasitic_caps_json.gate_key_match": "8679/8679 (100.0%)",
-    "parasitic_caps_json.subfields_valid": "8643/8679 (99.6%)",
-    "parasitic_caps_json.subfield_values_valid": "250644/250644 (100.0%)",
+    "parasitic_caps_json.subfields_valid": "8679/8679 (100.0%)",
+    "parasitic_caps_json.subfield_values_valid": "250681/250681 (100.0%)",
     "cell_types_json.column_nonnull": "8679/8679 (100.0%)"
   },
   "batch_v2_full/timing_arcs": {
@@ -40,7 +40,7 @@
     "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
     "vector.one_per_group": "OK (100%)",
     "direction.valid_values": "69432/69432 (100.0%)",
-    "ids_charge.not_equal_avg": "88951/118240 (75.2%)"
+    "ids_charge.not_equal_avg": "90033/118240 (76.1%)"
   },
   "batch_v2_io/circuit_static": {
     "total_rows": 4248,
@@ -75,8 +75,45 @@
     "pin_load_json.column_nonnull": "57764/57764 (100.0%)",
     "DELAY.in_range": "57764/57764 (100.0%)",
     "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
-    "vector.one_per_group": "FAIL: 10094 groups != 1",
+    "vector.one_per_group": "OK (100%)",
     "direction.valid_values": "57764/57764 (100.0%)",
-    "ids_charge.not_equal_avg": "90781/112666 (80.6%)"
+    "ids_charge.not_equal_avg": "91683/112666 (81.4%)"
+  },
+  "batch_v2_rest/circuit_static": {
+    "total_rows": 35183,
+    "parasitic_caps_json.column_present": "OK",
+    "parasitic_caps_json.column_nonnull": "35183/35183 (100.0%)",
+    "parasitic_caps_json.gate_key_match": "35183/35183 (100.0%)",
+    "parasitic_caps_json.subfields_valid": "35183/35183 (100.0%)",
+    "parasitic_caps_json.subfield_values_valid": "908060/908060 (100.0%)",
+    "cell_types_json.column_nonnull": "35183/35183 (100.0%)"
+  },
+  "batch_v2_rest/timing_arcs": {
+    "total_rows": 568090,
+    "transistor_wave_json.column_present": "OK",
+    "transistor_wave_json.column_nonnull": "568090/568090 (100.0%)",
+    "transistor_wave_json.gate": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.ids_avg": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.ids_peak": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.vds_swing": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.ids_rise_time": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.vgs_swing": "48329270/48329270 (100.0%)",
+    "transistor_wave_json.ids_charge": "48329270/48329270 (100.0%)",
+    "supply_noise_json.column_present": "OK",
+    "supply_noise_json.column_nonnull": "568090/568090 (100.0%)",
+    "supply_noise_json.vdd_droop_mV": "568090/568090 (100.0%)",
+    "supply_noise_json.gnd_bounce_mV": "568090/568090 (100.0%)",
+    "supply_noise_json.NOTE": "ideal-supply (VDD/GND ideal DC source): droop/bounce physically 0.0, reported as valid zeros (DATA_SPEC_V2 \u00a7\u516d \u65b9\u6848D)",
+    "gate_states_json.column_present": "OK",
+    "gate_states_json.column_nonnull": "568090/568090 (100.0%)",
+    "pin_slew_json.column_present": "OK",
+    "pin_slew_json.column_nonnull": "568090/568090 (100.0%)",
+    "pin_load_json.column_present": "OK",
+    "pin_load_json.column_nonnull": "568090/568090 (100.0%)",
+    "DELAY.in_range": "568090/568090 (100.0%)",
+    "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
+    "vector.one_per_group": "OK (100%)",
+    "direction.valid_values": "568090/568090 (100.0%)",
+    "ids_charge.not_equal_avg": "92850/119536 (77.7%)"
   }
 }
