@@ -8,6 +8,10 @@ from src.graph_builder import build_static_graph, GATE_TYPES
 from src.utils import load_scaler
 import config
 
+# 模块级共享图 LRU（跨本进程所有 DelayDataset 实例；上限 GRAPH_CACHE_MAX，超限逐出最旧、磁盘回源）。
+# 背景：_prepare_static_graphs 曾把全部分区图驻留内存（43.7k 图/run），4 run 并发 OOM（2026-08-28）。
+_GRAPH_LRU = {}
+
 class DelayDataset(Dataset):
     def __init__(self, static_parquets, dynamic_parquets, circuit_ids=None, scaler=None, cache_dir="cache"):
         # 统一转换为列表
@@ -237,20 +241,29 @@ class DelayDataset(Dataset):
         return mask
 
     def _prepare_static_graphs(self):
+        # 只确保磁盘图缓存齐全（缺失的构建到磁盘），不驻留内存（LRU 在 _get_static 按需加载）
         for cid in self.dynamic_df['circuit_id'].unique():
             cache_path = os.path.join(self._graph_cache_dir, f"{cid}_graph.pt")
-            if os.path.exists(cache_path):
-                # 加载缓存
-                node_names, node_static, edge_index = torch.load(cache_path, weights_only=False)
-            else:
+            if not os.path.exists(cache_path):
                 netlist = self.static_df.loc[cid, 'gate_level_netlist']
                 ip, op = self._circuit_pins.get(str(cid), (None, None))
                 node_names, node_static, edge_index = build_static_graph(cid, netlist, ip or None, op or None)
                 torch.save((node_names, node_static, edge_index), cache_path)
-            self.graph_cache[cid] = (node_names, node_static, edge_index)
 
     def _get_static(self, cid):
-        return self.graph_cache[cid]
+        # 模块级 LRU：命中刷新；未命中磁盘加载；超限逐出最旧
+        c = _GRAPH_LRU.get(cid)
+        if c is not None:
+            _GRAPH_LRU.pop(cid)
+            _GRAPH_LRU[cid] = c
+            return c
+        cache_path = os.path.join(self._graph_cache_dir, f"{cid}_graph.pt")
+        c = torch.load(cache_path, weights_only=False)
+        _GRAPH_LRU[cid] = c
+        if len(_GRAPH_LRU) > config.GRAPH_CACHE_MAX:
+            oldest = next(iter(_GRAPH_LRU))
+            del _GRAPH_LRU[oldest]
+        return c
 
     def _get_dynamic_features(self, row, pin_loads_dict, pins=None):
         pins = pins if pins is not None else self.pins

@@ -106,6 +106,7 @@ WAVE_COVERAGE = float(os.environ.get('WAVE_COVERAGE', '1.0'))   # 行覆盖率�
 WAVE_COVERAGE_SEED = int(os.environ.get('WAVE_COVERAGE_SEED', '42'))  # 固定掩蔽种子（跨 epoch 不变）
 MIN_GROUP_SIZE = int(os.environ.get('MIN_GROUP_SIZE', '10'))   # 组大小过滤：剔除 <N 变体的组（排序无价值）
 DATA_BATCHES = os.environ.get('DATA_BATCHES', 'batch_v2_full,batch_v2_rest')  # 训练数据批次（默认 full+rest）
+GRAPH_CACHE_MAX = int(os.environ.get('GRAPH_CACHE_MAX', '6000'))  # 图 LRU 缓存上限（内存驻留图数，超限磁盘回源；防多 run 并发内存过载）
 USE_CORNER_ATTN = True         # Corner 感知注意力池化（13.6 内部最优，设为默认）
 
 # 结构特征模式（14.2.2 起：用逻辑类别+结构特征替代 638 类 cell 名嵌入）
