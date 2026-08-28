@@ -3,7 +3,7 @@
 覆盖：行数/列/schema一致性/expr与电路重叠/组大小/行公式/DELAY/I-O分布/缺失值。
 用法：python scripts/diag/_check_v3_data.py
 """
-import pandas as pd, glob, json
+import pandas as pd, glob, json, os
 
 REQ_STATIC = ['circuit_id', 'expr', 'candidate_idx', 'transistor_count', 'gate_level_netlist',
               'cell_types_json', 'input_pins_json', 'output_pins_json', 'pin_loads_json',
@@ -70,6 +70,31 @@ def main():
     print(f"  输入分桶: 1~2={((n_in<=2).mean()*100):.1f}% 3~4={(((n_in>=3)&(n_in<=4)).mean()*100):.1f}% "
           f"5~8={(((n_in>=5)&(n_in<=8)).mean()*100):.1f}% 9~16={((n_in>=9).mean()*100):.1f}%  "
           f"多输出={((n_out>=2).mean()*100):.1f}% M>=4={(n_out>=4).sum()}")
+
+    # Rust benchmark 形状覆盖视图（46 个 .tl vs 当前数据）
+    print("\n=== Rust benchmark 形状覆盖（46 个 .tl vs 当前数据）===")
+    rust = {}
+    for f in glob.glob('NetlistOpt/testbench/tl_cells/**/*.tl', recursive=True):
+        t = open(f, encoding='utf-8', errors='ignore').read()
+        try:
+            ni = len([l for l in t.splitlines() if l.startswith('INORDER')][0]
+                     .replace('INORDER =', '').replace(';', '').split())
+            no = len([l for l in t.splitlines() if l.startswith('OUTORDER')][0]
+                     .replace('OUTORDER =', '').replace(';', '').split())
+        except Exception:
+            continue
+        rust.setdefault((ni, no), []).append(os.path.basename(f).replace('.tl', ''))
+    data_shapes = set()
+    for batch in ['batch_v2_full', 'batch_v2_io', 'batch_v2_rest']:
+        for f in glob.glob(f'data/{batch}/circuit_static*.parquet'):
+            s = pd.read_parquet(f, columns=['input_pins_json', 'output_pins_json'])
+            for _, r in s.iterrows():
+                data_shapes.add((len(lj(r['input_pins_json']) or []),
+                                 len(lj(r['output_pins_json']) or [])))
+    print(f"  Rust 形状数: {len(rust)}")
+    for (ni, no), names in sorted(rust.items(), key=lambda x: (-x[0][1], -x[0][0])):
+        cov = (ni, no) in data_shapes
+        print(f"  {ni}入{no}出  {len(names)}个({names[0]})  {'OK' if cov else 'MISS'}")
 
     # 组大小过滤视图（训练默认 MIN_GROUP_SIZE=10）
     print("\n=== 组大小过滤（训练默认剔除 <10 变体组）===")
