@@ -172,12 +172,29 @@ esac
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
-# 可选：复用旧 run 的图缓存（16.3.0；CACHE_SEED=<旧缓存目录> 时 clone 后复制，跳过重建）
-# 例: CACHE_SEED=$HOME/project-107-v3wave42/cachev3wave42 bash setup_exp.sh v2wave42
+# 可选：复用旧 run 的图缓存（16.3.1 修正：缓存键含数据文件 mtime，必须连数据一起保 mtime 复制）
+# CACHE_SEED=<旧 run 目录>（如 ~/project-107-v3wave42）：clone 后复制 V2 数据(cp -a 保 mtime) + cachev3* 缓存，跳过重建
+# 例: CACHE_SEED=$HOME/project-107-v3wave42 bash setup_exp.sh v2wave42
 if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
-  mkdir -p "$D/cache107$V"
-  cp -r "$CACHE_SEED/." "$D/cache107$V/"
-  echo "seeded cache: $CACHE_SEED -> $D/cache107$V"
+  # 1) V2 数据（保 mtime，保证新 run 的 data_hash 与旧缓存键一致）；旧 run 无 data/ 时退化为主仓库
+  SEED_DATA="$CACHE_SEED/data"
+  [ -d "$SEED_DATA/batch_v2_rest" ] || SEED_DATA="$HOME/-project/data"
+  if [ -d "$SEED_DATA/batch_v2_rest" ]; then
+    for b in batch_v2_full batch_v2_rest batch_v2_io; do
+      if [ -d "$SEED_DATA/$b" ]; then
+        mkdir -p "$D/data/$b"
+        cp -a "$SEED_DATA/$b/." "$D/data/$b/"
+      fi
+    done
+    echo "seeded V2 data (mtime preserved) from $SEED_DATA"
+  fi
+  # 2) 旧缓存目录（cachev3*，glob 匹配）
+  OLD_CACHE=$(ls -d "$CACHE_SEED"/cachev3* 2>/dev/null | head -1)
+  if [ -n "$OLD_CACHE" ] && [ -d "$OLD_CACHE" ]; then
+    mkdir -p "$D/cache107$V"
+    cp -a "$OLD_CACHE/." "$D/cache107$V/"
+    echo "seeded cache: $OLD_CACHE -> $D/cache107$V"
+  fi
 fi
 
 ulimit -n 8192
