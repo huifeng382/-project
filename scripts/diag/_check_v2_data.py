@@ -71,6 +71,13 @@ def discover_pairs(extra_dirs):
         sp, dp = os.path.join(d, 'circuit_static.parquet'), os.path.join(d, 'timing_arcs.parquet')
         if os.path.exists(sp) and os.path.exists(dp):
             pairs.append((d, [sp], [dp]))
+            continue
+        # 大批次按 part 文件交付（GitHub 100MB 单文件上限）：显式目录也支持
+        # circuit_static_part*.parquet / timing_arcs_part*.parquet（与自动发现一致）。
+        sparts = sorted(glob.glob(os.path.join(d, 'circuit_static_part*.parquet')))
+        dparts = sorted(glob.glob(os.path.join(d, 'timing_arcs_part*.parquet')))
+        if sparts and dparts:
+            pairs.append((d, sparts, dparts))
         else:
             print(f"[WARN] 指定目录缺文件: {d}")
     if not pairs:
