@@ -1,5 +1,5 @@
 #!/bin/bash
-# 用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2|struct*|v2wave42|v2nowave42|...>
+# 用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2|struct*|v2wave42|v2nowave42|v2ia42|v2cov2542|...>
 # 基于 10.7 分支起一个 per_gate 实验，noWave + 独立缓存，后台训练。
 set -e
 V="$1"
@@ -142,6 +142,17 @@ case "$V" in
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2nowave}/" config.py ;;
 esac
 
+# V3 波形消融变体（16.3.0）：v2ia<seed> 只留 ids_avg 单字段；v2cov25<seed> 25% 行覆盖率（覆盖率种子固定 42）
+# 用法：v2ia42 / v2cov2542 等，后缀即 TRAIN_SEED；wave 默认开
+case "$V" in
+  v2ia[0-9]*)
+    export WAVE_FIELDS='ids_avg'
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2ia}/" config.py ;;
+  v2cov25[0-9]*)
+    export WAVE_COVERAGE='0.25'
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2cov25}/" config.py ;;
+esac
+
 # 蒸馏变体（15.2，docs/DISTILL_PLAN.md）：v2kd<teacher><mode><seed>
 #   teacher: 123=wave123 | ENS=wave42+123 平均；mode: reg(纯软标签) | rr(reg+rank)
 # 例: v2kd123reg42 / v2kd123rr123 / v2kdENSrr42
@@ -160,6 +171,14 @@ case "$V" in
 esac
 
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
+
+# 可选：复用旧 run 的图缓存（16.3.0；CACHE_SEED=<旧缓存目录> 时 clone 后复制，跳过重建）
+# 例: CACHE_SEED=$HOME/project-107-v3wave42/cachev3wave42 bash setup_exp.sh v2wave42
+if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
+  mkdir -p "$D/cache107$V"
+  cp -r "$CACHE_SEED/." "$D/cache107$V/"
+  echo "seeded cache: $CACHE_SEED -> $D/cache107$V"
+fi
 
 ulimit -n 8192
 # 蒸馏变体默认 teacher 预测目录（可被 KD_TEACHER_DIR 环境变量覆盖）
