@@ -13,7 +13,8 @@ import config
 _GRAPH_LRU = {}
 
 class DelayDataset(Dataset):
-    def __init__(self, static_parquets, dynamic_parquets, circuit_ids=None, scaler=None, cache_dir="cache"):
+    def __init__(self, static_parquets, dynamic_parquets, circuit_ids=None, scaler=None, cache_dir="cache",
+                 dynamic_df=None, prefiltered=False):
         # 统一转换为列表
         if isinstance(static_parquets, str):
             static_parquets = [static_parquets]
@@ -97,21 +98,32 @@ class DelayDataset(Dataset):
             static_dfs.append(df)
         self.static_df = pd.concat(static_dfs).drop_duplicates('circuit_id').set_index('circuit_id')
 
-        # 读取并合并动态数据
-        dynamic_dfs = []
-        for p in dynamic_parquets:
-            df = pd.read_parquet(p)
-            df = normalize_dynamic(df)
-            dynamic_dfs.append(df)
-        self.dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
+        # 动态数据：传入已过滤 df 则直接使用（16.4.0 内存修复：避免全量重读 parquet，
+        # transistor_wave_json 列实测占动态 df ~93% 内存，此前每 run 持有 5 份 + 3 次重读堆残留 ≈ 41GB）
+        # prefiltered=True 时调用方已按 circuit_ids 过滤并完成清洗，直接引用不再复制
+        if dynamic_df is not None:
+            self.dynamic_df = dynamic_df
+            if not prefiltered:
+                if circuit_ids is not None:
+                    self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
+                if 'DELAY' in self.dynamic_df.columns:
+                    self.dynamic_df = self.dynamic_df[self.dynamic_df['DELAY'] > 1e-12].reset_index(drop=True)
+        else:
+            # 读取并合并动态数据
+            dynamic_dfs = []
+            for p in dynamic_parquets:
+                df = pd.read_parquet(p)
+                df = normalize_dynamic(df)
+                dynamic_dfs.append(df)
+            self.dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
-        # 筛选电路（如果指定）
-        if circuit_ids is not None:
-            self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
+            # 筛选电路（如果指定）
+            if circuit_ids is not None:
+                self.dynamic_df = self.dynamic_df[self.dynamic_df['circuit_id'].isin(circuit_ids)].reset_index(drop=True)
 
-        # 剔除 DELAY 为 NaN 的样本
-        if 'DELAY' in self.dynamic_df.columns:
-            self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
+            # 剔除 DELAY 为 NaN 的样本
+            if 'DELAY' in self.dynamic_df.columns:
+                self.dynamic_df = self.dynamic_df.dropna(subset=['DELAY']).reset_index(drop=True)
 
         # 固定 wave 行掩蔽（WAVE_COVERAGE<1 时模拟部分仿真；跨 epoch 不变）
         self._wave_mask = None

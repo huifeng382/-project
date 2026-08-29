@@ -301,6 +301,11 @@ def main():
     dynamic_df = dynamic_df[(dynamic_df['DELAY'] > 1e-12) & (dynamic_df['DELAY'] < 1e-8)]
     print(f"清洗后样本数: {len(dynamic_df)}, 电路数: {dynamic_df['circuit_id'].nunique()}")
 
+    # 16.4.0 内存修复：wave OFF 时 transistor_wave_json 列占动态 df ~93% 内存（实测 7.2GB/副本），直接剔除
+    if not USE_TRANSISTOR_WAVE and 'transistor_wave_json' in dynamic_df.columns:
+        dynamic_df = dynamic_df.drop(columns=['transistor_wave_json'])
+        print("wave OFF: 剔除 transistor_wave_json 列（省 ~7GB/副本）")
+
     # ---------- 组大小过滤：剔除 < MIN_GROUP_SIZE 变体的组（单变体/小组无排序价值，2026-08-28）----------
     if MIN_GROUP_SIZE > 1 and 'expr' in dynamic_df.columns:
         gsize = dynamic_df.groupby('expr')['circuit_id'].nunique()
@@ -461,9 +466,28 @@ def main():
         print(f"[V2] STRUCT_MODE -> {V2_STRUCT_MODE}")
 
     # ---------- 创建数据集 ----------
-    train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR)
-    val_dataset = DelayDataset(static_parquets, dynamic_parquets, val_ids, scaler, CACHE_DIR)
-    test_dataset = DelayDataset(static_parquets, dynamic_parquets, test_ids, scaler, CACHE_DIR)
+    # 16.4.0 内存修复：一次性构建 train/val/test 子集并传入（替代三个 DelayDataset 各自全量重读 parquet；
+    # wave 列 ~7GB/副本，此前每 run 持有 5 份 + 3 次重读堆残留 ≈ 41GB → 现仅持有 3 份子集 ≈ 7.6GB）
+    val_df = dynamic_df[dynamic_df['circuit_id'].isin(val_ids)]
+    test_df = dynamic_df[dynamic_df['circuit_id'].isin(test_ids)]
+    # train_dynamic（scaler 拟合用）即 train 子集，直接复用，不再另建
+    train_df = train_dynamic
+    del dynamic_df
+    import gc as _gc
+    _gc.collect()
+    try:
+        import ctypes
+        ctypes.CDLL(None).malloc_trim(0)   # glibc 归还空闲堆页给 OS，降稳态 RSS（Linux）
+    except Exception:
+        pass
+    train_dataset = DelayDataset(static_parquets, dynamic_parquets, train_ids, scaler, CACHE_DIR,
+                                 dynamic_df=train_df, prefiltered=True)
+    val_dataset = DelayDataset(static_parquets, dynamic_parquets, val_ids, scaler, CACHE_DIR,
+                               dynamic_df=val_df, prefiltered=True)
+    test_dataset = DelayDataset(static_parquets, dynamic_parquets, test_ids, scaler, CACHE_DIR,
+                                dynamic_df=test_df, prefiltered=True)
+    del train_df, val_df, test_df
+    _gc.collect()
     print(f"Dataset: train={len(train_dataset)}, val={len(val_dataset)}, test={len(test_dataset)}")
 
     # ---------- 蒸馏：加载 teacher 预测（KD_ENABLED 时；按 dataset row_idx 对齐） ----------
