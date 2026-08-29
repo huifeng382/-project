@@ -275,7 +275,15 @@ def main():
         if not os.path.exists(p):
             raise FileNotFoundError(f"Data file not found: {p}")
 
-    dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
+    # 16.5.0 内存优化：wave OFF 时按列读取，排除 transistor_wave_json（占动态 df ~93% 内存，全量 7.76GB→0.54GB）
+    if not USE_TRANSISTOR_WAVE:
+        import pyarrow.parquet as _pq
+        dynamic_dfs = []
+        for _p in dynamic_parquets:
+            _cols = [c for c in _pq.read_schema(_p).names if c != 'transistor_wave_json']
+            dynamic_dfs.append(pd.read_parquet(_p, columns=_cols))
+    else:
+        dynamic_dfs = [pd.read_parquet(p) for p in dynamic_parquets]
     dynamic_df = pd.concat(dynamic_dfs, ignore_index=True)
 
     # ---------- 列名规范化：合并 candidate_id → circuit_id ----------
