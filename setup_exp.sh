@@ -9,8 +9,25 @@ D="$HOME/project-107-$V"
 
 if [ -z "$V" ]; then echo "用法: bash setup_exp.sh <base|rank|lib|pgd|pgs|pgs2>"; exit 1; fi
 
-rm -rf "$D"
-git clone -b "$BR" "$URL" "$D"
+# 16.8.0 RESUME 模式：目录已存在且代码完整时跳过 rm/clone（保留图缓存/掩码，增量续建）
+# 用法: RESUME=1 CACHE_SEED=<master> bash setup_exp.sh <原变体名>
+RESUME_MODE=0
+if [ "$RESUME" = "1" ] && [ -f "$D/main.py" ] && [ -f "$D/config.py" ] && [ -d "$D/src" ]; then
+  case "$D" in
+    *"$V") ;;
+    *) echo "ERROR: RESUME 变体名 $V 与目录 $D 不匹配（RESUME 必须用原变体名）"; exit 1 ;;
+  esac
+  for _p in $(pgrep -f 'main[.]py' 2>/dev/null || true); do
+    if [ "$(realpath /proc/$_p/cwd 2>/dev/null)" = "$D" ]; then
+      echo "ERROR: $D 已有训练进程在跑（pid=$_p），禁止重复启动"; exit 1
+    fi
+  done
+  echo "RESUME mode: $D 已存在，跳过 rm/clone（缓存增量续建、掩码命中保留）"
+  RESUME_MODE=1
+else
+  rm -rf "$D"
+  git clone -b "$BR" "$URL" "$D"
+fi
 cd "$D"
 
 # lib 变体：Scheme A（train_lib + SC展开LIB链），QUICK_TEST 先测速
@@ -179,29 +196,38 @@ sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 # 数据从 CACHE_SEED/data 复制（cp -a 保 mtime），否则用 ~/-project/data（统一数据源，键对齐的前提）
 # 例: CACHE_SEED=$HOME/cache107_master bash setup_exp.sh v2wave42
 if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
-  # 1) V2 数据（保 mtime，保证新 run 的 data_hash 与缓存键一致）；优先 CACHE_SEED/data，退化主仓库
-  SEED_DATA="$CACHE_SEED/data"
-  [ -d "$SEED_DATA/batch_v2_rest" ] || SEED_DATA="$HOME/-project/data"
-  if [ -d "$SEED_DATA/batch_v2_rest" ]; then
-    for b in batch_v2_full batch_v2_rest batch_v2_io; do
-      if [ -d "$SEED_DATA/$b" ]; then
-        mkdir -p "$D/data/$b"
-        cp -a "$SEED_DATA/$b/." "$D/data/$b/"
-      fi
-    done
-    echo "seeded V2 data (mtime preserved) from $SEED_DATA"
-  fi
-  # 2) 缓存目录：a) CACHE_SEED 本身即缓存目录（顶层含 graphs/）；b) 其下 cachev3*/cache107*（旧 run 目录）
-  OLD_CACHE=""
-  if [ -d "$CACHE_SEED/graphs" ]; then
-    OLD_CACHE="$CACHE_SEED"
+  # 1) V2 数据（保 mtime）：fresh 总是复制（clone 的 checkout mtime 不对，必须覆盖）；
+  #    RESUME 且目录已有数据 → 跳过（保留目录自身 mtime，避免图缓存键失效）
+  if [ "$RESUME_MODE" = "1" ] && [ -d "$D/data/batch_v2_rest" ]; then
+    echo "RESUME: 目录已有数据，跳过数据种子（保留原 mtime，缓存键不变）"
   else
-    OLD_CACHE=$(ls -d "$CACHE_SEED"/cachev3* "$CACHE_SEED"/cache107* 2>/dev/null | head -1)
+    SEED_DATA="$CACHE_SEED/data"
+    [ -d "$SEED_DATA/batch_v2_rest" ] || SEED_DATA="$HOME/-project/data"
+    if [ -d "$SEED_DATA/batch_v2_rest" ]; then
+      for b in batch_v2_full batch_v2_rest batch_v2_io; do
+        if [ -d "$SEED_DATA/$b" ]; then
+          mkdir -p "$D/data/$b"
+          cp -a "$SEED_DATA/$b/." "$D/data/$b/"
+        fi
+      done
+      echo "seeded V2 data (mtime preserved) from $SEED_DATA"
+    fi
   fi
-  if [ -n "$OLD_CACHE" ] && [ -d "$OLD_CACHE" ]; then
-    mkdir -p "$D/cache107$V"
-    cp -a "$OLD_CACHE/." "$D/cache107$V/"
-    echo "seeded cache: $OLD_CACHE -> $D/cache107$V"
+  # 2) 缓存目录：RESUME 且目录已有 graphs/ → 跳过（用自己的，增量续建）；否则复制种子
+  OLD_CACHE=""
+  if [ "$RESUME_MODE" = "1" ] && [ -d "$D/cache107$V/graphs" ]; then
+    echo "RESUME: 目录已有图缓存，跳过缓存种子（增量续建）"
+  else
+    if [ -d "$CACHE_SEED/graphs" ]; then
+      OLD_CACHE="$CACHE_SEED"
+    else
+      OLD_CACHE=$(ls -d "$CACHE_SEED"/cachev3* "$CACHE_SEED"/cache107* 2>/dev/null | head -1)
+    fi
+    if [ -n "$OLD_CACHE" ] && [ -d "$OLD_CACHE" ]; then
+      mkdir -p "$D/cache107$V"
+      cp -a "$OLD_CACHE/." "$D/cache107$V/"
+      echo "seeded cache: $OLD_CACHE -> $D/cache107$V"
+    fi
   fi
 fi
 
@@ -210,5 +236,10 @@ ulimit -n 8192
 if [[ "$V" == v2kd* ]]; then
   export KD_TEACHER_DIR="${KD_TEACHER_DIR:-$HOME/project-107-v2wave123/outputs}"
 fi
-OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
-echo "launched 107-$V  pid=$!  dir=$D"
+if [ "$RESUME_MODE" = "1" ]; then
+  # RESUME 追加日志（保留上次失败/中断的现场）
+  OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py >> "train107$V.log" 2>&1 &
+else
+  OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > "train107$V.log" 2>&1 &
+fi
+echo "launched 107-$V  pid=$!  dir=$D  (RESUME=$RESUME_MODE)"

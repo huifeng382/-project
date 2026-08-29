@@ -79,3 +79,12 @@
 
 ### 5.2 提交前自查
 - `git log --oneline -3` 看当前版本；`git status --short` 别把临时 tar 包/缓存带进提交。
+
+## 6. RESUME 续跑模式（16.8.0）的隐蔽坑
+
+- **env 变体的配置不在 config.py 里**：`v2ia`/`v2cov25` 靠 `export WAVE_FIELDS/WAVE_COVERAGE` 生效（不是 sed）——续跑若跳过变体块，env 丢失 → 配置**静默**变回全 wave。对策：RESUME 仍执行变体块（sed 幂等 + export 必须重跑），只跳过 rm/clone。
+- **数据种子会破坏缓存键**：重跑数据种子覆盖目录数据 mtime → 图缓存键变 → 已建的缓存白重建。对策：RESUME 且目录已有 `data/batch_v2_rest` → 跳过数据种子。
+- **缓存种子覆盖残留**：master 的 `.version` 覆盖目录 → 残留旧键 .pt 可能被静默使用。对策：RESUME 且目录已有 `graphs/` → 跳过缓存种子（增量续建）。
+- **重复启动同一目录**：RESUME 前检查 `/proc/*/cwd` == run 目录的 main.py，有则报错退出（防双写 checkpoint）。
+- **变体名必须与目录一致**：RESUME 传错变体名 → 配置/日志/缓存目录全错 → 启动时校验并退出。
+- **RESUME 日志用 `>>` 追加**（保留失败现场），fresh 用 `>` 截断。

@@ -71,13 +71,23 @@ def running_run_dirs():
     return dirs
 
 
-def launch(setup, variant, seed):
+def paused_run_dir(variant):
+    """目录存在（代码完整）但无进程在跑 = 暂停态，可 RESUME。"""
+    d = os.path.join(HOME, f'project-107-{variant}')
+    if not (os.path.exists(os.path.join(d, 'main.py')) and os.path.exists(os.path.join(d, 'src'))):
+        return False
+    return os.path.realpath(d) not in running_run_dirs()
+
+
+def launch(setup, variant, seed, resume=False):
     run_dir = os.path.join(HOME, f'project-107-{variant}')
     if os.path.realpath(run_dir) in running_run_dirs():
         log(f'SKIP {variant}: 目录 {run_dir} 已有进程在跑（避免误杀）')
         return None, 'skip'
     env = dict(os.environ, CACHE_SEED=seed)
-    log(f'launch {variant} (CACHE_SEED={seed})')
+    if resume:
+        env['RESUME'] = '1'
+    log(f'launch {variant} (CACHE_SEED={seed}{", RESUME=1" if resume else ""})')
     r = sh(['bash', setup, variant], env=env)
     out = (r.stdout or '') + (r.stderr or '')
     m = re.search(r'pid=(\d+)', out)
@@ -117,9 +127,13 @@ def copy_cache_to_master(builder_dir, master):
 
 
 def ensure_run(setup, variant, seed, timeout, label):
-    """启动一个 run 并等到 Start training...，失败自动重启（--retry 次）。"""
+    """启动一个 run 并等到 Start training...，失败自动 RESUME 重启（--retry 次）。
+    首次若检测到暂停态目录（有代码无进程）→ 直接 RESUME（保留半成品缓存/掩码）。"""
+    first_resume = paused_run_dir(variant)
+    if first_resume:
+        log(f'{label}: 检测到暂停态目录（无进程），首启即 RESUME')
     for attempt in range(1, args.retry + 2):
-        pid, st = launch(setup, variant, seed)
+        pid, st = launch(setup, variant, seed, resume=(first_resume or attempt > 1))
         if st == 'skip':
             return 'skipped'
         run_dir = os.path.join(HOME, f'project-107-{variant}')
@@ -127,7 +141,7 @@ def ensure_run(setup, variant, seed, timeout, label):
         if st == 'ok':
             return 'ok'
         log(f'{label} 第 {attempt} 次尝试 -> {st}' +
-            ('，将重试' if attempt <= args.retry else '，放弃'))
+            ('，将以 RESUME 模式重试' if attempt <= args.retry else '，放弃'))
     return 'failed'
 
 
