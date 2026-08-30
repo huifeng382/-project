@@ -109,3 +109,11 @@
 
 ### 7.4 附带坑：pgrep -f 自匹配
 - `pgrep -f 'serve_http'` 会匹配到执行命令的 shell 自己（命令行含该字符串）→ 误判 serve 在跑。检查类命令一律括号技巧：`pgrep -f 'serve_htt[p]'`。
+
+### 7.5 SPICE 收敛失败 → NOOP 自动重试（16.9.1 / NetlistOpt 15.5.0）
+- **现象**：ovf1 电路所有评估报 `Step size reached minimum step size bound`（Xyce 失败 exit=1）→ 整个电路被基准排除。
+- **定位**：实测三种修复（NOOP/UIC/松容差）——**NOOP（跳过 DC 工作点）和 UIC 都能跑通** → 失败点在 DC 工作点求解（all-inputs-low 状态下弱驱动节点）。
+- **修复**：NetlistOpt `simulation.rs` 失败分支加**自动 NOOP 重试一次**（把 tb 里 `.tran 1p 1n` 精确替换成 `.tran 1p 1n NOOP` 重跑）。**只兜底失败电路**，正常电路零影响（模板注释警告 NOOP 会掩盖病态拓扑/改变延迟，所以不能全局启用）。
+- **验证**：ovf1 重跑 `NOOP 重试成功` 6 次 → DONE，avg_delay 2.75e-11，CSV 干净。
+- **注意**：失败 run 会在 CSV 留下 `true_delay=NA` 行——重跑前先 `rm` 该电路的 CSV（本次已清）。
+- **同步**：NetlistOpt 是本地仓库（无远端），改完 `ssh_upload` 到服务器再 cargo 重编译。
