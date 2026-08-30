@@ -1,0 +1,137 @@
+[2026-08-30 19:16:46] 全部分片结束
+候选集数（≥4 候选）: 115   成功行=2049 失败行=131 小集=88
+候选数分布: min=4 med=12 max=41
+
+=== recall 判断标准（k=2/3 双口径，粗筛最重要指标）===
+  前k名中出现实际第1名（严格）:  k=2   29.6%   k=3   41.7%
+  前k名中出现实际前k之一（宽松）: k=2   47.8%   k=3   71.3%
+
+=== 10.3 判定指标（按候选集汇总）===
+  选择遗憾（GNN自选top1）:   9.60%   (达标线 ≤5%)   中位 4.43%
+  两阶段最终遗憾（前3→SPICE精排）:   2.02%   中位 0.52%
+  Spearman:        0.141   (次判据 ≥0.6)   中位 0.088  (n=115 集)
+
+判定(旧口径参考): recall@top-3(集合版) ❌<90%  遗憾 ❌>5%
+→ **主判据未达标：GNN 只做启发式预排序**（SPICE 全排序 + GNN 先粗排）
+
+=== 跨度>10% 子集（81/115 集，对齐 V2 hi_spread）===
+  严格(实际第1∈预测前k):  k=2   32.1%   k=3   44.4%
+  宽松(前k含实际前k之一): k=2   46.9%   k=3   71.6%
+  两阶段最终遗憾:   2.34%   选择遗憾(GNN自选):  12.40%   Spearman: 0.229 (n=81)
+
+=== 每候选集明细（按遗憾升序；#1∈前k=严格, 前k∩真前k=宽松）===
+  level0/OR2/gnn_shadow.csv                     w=  6 n=13 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.42
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 13 n=32 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.80
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  9 n=16 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.77
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 11 n=18 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.77
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  1 n=12 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.96
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 16 n= 8 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.90
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  6 n=14 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.79
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 17 n=14 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.85
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  2 n=24 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.82
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 15 n= 6 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.89
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  5 n=14 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.76
+  level2/RCONV2/gnn_shadow.csv                  w=  0 n= 5 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.70
+  level2/SEL_AND/gnn_shadow.csv                 w=  1 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.20
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w=  4 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.20
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w=  9 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.80
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w= 13 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.40
+  level3/AND4/gnn_shadow.csv                    w=  1 n= 5 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.00
+  level3/ENC4/gnn_shadow.csv                    w=  4 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.80
+  level3/OR8/gnn_shadow.csv                     w=  7 n= 5 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.20
+  level4/ALU2/gnn_shadow.csv                    w=  2 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.80
+  level4/ALU2/gnn_shadow.csv                    w=  5 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.40
+  level4/ALU2/gnn_shadow.csv                    w=  4 n= 9 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.22
+  level4/AND16/gnn_shadow.csv                   w=  1 n= 5 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.00% 2stage=  0.00% sp=0.00
+  level4/ADD4_OVF/gnn_shadow.csv                w=  9 n=10 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.10% 2stage=  0.00% sp=0.44
+  level4/ALU2/gnn_shadow.csv                    w=  1 n= 6 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   0.42% 2stage=  0.42% sp=0.09
+  level4/ADD4_OVF/gnn_shadow.csv                w=  7 n=10 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   0.52% 2stage=  0.03% sp=-0.01
+  level4/COMP4/gnn_shadow.csv                   w=  4 n= 7 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   0.54% 2stage=  0.54% sp=-0.25
+  level4/COMP4/gnn_shadow.csv                   w=  8 n=10 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   0.66% 2stage=  0.66% sp=-0.10
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w= 11 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.90% 2stage=  0.00% sp=0.40
+  level4/ALU2/gnn_shadow.csv                    w= 11 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   0.97% 2stage=  0.00% sp=0.60
+  level4/ENC8/gnn_shadow.csv                    w= 13 n= 9 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   1.13% 2stage=  1.13% sp=-0.15
+  level4/ALU2/gnn_shadow.csv                    w= 14 n= 8 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   1.54% 2stage=  1.54% sp=-0.60
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  4 n=19 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   1.55% 2stage=  1.55% sp=0.72
+  level0/OR2/gnn_shadow.csv                     w= 13 n=10 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   1.79% 2stage=  1.79% sp=0.56
+  level4/ENC8/gnn_shadow.csv                    w=  2 n=12 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   1.83% 2stage=  1.83% sp=-0.10
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w=  5 n= 4 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   1.91% 2stage=  0.60% sp=-1.00
+  level4/ALU2/gnn_shadow.csv                    w= 12 n= 6 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   2.13% 2stage=  0.52% sp=-0.09
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w=  6 n=10 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   2.21% 2stage=  2.21% sp=-0.44
+  level4/OVF/gnn_shadow.csv                     w= 12 n= 8 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   2.25% 2stage=  2.25% sp=0.02
+  level4/COMP4/gnn_shadow.csv                   w=  6 n=32 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   2.28% 2stage=  1.05% sp=-0.04
+  level3/ENC4/gnn_shadow.csv                    w= 11 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   2.30% 2stage=  2.30% sp=-0.20
+  level4/COMP4/gnn_shadow.csv                   w=  0 n= 8 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   2.31% 2stage=  2.31% sp=-0.62
+  level4/COMP4/gnn_shadow.csv                   w=  2 n=16 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   2.37% 2stage=  2.37% sp=-0.54
+  level4/ALU2/gnn_shadow.csv                    w= 15 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   2.40% 2stage=  0.00% sp=0.80
+  level4/OVF/gnn_shadow.csv                     w=  8 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   2.45% 2stage=  0.00% sp=0.40
+  level4/ENC8/gnn_shadow.csv                    w=  9 n= 4 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=   2.55% 2stage=  0.00% sp=-0.80
+  level4/ENC8/gnn_shadow.csv                    w=  3 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   2.74% 2stage=  0.00% sp=0.00
+  level4/ALU2/gnn_shadow.csv                    w= 13 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   2.88% 2stage=  0.00% sp=0.20
+  level4/OVF/gnn_shadow.csv                     w= 17 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   3.01% 2stage=  3.01% sp=-0.20
+  level4/COMP4/gnn_shadow.csv                   w= 12 n=13 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   3.17% 2stage=  3.17% sp=-0.25
+  level4/ENC8/gnn_shadow.csv                    w=  8 n=11 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   3.20% 2stage=  3.20% sp=-0.22
+  level4/ENC8/gnn_shadow.csv                    w=  0 n= 7 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   3.59% 2stage=  1.80% sp=0.07
+  level4/ADD4_OVF/gnn_shadow.csv                w=  3 n= 9 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   3.65% 2stage=  3.65% sp=-0.50
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w=  1 n= 8 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   3.70% 2stage=  1.88% sp=0.10
+  level4/COMP4/gnn_shadow.csv                   w= 15 n= 9 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   3.83% 2stage=  3.83% sp=-0.28
+  level4/ADD4_OVF/gnn_shadow.csv                w= 15 n=37 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   3.90% 2stage=  1.26% sp=-0.08
+  level4/ADD4_OVF/gnn_shadow.csv                w= 12 n=26 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   4.13% 2stage=  0.02% sp=-0.15
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  0 n=34 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=   4.43% 2stage=  1.27% sp=0.55
+  level4/ADD4_OVF/gnn_shadow.csv                w=  5 n=17 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   4.75% 2stage=  3.72% sp=0.10
+  level4/ENC8/gnn_shadow.csv                    w= 17 n= 4 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   4.83% 2stage=  0.01% sp=-0.80
+  level3/AND4/gnn_shadow.csv                    w=  0 n=16 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   4.87% 2stage=  1.97% sp=-0.28
+  level4/COMP4/gnn_shadow.csv                   w= 16 n=15 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   4.97% 2stage=  2.70% sp=-0.08
+  level4/COMP4/gnn_shadow.csv                   w= 11 n= 9 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   4.97% 2stage=  3.24% sp=-0.82
+  level4/COMP4/gnn_shadow.csv                   w= 14 n=12 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   5.01% 2stage=  0.00% sp=0.33
+  level4/ADD4_OVF/gnn_shadow.csv                w= 11 n=20 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   5.17% 2stage=  4.56% sp=-0.34
+  level4/COMP4/gnn_shadow.csv                   w=  9 n=14 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   5.79% 2stage=  3.29% sp=-0.09
+  level4/COMP4/gnn_shadow.csv                   w= 10 n=12 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   6.00% 2stage=  0.39% sp=0.01
+  level2/SHARE2/gnn_shadow.csv                  w=  0 n= 6 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   6.07% 2stage=  0.87% sp=0.43
+  level4/COMP4/gnn_shadow.csv                   w=  1 n=40 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   6.19% 2stage=  6.19% sp=0.05
+  level4/COMP4/gnn_shadow.csv                   w= 13 n=17 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   6.26% 2stage=  2.48% sp=-0.13
+  level4/ADD4_OVF/gnn_shadow.csv                w=  8 n=41 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   6.27% 2stage=  3.23% sp=-0.02
+  level4/ADD4_OVF/gnn_shadow.csv                w=  4 n=15 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   6.52% 2stage=  2.91% sp=0.48
+  level4/ADD4_OVF/gnn_shadow.csv                w=  6 n=15 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   7.03% 2stage=  1.62% sp=-0.08
+  level4/ENC8/gnn_shadow.csv                    w= 16 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=   8.69% 2stage=  0.00% sp=-0.20
+  level4/COMP4/gnn_shadow.csv                   w=  5 n=19 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   8.78% 2stage=  3.48% sp=-0.43
+  level4/ADD4_OVF/gnn_shadow.csv                w=  2 n=17 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=   8.91% 2stage=  0.57% sp=0.29
+  level0/OR2/gnn_shadow.csv                     w=  0 n=33 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   8.97% 2stage=  8.97% sp=0.09
+  level0/OR2/gnn_shadow.csv                     w= 17 n=24 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=   9.74% 2stage=  0.00% sp=0.61
+  level4/COMP4/gnn_shadow.csv                   w=  7 n=23 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=   9.78% 2stage=  3.92% sp=0.02
+  level4/ADD4_OVF/gnn_shadow.csv                w=  0 n=14 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  10.18% 2stage=  4.50% sp=0.15
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 10 n=16 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  10.43% 2stage=  3.73% sp=0.55
+  level4/COMP4/gnn_shadow.csv                   w= 17 n= 4 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  11.06% 2stage=  0.00% sp=-0.40
+  level4/ADD4_OVF/gnn_shadow.csv                w= 17 n=37 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  11.51% 2stage=  5.26% sp=-0.12
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w= 10 n= 4 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  11.71% 2stage=  0.00% sp=0.00
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  8 n=32 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  12.02% 2stage=  0.00% sp=0.74
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 12 n=18 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=  12.02% 2stage=  0.00% sp=0.64
+  level2/DEPTH_MIX/gnn_shadow.csv               w= 14 n=14 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  12.02% 2stage=  0.00% sp=0.71
+  level4/ADD4_OVF/gnn_shadow.csv                w= 13 n=28 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  12.67% 2stage=  4.51% sp=-0.64
+  level4/ALU2/gnn_shadow.csv                    w=  6 n=10 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  13.13% 2stage=  6.00% sp=-0.27
+  level4/ENC8/gnn_shadow.csv                    w=  4 n= 6 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  13.58% 2stage= 11.81% sp=-0.66
+  level2/RCONV1/gnn_shadow.csv                  w=  2 n= 5 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=  15.20% 2stage= 15.20% sp=-0.20
+  level3/ALU_SLICE_SMALL/gnn_shadow.csv         w= 12 n= 8 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=  15.64% 2stage=  0.00% sp=0.17
+  level4/ADD4_OVF/gnn_shadow.csv                w= 10 n=26 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  15.71% 2stage=  0.36% sp=-0.13
+  level0/OR2/gnn_shadow.csv                     w=  3 n=24 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  15.97% 2stage=  9.49% sp=0.25
+  level4/ADD4_OVF/gnn_shadow.csv                w= 14 n=32 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  17.35% 2stage=  5.77% sp=-0.13
+  level0/OR2/gnn_shadow.csv                     w=  7 n=14 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  18.21% 2stage=  0.00% sp=0.01
+  level0/OR2/gnn_shadow.csv                     w=  9 n=14 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  18.21% 2stage=  0.00% sp=0.01
+  level0/OR2/gnn_shadow.csv                     w= 11 n=22 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  18.21% 2stage=  0.00% sp=-0.02
+  level0/OR2/gnn_shadow.csv                     w= 15 n=22 #1∈前2=n 前2∩真=Y #1∈前3=n 前3∩真=Y regret=  18.21% 2stage=  0.00% sp=0.35
+  level0/OR2/gnn_shadow.csv                     w= 16 n=18 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  18.21% 2stage=  3.09% sp=0.16
+  level0/OR2/gnn_shadow.csv                     w=  1 n=24 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  18.22% 2stage=  0.00% sp=0.58
+  level0/AND2/gnn_shadow.csv                    w=  0 n=12 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  19.05% 2stage=  0.00% sp=0.21
+  level0/HA_CARRY/gnn_shadow.csv                w=  0 n=12 #1∈前2=Y 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  19.05% 2stage=  0.00% sp=0.21
+  level4/COMP4/gnn_shadow.csv                   w=  3 n=17 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  20.05% 2stage=  5.86% sp=0.03
+  level0/INV1/gnn_shadow.csv                    w=  0 n=13 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  20.14% 2stage= 20.14% sp=-0.16
+  level4/ADD4_OVF/gnn_shadow.csv                w= 16 n=12 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  21.29% 2stage=  0.56% sp=0.22
+  level0/OR2/gnn_shadow.csv                     w=  8 n=13 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  21.41% 2stage= 15.05% sp=0.09
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  3 n=24 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  24.19% 2stage=  0.00% sp=0.74
+  level2/DEPTH_MIX/gnn_shadow.csv               w=  7 n=21 #1∈前2=n 前2∩真=Y #1∈前3=Y 前3∩真=Y regret=  42.93% 2stage=  0.00% sp=0.76
+  level0/OR2/gnn_shadow.csv                     w=  4 n=16 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret=  44.30% 2stage=  5.67% sp=0.46
+  level0/OR2/gnn_shadow.csv                     w= 10 n=18 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  44.30% 2stage=  5.67% sp=0.43
+  level0/OR2/gnn_shadow.csv                     w= 14 n= 8 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=  44.30% 2stage=  0.00% sp=-0.10
+  level0/OR2/gnn_shadow.csv                     w=  5 n=16 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=n regret=  44.57% 2stage=  5.85% sp=0.47
+  level0/OR2/gnn_shadow.csv                     w= 12 n= 8 #1∈前2=n 前2∩真=n #1∈前3=Y 前3∩真=Y regret=  44.57% 2stage=  0.00% sp=-0.10
+  level0/OR2/gnn_shadow.csv                     w=  2 n=11 #1∈前2=n 前2∩真=n #1∈前3=n 前3∩真=Y regret= 155.78% 2stage=  3.09% sp=0.32
