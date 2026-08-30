@@ -88,3 +88,24 @@
 - **重复启动同一目录**：RESUME 前检查 `/proc/*/cwd` == run 目录的 main.py，有则报错退出（防双写 checkpoint）。
 - **变体名必须与目录一致**：RESUME 传错变体名 → 配置/日志/缓存目录全错 → 启动时校验并退出。
 - **RESUME 日志用 `>>` 追加**（保留失败现场），fresh 用 `>` 截断。
+
+## 7. Rust shadow 基准的两坑（16.9.0，2026-08-30 实测）
+
+### 7.1 串行 + Xyce 单核 → 必须并行分片
+- **现象**：直接 `cargo test --release --test tl_opt_shadow_batch -- --nocapture --ignored` 跑 46 电路，4.7 小时只完成 41 个；`Xyce` 进程只占 1 核（87.5% CPU），**24 核机器只用 1 核**。
+- **原因**：批次是串行 for 循环；每次候选评估调一次 Xyce（SPICE 瞬态仿真，单核）。
+- **正确做法**：并行分片——`TL_ONLY=level0..3` 各一个进程 + `TL_ONLY=<电路名>` 把最慢的 level4 按电路逐进程（8 个大电路 8 核并行），整批从数小时降到 ~1-1.5 小时（墙钟 = 最慢单个电路）。
+- **标准启动**：`bash ~/-project/scripts/diag/run_shadow_batch.sh`（内置分片 + 清理 + 自动分析）。
+
+### 7.2 gnn_shadow.csv 是 append 模式 → 旧 run 行混入
+- **现象**：分析时总行数 2497，但本次 run 只有 1379 次评估 → **~1100 行是 8/27 旧 run（旧模型）留下的** → 直接分析结果必错。
+- **原因**：`ShadowGnnTlEvaluator` 用 `append(true)` 打开 `temp_sim_test/tl_opt_batch/levelN/STEM/gnn_shadow.csv`，且路径固定跨 run 复用。
+- **正确做法**：跑前必须 `rm -rf temp_sim_test/tl_opt_batch` 整体清一次；**只能在分片启动前清一次**（每个分片各清会互相删掉对方进度）。`run_shadow_batch.sh` 已内置。
+
+### 7.3 附带坑：cargo 重编译会换二进制哈希
+- **现象**：轮询 `pgrep -f 'tl_opt_shadow_batch-a[8]aae80d'` 匹配 0 个 → 自动收尾提前触发，分析跑了半成品数据。
+- **原因**：分片启动时 cargo 重编译，二进制从 `-a8aae80d` 变成 `-744aba4a`——锚定哈希的模式失效。
+- **正确做法**：轮询用稳定的 cargo 进程模式：`pgrep -f 'car[g]o test --release --test tl_opt_shadow_batch'`（括号技巧防自匹配）。
+
+### 7.4 附带坑：pgrep -f 自匹配
+- `pgrep -f 'serve_http'` 会匹配到执行命令的 shell 自己（命令行含该字符串）→ 误判 serve 在跑。检查类命令一律括号技巧：`pgrep -f 'serve_htt[p]'`。
