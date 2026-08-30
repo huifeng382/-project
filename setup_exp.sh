@@ -160,11 +160,16 @@ case "$V" in
 esac
 
 # V3 波形消融变体（16.3.0）：v2ia<seed> 只留 ids_avg 单字段；v2cov25<seed> 25% 行覆盖率（覆盖率种子固定 42）
-# 用法：v2ia42 / v2cov2542 等，后缀即 TRAIN_SEED；wave 默认开
+# v2iaa<seed>（16.10.0）：ids_avg 单字段 + 拟合回归近似（零仿真）
+# 用法：v2ia42 / v2cov2542 / v2iaa42 等，后缀即 TRAIN_SEED；wave 默认开
 case "$V" in
   v2ia[0-9]*)
     export WAVE_FIELDS='ids_avg'
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2ia}/" config.py ;;
+  v2iaa[0-9]*)
+    export WAVE_FIELDS='ids_avg'
+    export USE_IDS_AVG_APPROX=1
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2iaa}/" config.py ;;
   v2cov25[0-9]*)
     export WAVE_COVERAGE='0.25'
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2cov25}/" config.py ;;

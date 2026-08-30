@@ -483,39 +483,70 @@ class DelayDataset(Dataset):
         if config.USE_TRANSISTOR_WAVE:
             tw_dim = (3 if config.WAVE_AGG_RICH else 1) * len(config.WAVE_FIELDS)
             tw_feat = torch.zeros(num_nodes, tw_dim)
-            try:
-                wave_ok = True
-                if self._wave_mask is not None:
-                    key = (str(row.get('circuit_id')), str(row.get('switching_pin')), str(row.get('direction')))
-                    wave_ok = bool(self._wave_mask.get(key, False))
-                if wave_ok:
-                    tw = row.get('transistor_wave_json')
-                    tw = json.loads(tw) if isinstance(tw, str) else tw
-                    gate_agg = {}
-                    if isinstance(tw, dict):
-                        for _, td in tw.items():
-                            if not isinstance(td, dict): continue
-                            g = str(td.get('gate', '')).lower()
-                            if not g: continue
-                            if g not in gate_agg:
-                                gate_agg[g] = {f: [] for f in config.WAVE_FIELDS}
-                            for f in config.WAVE_FIELDS:
-                                v = td.get(f)
-                                if v is not None: gate_agg[g][f].append(float(v))
-                    import numpy as np
-                    for i, n in enumerate(node_names):
-                        gkey = str(n).lower()
-                        if gkey in gate_agg:
-                            for fi, f in enumerate(config.WAVE_FIELDS):
-                                vals = gate_agg[gkey][f]
-                                if not vals: continue
-                                arr = np.array(vals)
-                                tw_feat[i, fi] = arr.mean()
-                                if config.WAVE_AGG_RICH:
-                                    tw_feat[i, len(config.WAVE_FIELDS)+fi] = arr.max()
-                                    tw_feat[i, 2*len(config.WAVE_FIELDS)+fi] = arr.std()
-            except Exception:
-                pass
+            if config.USE_IDS_AVG_APPROX and 'ids_avg' in config.WAVE_FIELDS:
+                # 16.10.0: 近似 ids_avg（拟合回归，零仿真；Rust 端可算）
+                # 系数来自 scripts/diag/_eval_idsavg_approx.py（full 样本回归 R^2=0.655）
+                _m = __import__('math')
+                try:
+                    _slew_s = float(row.get('slew_s', 0) or 0)
+                    _load_f = float(row.get('output_load_f', 0) or 0)
+                except Exception:
+                    _slew_s, _load_f = 0.0, 0.0
+                try:
+                    _cs = str(row.get('corner', 's05p0_l10p0')).split('_')
+                    _cslew = float(_cs[0][1:].replace('p', '.'))
+                    _cload = float(_cs[1][1:].replace('p', '.'))
+                except Exception:
+                    _cslew, _cload = 5.0, 10.0
+                _slew_ps = _slew_s * 1e12 if _slew_s > 0 else _cslew
+                _load_fF = _load_f * 1e15 if _load_f > 0 else _cload
+                f_slew = _m.log1p(_slew_ps)
+                f_load = _m.log1p(_load_fF)
+                f_cslew = _m.log1p(_cslew)
+                f_cload = _m.log1p(_cload)
+                C = config.IDS_AVG_APPROX_COEF
+                for i in range(num_nodes):
+                    f_drive = _m.log1p(float(node_static[i, 3]))
+                    f_par = _m.log1p(float(node_static[i, 4]))
+                    f_fan = float(node_static[i, 1])   # 已 log1p(fanout)
+                    f_h = float(node_static[i, 6])     # 已 log1p(电努力)
+                    lg = (C[0] * f_slew + C[1] * f_load + C[2] * f_drive + C[3] * f_par
+                          + C[4] * f_fan + C[5] * f_h + C[6] * f_cslew + C[7] * f_cload + C[8])
+                    tw_feat[i, 0] = _m.expm1(lg)
+            else:
+                try:
+                    wave_ok = True
+                    if self._wave_mask is not None:
+                        key = (str(row.get('circuit_id')), str(row.get('switching_pin')), str(row.get('direction')))
+                        wave_ok = bool(self._wave_mask.get(key, False))
+                    if wave_ok:
+                        tw = row.get('transistor_wave_json')
+                        tw = json.loads(tw) if isinstance(tw, str) else tw
+                        gate_agg = {}
+                        if isinstance(tw, dict):
+                            for _, td in tw.items():
+                                if not isinstance(td, dict): continue
+                                g = str(td.get('gate', '')).lower()
+                                if not g: continue
+                                if g not in gate_agg:
+                                    gate_agg[g] = {f: [] for f in config.WAVE_FIELDS}
+                                for f in config.WAVE_FIELDS:
+                                    v = td.get(f)
+                                    if v is not None: gate_agg[g][f].append(float(v))
+                        import numpy as np
+                        for i, n in enumerate(node_names):
+                            gkey = str(n).lower()
+                            if gkey in gate_agg:
+                                for fi, f in enumerate(config.WAVE_FIELDS):
+                                    vals = gate_agg[gkey][f]
+                                    if not vals: continue
+                                    arr = np.array(vals)
+                                    tw_feat[i, fi] = arr.mean()
+                                    if config.WAVE_AGG_RICH:
+                                        tw_feat[i, len(config.WAVE_FIELDS)+fi] = arr.max()
+                                        tw_feat[i, 2*len(config.WAVE_FIELDS)+fi] = arr.std()
+                except Exception:
+                    pass
             extra_feats.append(tw_feat)
         # Supply noise: vdd_droop_mV / gnd_bounce_mV 广播到所有节点 -> 2 特征
         if config.USE_SUPPLY_NOISE:

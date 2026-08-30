@@ -1,4 +1,4 @@
-﻿"""① ids_avg 近似公式评估（16.9.4）
+"""① ids_avg 近似公式评估（16.9.4）
 目标：判断「便宜量能否近似 ids_avg」——决定值不值得训一版近似特征模型。
 - 回归 R^2（log-log）：slew/load/drive/parasitic/fanout/h 能解释 ids_avg 多少方差 = 任何公式的天花板
 - 物理公式（C_L·ΔV/T_sw）相关性：候选公式的实际表现
@@ -148,6 +148,16 @@ def main():
     print("\n判定参考：")
     print(f"  回归 R^2 {r2_reg:.2f}: {'>=0.5 → 便宜量解释力强，近似公式值得做' if r2_reg >= 0.5 else '<0.5 → 便宜量解释力有限，近似收益存疑'}")
     print(f"  物理公式 R^2 {r2_f:.2f}: {'>=0.3 → 候选公式可用' if r2_f >= 0.3 else '<0.3 → 公式太粗糙，需拟合更复杂的映射'}")
+
+    # ---- 4) 输出拟合系数（供 data_loader USE_IDS_AVG_APPROX=1 使用）----
+    print("\n=== 拟合系数（log-log 线性，特征顺序同特征表）===")
+    feat_names = ['log1p(slew_p)', 'log1p(load_f)', 'log1p(drive)', 'log1p(parasitic)',
+                  'log1p(fanout)', 'log1p(h)', 'log1p(corner_slew)', 'log1p(corner_load)']
+    for i, n in enumerate(feat_names):
+        print(f"  {n}: {coef[i]:+.6f}")
+    print(f"  intercept: {coef[-1]:+.6f}")
+    print("COEFS_JSON=" + __import__('json').dumps({'coef': [round(float(c), 6) for c in coef],
+                                                     'feat_names': feat_names}))
 
 
 if __name__ == '__main__':
