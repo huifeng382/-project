@@ -117,3 +117,9 @@
 - **验证**：ovf1 重跑 `NOOP 重试成功` 6 次 → DONE，avg_delay 2.75e-11，CSV 干净。
 - **注意**：失败 run 会在 CSV 留下 `true_delay=NA` 行——重跑前先 `rm` 该电路的 CSV（本次已清）。
 - **同步**：NetlistOpt 是本地仓库（无远端），改完 `ssh_upload` 到服务器再 cargo 重编译。
+
+### 7.6 Xyce 延迟缓存（16.9.2 / NetlistOpt 15.6.0）
+- **动机**：Xyce 仿真确定性（同 deck = 同延迟），但每次模型验证都全量重跑（~3.5-4h/大电路）——SPICE 真值与模型无关，纯浪费。
+- **实现**：`simulation.rs` 仿真入口按 **deck 内容哈希**（FNV-1a 64：tb 文件 + 其 `.include` 引用的 DUT/模型文件）查存延迟到 `temp_sim_cache/<hash>.txt`；命中跳过 Xyce，未命中跑完写入。`XYCE_CACHE=0` 可关闭（基准纯度测试）。
+- **要点**：① 必须哈希 tb + `.include` 的**内容**（只哈希 tb 会漏 DUT/模型变化）；② NOOP 重试的延迟存**原键**（未来命中直接复用等价结果）；③ 缓存键不含 Xyce 版本——升级 Xyce 后如结果可疑，删缓存或 `XYCE_CACHE=0`。
+- **效果**：第一个模型验证建缓存后，后续模型（ia42/wave42/多 seed 集成）全部命中 → 几小时变几分钟。
