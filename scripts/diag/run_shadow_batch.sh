@@ -37,7 +37,8 @@ for l in 0 1 2 3; do
     > ~/shadow_lvl$l.log 2>&1 &
 done
 for c in $(ls testbench/tl_cells/level4/*.tl | xargs -n1 basename | sed 's/\.tl$//'); do
-  TL_ONLY=$c GNN_SHADOW=1 GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1 \
+  # 16.11.6: level4/ 前缀精确匹配（防 OVF 误带 ADD4_OVF/ovf1 → 并发写同 CSV 损坏）
+  TL_ONLY=level4/$c GNN_SHADOW=1 GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1 \
     nohup cargo test --release --test tl_opt_shadow_batch -- --nocapture --ignored \
     > ~/shadow_lvl4_$c.log 2>&1 &
 done

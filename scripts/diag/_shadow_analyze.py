@@ -19,13 +19,18 @@ def parse_row(line):
     m = CSV_RE.search(line)
     if not m:
         return None
-    return {
-        "eval": int(m.group(1)),
-        "iter": int(m.group(2)),
-        "window": int(m.group(3)),
-        "gnn": None if m.group(4) == "nan" else float(m.group(4)),
-        "true": None if m.group(5) == "NA" else float(m.group(5)),
-    }
+    try:
+        g5 = m.group(5)
+        g4 = m.group(4)
+        return {
+            "eval": int(m.group(1)),
+            "iter": int(m.group(2)),
+            "window": int(m.group(3)),
+            "gnn": None if g4 == "nan" else float(g4),
+            "true": None if g5 == "NA" else float(g5),
+        }
+    except (ValueError, TypeError):
+        return None   # 16.11.6: 损坏行（并发写 CSV 交错）跳过，不崩溃
 
 def per_window_metrics(rows):
     """rows: 该候选集的全部候选（成功行）。返回 (recall@3, regret, spearman) 或 None。"""

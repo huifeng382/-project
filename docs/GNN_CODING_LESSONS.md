@@ -112,6 +112,12 @@
 - **括号技巧的盲区（16.9.6 血泪）**：括号只防「字面量本身」，**同一命令里若别处含该字符串原样**（比如重启循环里的 `cargo test` 文本 + `pkill -f 'car[g]o test'`），pkill 仍会匹配到包装 shell → 连接中断、命令执行到一半死掉。**同一命令里禁止「pkill 某模式 + 命令文本里含该模式原样」**；要杀进程就单独一条命令跑。
 - **同哈希二进制的坑（16.9.6）**：并行跑多遍（全精度+粗仿真）时测试二进制**哈希相同**（哈希是构建配置，不随源码变）——`pkill -f '<binary>-<hash>'` 会把**所有遍的分片一起杀掉**。杀某一遍要按**进程组的 env 特征**（如 cwd/环境变量）区分，或用 PID。
 
+### 7.4.1 TL_ONLY 子串匹配 → 并发写同一 CSV 损坏（16.11.6 血泪）
+- **现象**：v2iaa42 基准分析崩（`float('e')`），CSV 出现拼接损坏行（`eval_idx=28, iter=2, window=eval_idx=1228, ...`），ADD4_OVF 52/703 行损坏。
+- **原因**：`tl_opt_shadow_batch.rs` 的 TL_ONLY 是**子串匹配**（`s.contains(&o)`）——`TL_ONLY=OVF` 同时匹配 **OVF、ADD4_OVF、ovf1** → `shadow_lvl4_OVF` 分片和 `shadow_lvl4_ADD4_OVF` 分片**并发写同一 `gnn_shadow.csv`**（`OpenOptions::append` 无锁）→ 行交错损坏。
+- **修复**：① TL_ONLY 改**精确匹配**（`/STEM.tl` 后缀，`level4/OVF` 前缀）；② run_shadow_batch.sh 的 level4 分片带 `level4/` 前缀；③ `_shadow_analyze.py` parse_row 容错（损坏行返回 None 跳过，不崩溃）。
+- **教训**：**子串过滤做分片 = 静默重复执行**——凡按名字圈定范围的过滤（TL_ONLY / 分片 / 批量处理），一律用**精确匹配**（全路径或 `/stem.tl` 后缀），并检查「selected N / total」确认无重复选中。附带教训：**并发写同一文件必须上锁或分文件**（Rust `writeln!` 到 append File 无原子性）。
+
 ### 7.5 SPICE 收敛失败 → NOOP 自动重试（16.9.1 / NetlistOpt 15.5.0）
 - **现象**：ovf1 电路所有评估报 `Step size reached minimum step size bound`（Xyce 失败 exit=1）→ 整个电路被基准排除。
 - **定位**：实测三种修复（NOOP/UIC/松容差）——**NOOP（跳过 DC 工作点）和 UIC 都能跑通** → 失败点在 DC 工作点求解（all-inputs-low 状态下弱驱动节点）。
