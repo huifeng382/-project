@@ -51,7 +51,7 @@
 - **Rust 集成记录**：`docs/GNN_RUST_DATA_DIFF.md` 第十节（10.1~10.8）。
 - **推送方法**：`docs/GIT_PUSH.md`。
 - **记录风格**：凡问题清单/要求类文档，优先采用「版本记录式」（版本/日期/状态/摘要表）。
-- **训练数据默认（2026-08-28 定）**：**`batch_v2_full` + `batch_v2_rest` 两组**（未另行指定时）。`batch_v2_io` 作验证/开发集，不默认入训练；rest 的 84 单变体 + 90 <10 变体组建议剔除。
+- **训练数据默认（2026-08-28 定，16.11.4 更新）**：**`batch_v2_full` + `batch_v2_rest` + `batch_v2_m4` 三组**（未另行指定时；m4 = V3.2 五形状补充数据，2026-08-31 起默认并入）。`batch_v2_io` 作验证/开发集，不默认入训练；rest 的 84 单变体 + 90 <10 变体组建议剔除。
 - **SSH 工具不可用时的兜底工作流（2026-08-28 定）**：如果 ssh 工具（ssh_exec/ssh_upload 等）不能使用，则**在本地修改代码 → push 到远程（GitHub）→ 服务器 `git pull` → 用 `setup_exp.sh` 启动**。不要卡在无法直连服务器上。
 - **服务器启动实验必须用 `setup_exp.sh`（2026-08-28 定，强制）**：所有训练/实验的服务器启动一律通过 `bash setup_exp.sh <variant>`（clone 分支 → 变体 sed → `CACHE_DIR="cache107$V"` → `OMP_NUM_THREADS=6 nohup ~/venv/bin/python3 -u main.py > train107$V.log 2>&1 &`）。
   **禁止手写 for 循环 / 手动 nohup 逐 run 启动**（曾因手动 for 循环启动 4 个 v3 run 违反本规范；如需给 run 目录同步代码/保留缓存等 setup_exp.sh 不直接支持的操作，也应先说明方案经用户同意后，仍以 `setup_exp.sh` 为主体方式执行）。
