@@ -26,6 +26,9 @@ config.USE_TRANSISTOR_WAVE = False
 config.USE_SUPPLY_NOISE = False
 config.USE_PARASITIC_CAPS = False
 config.USE_V2 = True
+# 16.11.3: 近似 ids_avg 特征（v2iaa 系列 checkpoint 用 USE_IDS_AVG_APPROX=1 训练，
+# 推理时按同一系数零仿真算每门近似 ids_avg 拼进 x 的末维，in_dim 才能对上）
+config.USE_IDS_AVG_APPROX = os.environ.get('USE_IDS_AVG_APPROX', '0') == '1'
 # STRUCT_MODE 必须与 checkpoint 训练一致（no-wave 交付用 logic_only，in_dim 才能对上）；
 # 可被 STRUCT_MODE 环境变量覆盖（服务其它 STRUCT_MODE 的 checkpoint 时）
 config.STRUCT_MODE = os.environ.get('STRUCT_MODE', 'logic_only')
@@ -111,9 +114,11 @@ def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, swit
 
 def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device):
     """单候选、共享静态图：返回每模型的 avg_delay（list，长度 = len(models)）。
-    每 (pin,dir) 行对每模型做一次前向，行内多模型求均值 → 电路级平均。"""
+    每 (pin,dir) 行对每模型做一次前向，行内多模型求均值 → 电路级平均。
+    16.11.3: USE_IDS_AVG_APPROX=1 时 x = [静态 | 7动态 | 近似ids_avg]（与训练 data_loader 布局一致）"""
     num_nodes = len(node_names)
-    num_dyn = 7
+    num_dyn = 7                        # 动态特征固定 7 维（含 gate_states 在动态末位）
+    extra_dim = 1 if config.USE_IDS_AVG_APPROX else 0
     base = node_static.shape[1]
     node_static = node_static.to(device)
     edge_index = edge_index.to(device)
@@ -122,18 +127,37 @@ def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, out
     for switching in pins:
         for direction in ('rise', 'fall'):
             dyn, vector_str = row_dynamic_features(pins, switching, direction, SLEW_S, LOAD_F, scaler)
-            x = torch.zeros((num_nodes, base + num_dyn), device=device)
+            x = torch.zeros((num_nodes, base + num_dyn + extra_dim), device=device)
             x[:, :base] = node_static
             for i, n in enumerate(node_names):
                 if n in dyn:
-                    x[i, -num_dyn:] = torch.tensor(dyn[n], dtype=torch.float, device=device)
+                    x[i, base:base + num_dyn] = torch.tensor(dyn[n], dtype=torch.float, device=device)
+            # 16.11.3: 绝对末维 = 近似 ids_avg（零仿真拟合，系数同 data_loader/config）
+            if config.USE_IDS_AVG_APPROX:
+                import math
+                f_slew = math.log1p(SLEW_S * 1e12)   # 2ps
+                f_load = math.log1p(LOAD_F * 1e15)   # 1fF
+                f_cslew = math.log1p(CORNER[0])      # 2.0
+                f_cload = math.log1p(CORNER[1])      # 1.0
+                C = config.IDS_AVG_APPROX_COEF
+                for i in range(num_nodes):
+                    ns = node_static[i]
+                    f_drive = math.log1p(float(ns[3]))
+                    f_par = math.log1p(float(ns[4]))
+                    f_fan = float(ns[1])             # 已 log1p(fanout)
+                    f_h = float(ns[6])               # 已 log1p(电努力)
+                    lg = (C[0]*f_slew + C[1]*f_load + C[2]*f_drive + C[3]*f_par
+                          + C[4]*f_fan + C[5]*f_h + C[6]*f_cslew + C[7]*f_cload + C[8])
+                    x[i, -1] = float(math.expm1(lg))
             gs = _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching, outs)
             gs_lc = {str(k).lower(): v for k, v in gs.items()}
+            # gate_states 写在动态 7 维的末位（与训练一致）
+            dyn_last = base + num_dyn - 1
             for i, n in enumerate(node_names):
                 if str(n).lower() in gs_lc:
-                    x[i, -1] = float(gs_lc[str(n).lower()])
+                    x[i, dyn_last] = float(gs_lc[str(n).lower()])
                 elif n in outs:
-                    x[i, -1] = 1.0
+                    x[i, dyn_last] = 1.0
             with torch.no_grad():
                 corner = torch.tensor([CORNER], dtype=torch.float, device=device)
                 csig = torch.tensor([[float(num_nodes), 0.0, float(len(pins))]],
@@ -216,7 +240,8 @@ def load_models(ckpt_paths, scaler, sample_netlist, sample_pins, sample_outs):
     rebuild_gate_types(_load_cell_types_from_netlist(sample_netlist))
     _, ns, _, _, _ = build_candidate_tensors(sample_netlist, sample_pins, sample_outs, scaler)
     import src.graph_builder as gb
-    in_dim = ns.shape[1] + 7   # 7 动态特征
+    extra_dim = 1 if config.USE_IDS_AVG_APPROX else 0   # 16.11.3: v2iaa 近似 ids_avg 维
+    in_dim = ns.shape[1] + 7 + extra_dim   # 7 动态特征 (+近似 ids_avg)
     models = []
     for ck in ckpt_paths:
         m = DelayGNN(in_dim=in_dim, hidden_dim=config.HIDDEN_DIM, num_layers=config.NUM_LAYERS,

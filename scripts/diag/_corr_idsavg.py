@@ -94,8 +94,9 @@ def build_measure_lines(gates, subckt_mos):
     return lines
 
 
-def make_deck(tb_path, work_dir, tran_line, tag):
+def make_deck(tb_path, work_dir, tran_line, tag, extra_options=None):
     """把 tb 复制到 work_dir/<tag>_<hash>/,改写 .tran 与 .include 相对路径,
+    extra_options: 附加 .options 行列表（如 ['timeint reltol=1e-2 newlte=2']）
     返回 (deck_sp 路径, dut_sp 路径)。"""
     h = hashlib.md5(tb_path.encode()).hexdigest()[:10]
     d = os.path.join(work_dir, f'{tag}_{h}')
@@ -116,7 +117,7 @@ def make_deck(tb_path, work_dir, tran_line, tag):
             shutil.copy2(src, dst)
         new_names[src] = os.path.join(d, base)
     tb_dst = os.path.join(d, os.path.basename(tb_path))
-    # 重写 tb：.include 绝对路径 -> 新位置；.tran -> 指定精度
+    # 重写 tb：.include 绝对路径 -> 新位置；.tran -> 指定精度；附加 .options
     with open(tb_path, 'r', errors='replace') as f:
         content = f.read()
     for src, dst in new_names.items():
@@ -124,6 +125,16 @@ def make_deck(tb_path, work_dir, tran_line, tag):
             content = content.replace(src, dst)
     # .tran 行替换（精确替换首个 .tran 1p 1n）
     content = re.sub(r'\.tran\s+\S+\s+\S+', f'.tran {tran_line}', content, count=1)
+    # 附加 .options（插到第一个 .options 行之后，若没有则插到 .tran 之后）
+    if extra_options:
+        opt_lines = '\n'.join(f'.options {o}' for o in extra_options)
+        m = re.search(r'(?im)^\.options.*$', content)
+        if m:
+            content = content[:m.end()] + '\n' + opt_lines + content[m.end():]
+        else:
+            content = re.sub(r'(?im)^\.tran\s+\S+\s+\S+.*$',
+                             lambda mm: mm.group(0) + '\n' + opt_lines,
+                             content, count=1)
     # 找到 .end,在它前面插入 .measure 行
     dut_path = None
     for src, dst in new_names.items():
@@ -137,10 +148,10 @@ def make_deck(tb_path, work_dir, tran_line, tag):
 
 def run_one_deck(tb_path, work_dir, xyce, full_tran, coarse_trans, timeout_s):
     """对单个 deck 跑全精度 + 每组粗精度,返回逐管 ids_avg 与耗时
-    coarse_trans: list of (tag, tran_line)"""
+    coarse_trans: list of (tag, tran_line, extra_options_or_None)"""
     result = {'tb': tb_path, 'full': None,
               'full_s': None, 'gates': 0, 'mos': 0}
-    for tag, _ in coarse_trans:
+    for tag, _, _ in coarse_trans:
         result[tag] = None
         result[f'{tag}_s'] = None
     full_tb, dut = make_deck(tb_path, work_dir, full_tran, 'full')
@@ -157,8 +168,8 @@ def run_one_deck(tb_path, work_dir, xyce, full_tran, coarse_trans, timeout_s):
     result['full_s'] = time.time() - t0
     result['full'] = extract_measures(full_mt0) if ok_f else {}
     # 跑每组粗精度
-    for tag, tran_line in coarse_trans:
-        coarse_tb, _ = make_deck(tb_path, work_dir, tran_line, tag)
+    for tag, tran_line, opts in coarse_trans:
+        coarse_tb, _ = make_deck(tb_path, work_dir, tran_line, tag, opts)
         coarse_mt0 = coarse_tb + '.mt0'
         t0 = time.time()
         ok_c = run_xyce(coarse_tb, xyce, meas, timeout_s)
@@ -221,11 +232,15 @@ def main():
         item = item.strip()
         if '=' in item:
             tag, tran = item.split('=', 1)
-            coarse_trans.append((tag.strip(), tran.strip()))
+            opts = None
+            if '|' in tran:
+                tran, optstr = tran.split('|', 1)
+                opts = [o.strip() for o in optstr.split(';') if o.strip()]
+            coarse_trans.append((tag.strip(), tran.strip(), opts))
         else:
-            coarse_trans.append((f'c{len(coarse_trans)}', item))
+            coarse_trans.append((f'c{len(coarse_trans)}', item, None))
     if not coarse_trans:
-        coarse_trans = [('coarse', '10p 200p')]
+        coarse_trans = [('coarse', '10p 200p', None)]
 
     with open(args.deck_list) as f:
         decks = [l.strip() for l in f if l.strip()]
@@ -235,7 +250,7 @@ def main():
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
 
     print(f'[corr] {len(decks)} decks, full={args.full_tran} '
-          f'coarse={[(t, l) for t, l in coarse_trans]} '
+          f'coarse={[(t, l, o) for t, l, o in coarse_trans]} '
           f'jobs={args.jobs}', flush=True)
 
     results = []
@@ -248,11 +263,11 @@ def main():
             results.append(r)
             n_full = len([v for v in r['full'].values() if v is not None])
             tags = ' '.join(f'{t}={len([v for v in (r[t] or {}).values() if v is not None])}'
-                            for t, _ in coarse_trans)
+                            for t, _, _ in coarse_trans)
             print(f'  [{i}/{len(decks)}] {os.path.basename(r["tb"])[:50]} '
                   f'mos={r["mos"]} full={n_full} {tags} '
                   f'({r["full_s"]:.1f}s/'
-                  f'{" ".join(f"{r[t+chr(95)+chr(115)]:.1f}s" for t, _ in coarse_trans)})',
+                  f'{" ".join(f"{r[t+chr(95)+chr(115)]:.1f}s" for t, _, _ in coarse_trans)})',
                   flush=True)
 
     # ---- 逐管级 ----
@@ -268,7 +283,7 @@ def main():
         base = {'tb': r['tb'], 'gates': r['gates'], 'mos': r['mos'],
                 'devices': len(fv),
                 'full_s': r['full_s']}
-        for tag, _ in coarse_trans:
+        for tag, _, _ in coarse_trans:
             cv = [r[tag][k] for k in common if k in r[tag]]
             r_dev = pearson(fv, cv) if len(fv) >= 2 and len(cv) == len(fv) else None
             row = dict(base)
@@ -296,7 +311,7 @@ def main():
                                   'gate': g, 'tag': tag,
                                   'full_avg': fa, 'coarse_avg': ca})
 
-    dev_fields = ['tb', 'device', 'full'] + [t for t, _ in coarse_trans]
+    dev_fields = ['tb', 'device', 'full'] + [t for t, _, _ in coarse_trans]
     with open(args.out + '_perdevice.csv', 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=dev_fields)
         w.writeheader()
@@ -307,7 +322,7 @@ def main():
         w.writeheader()
         w.writerows(gate_rows)
     sum_fields = ['tb', 'gates', 'mos', 'devices', 'full_s']
-    for tag, _ in coarse_trans:
+    for tag, _, _ in coarse_trans:
         sum_fields += [f'r_{tag}', f'{tag}_s', f'speedup_{tag}']
     with open(args.out + '_summary.csv', 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=sum_fields)
@@ -315,7 +330,7 @@ def main():
         w.writerows(sum_rows)
 
     # ---- 汇总 ----
-    for tag, _ in coarse_trans:
+    for tag, _, _ in coarse_trans:
         all_fv, all_cv = [], []
         for row in dev_rows:
             if tag in row:
