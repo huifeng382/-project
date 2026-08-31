@@ -104,7 +104,7 @@ WAVE_AGG_RICH = False          # 晶体管波形聚合: mean → (mean, max, std
 WAVE_FIELDS = [f.strip() for f in os.environ.get('WAVE_FIELDS', 'ids_avg,ids_peak,vds_swing').split(',') if f.strip()]
 WAVE_COVERAGE = float(os.environ.get('WAVE_COVERAGE', '1.0'))   # 行覆盖率（1.0=全；<1 模拟部分仿真）
 WAVE_COVERAGE_SEED = int(os.environ.get('WAVE_COVERAGE_SEED', '42'))  # 固定掩蔽种子（跨 epoch 不变）
-USE_IDS_AVG_APPROX = os.environ.get('USE_IDS_AVG_APPROX', '0') == '1'   # 16.10.0: 用拟合回归近似 ids_avg（零仿真，Rust 端可算）
+USE_IDS_AVG_APPROX = os.environ.get('USE_IDS_AVG_APPROX', '0')  # 16.10.0: '1'=线性拟合回归近似 ids_avg（零仿真，Rust 端可算）；16.11.4: '2'=GBDT15 近似
 IDS_AVG_APPROX_COEF = [0.133045, 0.083942, 0.083942, 0.078951, 1.036561, -1.564259, 0.133045, 0.083942, 0.121103]  # 来自 _eval_idsavg_approx.py（full 样本回归 R^2=0.655）
 MIN_GROUP_SIZE = int(os.environ.get('MIN_GROUP_SIZE', '10'))   # 组大小过滤：剔除 <N 变体的组（排序无价值）
 DATA_BATCHES = os.environ.get('DATA_BATCHES', 'batch_v2_full,batch_v2_rest,batch_v2_m4')  # 训练数据批次（16.11.4 起默认 full+rest+m4，m4=V3.2 五形状补充）

@@ -98,6 +98,23 @@ class DelayDataset(Dataset):
             static_dfs.append(df)
         self.static_df = pd.concat(static_dfs).drop_duplicates('circuit_id').set_index('circuit_id')
 
+        # 16.11.4: GBDT15 近似 ids_avg（USE_IDS_AVG_APPROX=2 时加载 joblib，训练特征与 Rust 端一致）
+        self._gbdt15_model = None
+        if getattr(config, 'USE_IDS_AVG_APPROX', False) and \
+                str(os.environ.get('USE_IDS_AVG_APPROX', '0')) == '2':
+            try:
+                import joblib
+                _p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                  'outputs', 'idsavg_gbdt15.joblib')
+                if os.path.exists(_p):
+                    _d = joblib.load(_p)
+                    self._gbdt15_model = _d['model'] if isinstance(_d, dict) else _d
+                    print(f"[data_loader] GBDT15 近似 ids_avg 已加载: {_p}")
+                else:
+                    print(f"[data_loader] WARN: GBDT15 模型不存在 {_p}，回退线性近似")
+            except Exception as e:
+                print(f"[data_loader] WARN: GBDT15 加载失败 ({e})，回退线性近似")
+
         # 动态数据：传入已过滤 df 则直接使用（16.4.0 内存修复：避免全量重读 parquet，
         # transistor_wave_json 列实测占动态 df ~93% 内存，此前每 run 持有 5 份 + 3 次重读堆残留 ≈ 41GB）
         # prefiltered=True 时调用方已按 circuit_ids 过滤并完成清洗，直接引用不再复制
@@ -483,9 +500,9 @@ class DelayDataset(Dataset):
         if config.USE_TRANSISTOR_WAVE:
             tw_dim = (3 if config.WAVE_AGG_RICH else 1) * len(config.WAVE_FIELDS)
             tw_feat = torch.zeros(num_nodes, tw_dim)
-            if config.USE_IDS_AVG_APPROX and 'ids_avg' in config.WAVE_FIELDS:
-                # 16.10.0: 近似 ids_avg（拟合回归，零仿真；Rust 端可算）
-                # 系数来自 scripts/diag/_eval_idsavg_approx.py（full 样本回归 R^2=0.655）
+            if str(getattr(config, 'USE_IDS_AVG_APPROX', '0')) != '0' and 'ids_avg' in config.WAVE_FIELDS:
+                # 16.10.0: 近似 ids_avg（零仿真；Rust 端可算）
+                # 16.11.4: USE_IDS_AVG_APPROX=1 线性系数（R^2=0.655）；=2 GBDT15（R^2=0.680/Spearman 0.628）
                 _m = __import__('math')
                 try:
                     _slew_s = float(row.get('slew_s', 0) or 0)
@@ -505,14 +522,29 @@ class DelayDataset(Dataset):
                 f_cslew = _m.log1p(_cslew)
                 f_cload = _m.log1p(_cload)
                 C = config.IDS_AVG_APPROX_COEF
+                _gbdt = self._gbdt15_model
+                _feat_cache = None   # (slew,load) 级特征预计算（GBDT15 用）
                 for i in range(num_nodes):
                     f_drive = _m.log1p(float(node_static[i, 3]))
                     f_par = _m.log1p(float(node_static[i, 4]))
                     f_fan = float(node_static[i, 1])   # 已 log1p(fanout)
                     f_h = float(node_static[i, 6])     # 已 log1p(电努力)
-                    lg = (C[0] * f_slew + C[1] * f_load + C[2] * f_drive + C[3] * f_par
-                          + C[4] * f_fan + C[5] * f_h + C[6] * f_cslew + C[7] * f_cload + C[8])
-                    tw_feat[i, 0] = _m.expm1(lg)
+                    if _gbdt is not None:
+                        # GBDT15 15 特征
+                        fan = float(_m.expm1(f_fan))
+                        r_on = 1.0 / max(float(node_static[i, 3]), 1e-6)
+                        c_l = max(float(node_static[i, 4]) * 1e-15, 1e-18)
+                        tau_rc = r_on * c_l
+                        xv = [[f_slew, f_load, f_drive, f_par, f_fan, f_h, f_cslew, f_cload,
+                               f_drive * f_load, f_drive * f_h, f_fan * f_par, f_slew * f_load,
+                               _m.log1p(tau_rc * 1e15), _m.log1p(max(float(node_static[i, 4]) * fan, 1e-9)),
+                               _m.log1p(max(1.0 / (1.0 + fan), 1e-9))]]
+                        _lg = float(_gbdt.predict(xv)[0])
+                        tw_feat[i, 0] = _m.expm1(_lg)
+                    else:
+                        lg = (C[0] * f_slew + C[1] * f_load + C[2] * f_drive + C[3] * f_par
+                              + C[4] * f_fan + C[5] * f_h + C[6] * f_cslew + C[7] * f_cload + C[8])
+                        tw_feat[i, 0] = _m.expm1(lg)
             else:
                 try:
                     wave_ok = True

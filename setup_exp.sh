@@ -151,28 +151,39 @@ if [ "$V" = "cornerattn" ]; then        # Corner注意力池化
 fi
 # V2 数据 wave/no-wave 变体（15.1.x：USE_V2=True 默认生效 + logic_only 自动）
 # 用法：v2wave42 / v2nowave123 等，后缀即 TRAIN_SEED；v2nowave 关 wave（Rust 推理拿不到 wave 的验证）
+# 16.11.4: 支持 v2nowave42m4 / v2iaa42m4 等（尾部可带 m4 标记，seed 取数字前缀）
 case "$V" in
   v2wave[0-9]*)
-    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2wave}/" config.py ;;
+    _S=$(echo "${V#v2wave}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2nowave[0-9]*)
     sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
-    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2nowave}/" config.py ;;
+    _S=$(echo "${V#v2nowave}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
 esac
 
 # V3 波形消融变体（16.3.0）：v2ia<seed> 只留 ids_avg 单字段；v2cov25<seed> 25% 行覆盖率（覆盖率种子固定 42）
 # v2iaa<seed>（16.10.0）：ids_avg 单字段 + 拟合回归近似（零仿真）
-# 用法：v2ia42 / v2cov2542 / v2iaa42 等，后缀即 TRAIN_SEED；wave 默认开
+# 用法：v2ia42 / v2cov2542 / v2iaa42 等，后缀即 TRAIN_SEED；wave 默认开；v2iaa42m4 尾部 m4 标记
 case "$V" in
   v2ia[0-9]*)
     export WAVE_FIELDS='ids_avg'
-    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2ia}/" config.py ;;
+    _S=$(echo "${V#v2ia}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2iaa[0-9]*)
     export WAVE_FIELDS='ids_avg'
     export USE_IDS_AVG_APPROX=1
-    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2iaa}/" config.py ;;
+    _S=$(echo "${V#v2iaa}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v2iag[0-9]*)    # 16.11.4: GBDT15 近似 ids_avg（USE_IDS_AVG_APPROX=2）
+    export WAVE_FIELDS='ids_avg'
+    export USE_IDS_AVG_APPROX=2
+    _S=$(echo "${V#v2iag}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2cov25[0-9]*)
     export WAVE_COVERAGE='0.25'
-    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${V#v2cov25}/" config.py ;;
+    _S=$(echo "${V#v2cov25}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
 esac
 
 # 蒸馏变体（15.2，docs/DISTILL_PLAN.md）：v2kd<teacher><mode><seed>
@@ -209,7 +220,7 @@ if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
     SEED_DATA="$CACHE_SEED/data"
     [ -d "$SEED_DATA/batch_v2_rest" ] || SEED_DATA="$HOME/-project/data"
     if [ -d "$SEED_DATA/batch_v2_rest" ]; then
-      for b in batch_v2_full batch_v2_rest batch_v2_io; do
+      for b in batch_v2_full batch_v2_rest batch_v2_io batch_v2_m4; do
         if [ -d "$SEED_DATA/$b" ]; then
           mkdir -p "$D/data/$b"
           cp -a "$SEED_DATA/$b/." "$D/data/$b/"
