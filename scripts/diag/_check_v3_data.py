@@ -85,7 +85,8 @@ def main():
             continue
         rust.setdefault((ni, no), []).append(os.path.basename(f).replace('.tl', ''))
     data_shapes = set()
-    for batch in ['batch_v2_full', 'batch_v2_io', 'batch_v2_rest']:
+    # batch_v2_m4: V3.2 补充的 5 个缺失形状（9入6出/8入4出/7入4出/5入5出/4入3出）
+    for batch in ['batch_v2_full', 'batch_v2_io', 'batch_v2_rest', 'batch_v2_m4']:
         for f in glob.glob(f'data/{batch}/circuit_static*.parquet'):
             s = pd.read_parquet(f, columns=['input_pins_json', 'output_pins_json'])
             for _, r in s.iterrows():

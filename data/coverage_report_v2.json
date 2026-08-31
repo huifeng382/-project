@@ -1,8 +1,8 @@
 {
   "sc_expansion": {
-    "coverage": "12912/12912 (100.0%)",
-    "expandable": "12912/12912 (100.0%)",
-    "sc_cells": "OK (12912)",
+    "coverage": "1391/1391 (100.0%)",
+    "expandable": "1391/1391 (100.0%)",
+    "sc_cells": "OK (1391)",
     "missing": []
   },
   "batch_v2_full/circuit_static": {
@@ -115,5 +115,42 @@
     "vector.one_per_group": "OK (100%)",
     "direction.valid_values": "568090/568090 (100.0%)",
     "ids_charge.not_equal_avg": "92850/119536 (77.7%)"
+  },
+  "batch_v2_m4/circuit_static": {
+    "total_rows": 1800,
+    "parasitic_caps_json.column_present": "OK",
+    "parasitic_caps_json.column_nonnull": "1800/1800 (100.0%)",
+    "parasitic_caps_json.gate_key_match": "1800/1800 (100.0%)",
+    "parasitic_caps_json.subfields_valid": "1800/1800 (100.0%)",
+    "parasitic_caps_json.subfield_values_valid": "99328/99328 (100.0%)",
+    "cell_types_json.column_nonnull": "1800/1800 (100.0%)"
+  },
+  "batch_v2_m4/timing_arcs": {
+    "total_rows": 108720,
+    "transistor_wave_json.column_present": "OK",
+    "transistor_wave_json.column_nonnull": "108720/108720 (100.0%)",
+    "transistor_wave_json.gate": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.ids_avg": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.ids_peak": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.vds_swing": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.ids_rise_time": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.vgs_swing": "10522504/10522504 (100.0%)",
+    "transistor_wave_json.ids_charge": "10522504/10522504 (100.0%)",
+    "supply_noise_json.column_present": "OK",
+    "supply_noise_json.column_nonnull": "108720/108720 (100.0%)",
+    "supply_noise_json.vdd_droop_mV": "108720/108720 (100.0%)",
+    "supply_noise_json.gnd_bounce_mV": "108720/108720 (100.0%)",
+    "supply_noise_json.NOTE": "ideal-supply (VDD/GND ideal DC source): droop/bounce physically 0.0, reported as valid zeros (DATA_SPEC_V2 \u00a7\u516d \u65b9\u6848D)",
+    "gate_states_json.column_present": "OK",
+    "gate_states_json.column_nonnull": "108720/108720 (100.0%)",
+    "pin_slew_json.column_present": "OK",
+    "pin_slew_json.column_nonnull": "108720/108720 (100.0%)",
+    "pin_load_json.column_present": "OK",
+    "pin_load_json.column_nonnull": "108720/108720 (100.0%)",
+    "DELAY.in_range": "108720/108720 (100.0%)",
+    "per_gate_timing_json.DEPRECATED": "CORRECTLY ABSENT",
+    "vector.one_per_group": "OK (100%)",
+    "direction.valid_values": "108720/108720 (100.0%)",
+    "ids_charge.not_equal_avg": "136886/278376 (49.2%)"
   }
 }
