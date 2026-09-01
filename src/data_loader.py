@@ -104,14 +104,21 @@ class DelayDataset(Dataset):
                 str(os.environ.get('USE_IDS_AVG_APPROX', '0')) == '2':
             try:
                 import joblib
-                _p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                  'outputs', 'idsavg_gbdt15.joblib')
-                if os.path.exists(_p):
+                # 16.11.9: 优先共享模型位置 ~/-project/outputs/（fresh clone 的 run 目录没有），
+                # 再回退 run 目录自身 outputs/
+                _home = os.path.expanduser('~')
+                _cands = [
+                    os.path.join(_home, '-project', 'outputs', 'idsavg_gbdt15.joblib'),
+                    os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 'outputs', 'idsavg_gbdt15.joblib'),
+                ]
+                _p = next((p for p in _cands if os.path.exists(p)), None)
+                if _p:
                     _d = joblib.load(_p)
                     self._gbdt15_model = _d['model'] if isinstance(_d, dict) else _d
                     print(f"[data_loader] GBDT15 近似 ids_avg 已加载: {_p}")
                 else:
-                    print(f"[data_loader] WARN: GBDT15 模型不存在 {_p}，回退线性近似")
+                    print(f"[data_loader] WARN: GBDT15 模型不存在 {_cands}，回退线性近似")
             except Exception as e:
                 print(f"[data_loader] WARN: GBDT15 加载失败 ({e})，回退线性近似")
 
