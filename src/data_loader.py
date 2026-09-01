@@ -523,25 +523,36 @@ class DelayDataset(Dataset):
                 f_cload = _m.log1p(_cload)
                 C = config.IDS_AVG_APPROX_COEF
                 _gbdt = self._gbdt15_model
-                _feat_cache = None   # (slew,load) 级特征预计算（GBDT15 用）
-                for i in range(num_nodes):
-                    f_drive = _m.log1p(float(node_static[i, 3]))
-                    f_par = _m.log1p(float(node_static[i, 4]))
-                    f_fan = float(node_static[i, 1])   # 已 log1p(fanout)
-                    f_h = float(node_static[i, 6])     # 已 log1p(电努力)
-                    if _gbdt is not None:
-                        # GBDT15 15 特征
-                        fan = float(_m.expm1(f_fan))
-                        r_on = 1.0 / max(float(node_static[i, 3]), 1e-6)
-                        c_l = max(float(node_static[i, 4]) * 1e-15, 1e-18)
-                        tau_rc = r_on * c_l
-                        xv = [[f_slew, f_load, f_drive, f_par, f_fan, f_h, f_cslew, f_cload,
-                               f_drive * f_load, f_drive * f_h, f_fan * f_par, f_slew * f_load,
-                               _m.log1p(tau_rc * 1e15), _m.log1p(max(float(node_static[i, 4]) * fan, 1e-9)),
-                               _m.log1p(max(1.0 / (1.0 + fan), 1e-9))]]
-                        _lg = float(_gbdt.predict(xv)[0])
-                        tw_feat[i, 0] = _m.expm1(_lg)
-                    else:
+                if _gbdt is not None:
+                    # 16.11.7: GBDT15 批量向量化（一次 predict 所有节点，避免逐节点调用的
+                    # sklearn 数组分配开销/内存碎片——此前 3 并发 worker 各持 GBDT15 状态爆内存）
+                    import numpy as _np
+                    _xv = _np.zeros((num_nodes, 15), dtype=_np.float64)
+                    _xv[:, 0] = f_slew; _xv[:, 1] = f_load
+                    _xv[:, 6] = f_cslew; _xv[:, 7] = f_cload
+                    _xv[:, 3] = _np.array([_m.log1p(float(node_static[i, 4])) for i in range(num_nodes)])
+                    _xv[:, 2] = _np.array([_m.log1p(float(node_static[i, 3])) for i in range(num_nodes)])
+                    _xv[:, 4] = _np.array([float(node_static[i, 1]) for i in range(num_nodes)])
+                    _xv[:, 5] = _np.array([float(node_static[i, 6]) for i in range(num_nodes)])
+                    _xv[:, 8] = _xv[:, 2] * _xv[:, 1]
+                    _xv[:, 9] = _xv[:, 2] * _xv[:, 5]
+                    _xv[:, 10] = _xv[:, 4] * _xv[:, 3]
+                    _xv[:, 11] = _xv[:, 0] * _xv[:, 1]
+                    _fan = _np.expm1(_xv[:, 4])
+                    _drv = _np.maximum(_np.expm1(_xv[:, 2]), 1e-6)
+                    _par_f = _np.expm1(_xv[:, 3])
+                    _tau = (1.0 / _drv) * _np.maximum(_par_f * 1e-15, 1e-18)
+                    _xv[:, 12] = _np.log1p(_tau * 1e15)
+                    _xv[:, 13] = _np.log1p(_np.maximum(_par_f * _fan, 1e-9))
+                    _xv[:, 14] = _np.log1p(_np.maximum(1.0 / (1.0 + _fan), 1e-9))
+                    _pred = _gbdt.predict(_xv)
+                    tw_feat[:, 0] = torch.from_numpy(_np.expm1(_pred)).to(tw_feat.dtype)
+                else:
+                    for i in range(num_nodes):
+                        f_drive = _m.log1p(float(node_static[i, 3]))
+                        f_par = _m.log1p(float(node_static[i, 4]))
+                        f_fan = float(node_static[i, 1])   # 已 log1p(fanout)
+                        f_h = float(node_static[i, 6])     # 已 log1p(电努力)
                         lg = (C[0] * f_slew + C[1] * f_load + C[2] * f_drive + C[3] * f_par
                               + C[4] * f_fan + C[5] * f_h + C[6] * f_cslew + C[7] * f_cload + C[8])
                         tw_feat[i, 0] = _m.expm1(lg)
