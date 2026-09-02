@@ -767,7 +767,23 @@ def main():
 
     print("\nStart training...")
     t_train_start = time.time()
-    for epoch in range(EPOCHS):
+    # 16.11.12: RESUME_EPOCH 续训——加载 midpoint_ep{N}.pt 权重，从第 N epoch 继续
+    # （optimizer/LR schedule 从头，权重保留；用于中断后从 checkpoint 续跑，省已训 epoch）
+    start_epoch = 0
+    _re = os.environ.get('RESUME_EPOCH', '')
+    if _re:
+        try:
+            _re_n = int(_re)
+            _re_path = os.path.join(OUTPUT_DIR, f'midpoint_ep{_re_n}.pt')
+            if os.path.exists(_re_path):
+                model.load_state_dict(torch.load(_re_path, map_location=device, weights_only=False))
+                start_epoch = _re_n
+                print(f"[resume] 已加载 {_re_path}，从 epoch {start_epoch} 续训")
+            else:
+                print(f"[resume] WARN: {_re_path} 不存在，从头训练")
+        except (ValueError, Exception) as e:
+            print(f"[resume] WARN: RESUME_EPOCH 解析失败 ({e})，从头训练")
+    for epoch in range(start_epoch, EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA,
                                      teacher_preds=_kd_teacher)
         val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
