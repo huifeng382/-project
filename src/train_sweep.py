@@ -276,7 +276,10 @@ def main():
             raise FileNotFoundError(f"Data file not found: {p}")
 
     # 16.5.0 内存优化：wave OFF 时按列读取，排除 transistor_wave_json（占动态 df ~93% 内存，全量 7.76GB→0.54GB）
-    if not USE_TRANSISTOR_WAVE:
+    # 16.11.12: USE_IDS_AVG_APPROX(近似 ids_avg) 也不需要 wave 列（特征由系数/GBDT 算，不读真实 wave）→ 同样排除，省 ~12GB/训练
+    _skip_wave = (not USE_TRANSISTOR_WAVE) or \
+        (str(os.environ.get('USE_IDS_AVG_APPROX', '0')) != '0')
+    if _skip_wave:
         import pyarrow.parquet as _pq
         dynamic_dfs = []
         for _p in dynamic_parquets:
