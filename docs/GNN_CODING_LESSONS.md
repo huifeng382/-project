@@ -146,3 +146,17 @@
 - **原因**：① 凭 `ps` 列表顺序猜 PID 归属，**没查 cwd/ppid**——3280992/3280993 实际是 v2nowave42m4 的 worker（不是 v2iag42m4 的）；② `kill -9` 直接杀，无二次确认。
 - **正确做法**：杀任何进程前，**逐一 `readlink /proc/<pid>/cwd` 确认归属**（尤其多训练并发时 worker 的 cwd 才是真正归属）；杀一组进程时先 `ps -o pid,ppid,cwd` 列全再动手；宁可多花 10 秒确认，不要 kill -9 猜。
 - **教训**：多训练并发 + worker 进程 = 高危场景——PID 列表排序完全不可靠，**cwd 是唯一可信的归属标识**。误杀一次 = 15h 训练白费，比多等 10 秒贵得多。
+
+## 9. 范围过滤与服务器代码同步坑（16.11.15 血泪）
+
+### 9.1 过滤逻辑改精确后要支持所有调用形态（NetlistOpt 15.9.0→15.9.2）
+- **现象**：为防 `TL_ONLY=OVF` 误匹配 ADD4_OVF/ovf1（子串匹配并发写坏 CSV），改成「精确 `/STEM.tl` 后缀匹配」——结果 **level0-3 分片全 FAILED**（`selected 0 / 46, TL_ONLY filter matched nothing`）。
+- **原因**：run_shadow_batch.sh 对 level0-3 传的是 **`TL_ONLY=level0`（目录级）**，新逻辑只匹配单个文件名 `/level0.tl`，不匹配目录下所有 .tl → 0 选中 panic。
+- **修复（15.9.2）**：匹配逻辑分三类——`levelN`（目录，`s.contains("/levelN/")`）、`level4/STEM`（前缀+精确）、`STEM`（纯 stem 精确 `/STEM.tl`）。
+- **教训**：**改「匹配规则」前先枚举所有调用形态**（目录级 / 前缀级 / 单文件级），本地模拟验证（`$s.Contains` 逐个跑）再上服务器；别只针对一个 bug（OVF 误匹配）修，破坏另一类调用（levelN）。
+
+### 9.2 服务器源码与本地严重脱节（无 git）——整体同步 + 测试 import 遗漏
+- **现象**：上传单个修复文件到服务器后 `cargo build` 报 `cannot find sample_window`——服务器 NetlistOpt 是**旧快照**（无 git、缺 `src/utils/` 子目录、缺大量本地 15.x 功能）。
+- **原因**：NetlistOpt 无远端（仅本地 git），之前只手动传「关键文件」，服务器源码整体落后。
+- **修复**：本地 `tar -cf src tests Cargo.toml` **整体打包**上传解压（注意含 `src/utils/` 子目录——首次打包漏了它）；仍报错 → 本地代码本身有 **测试模块 import 遗漏**（`sample_window` 未 use，本地因 SSL 无法编译从没暴露）。
+- **教训**：① 无远端的仓库，改动后**整体同步**（tar src+tests+Cargo.toml）而非单文件；② 打包校验子目录（`tar -tf` 看 utils/）；③ **本地无法编译时，提交前先 grep 测试引用的符号是否都 import**（`sample_window` 在 tl_window.rs 但 tl_opt.rs 测试没 use）。
