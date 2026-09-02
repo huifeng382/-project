@@ -180,6 +180,12 @@ case "$V" in
     export USE_IDS_AVG_APPROX=2
     _S=$(echo "${V#v2iag}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v2iaar[0-9]*)
+    export WAVE_FIELDS='ids_avg'
+    export USE_IDS_AVG_APPROX=1
+    sed -i "s/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/" config.py
+    _S=$(echo "${V#v2iaar}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2cov25[0-9]*)
     export WAVE_COVERAGE='0.25'
     _S=$(echo "${V#v2cov25}" | grep -oE '^[0-9]+')
@@ -190,6 +196,15 @@ esac
 #   teacher: 123=wave123 | ENS=wave42+123 平均；mode: reg(纯软标签) | rr(reg+rank)
 # 例: v2kd123reg42 / v2kd123rr123 / v2kdENSrr42
 case "$V" in
+  v2kdwave42iaa[0-9]*)  # iaa 学生 + wave42m4 教师蒸馏(reg+rank), 16.11.32
+    export WAVE_FIELDS='ids_avg'
+    export USE_IDS_AVG_APPROX=1
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    sed -i "s/^KD_ENABLED = .*/KD_ENABLED = True/" config.py
+    sed -i "s/^KD_MODE = .*/KD_MODE = 'reg+rank'/" config.py
+    export KD_TEACHER_DIR="$HOME/project-107-v2wave42m4/outputs"
+    _S=$(echo "${V#v2kdwave42iaa}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2kd[0-9]*|v2kdENS*)
     sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
     sed -i "s/^KD_ENABLED = .*/KD_ENABLED = True/" config.py
