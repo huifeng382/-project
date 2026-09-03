@@ -1,7 +1,7 @@
 # 未决问题 / 待复核 / 风险清单（OPEN ISSUES）
 
 > 集中散落在各文档的「⚠ / 待复核 / 未决」项。**接手新任务或下结论前先扫本表**；状态更新时同步改这里。
-> 记录风格遵循版本记录式（REQUIREMENTS §4）。最后更新：2026-09-03（16.11.37）。
+> 记录风格遵循版本记录式（REQUIREMENTS §4）。最后更新：2026-09-03（16.11.38）。
 
 | ID | 状态 | 内容 | 位置 / 影响 |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | I4 | 🔶 未决 | V3 数据 `sc_expansion.json` 格式：宏集预计数百-数千种（名称编码结构可自动推导），具体格式待与训练端 STRUCT_MODE 用法对齐 | DATA_SPEC_V2 P15 注 / R4 |
 | I5 | 🔶 未决 | **V3 生成方能力**：e-graph 能否产出 ★ 档合格样本（(9,6) 350 个 trans≥247/深≥9 等）——Rust 数据无法回答；靠升级预检（5-8 电路含 ★ 档）+ ★ 弹性条款兜底 | DATA_SPEC_V2 锚定小节 / R6 |
 | I6 | ⚠ 待核 | vector 语义已确认（per-(output,pin) break、rise/fall 同 vector 双激励）；但训练数据行数 = 全量 2×N_in×M（m4 实测 108），spec 已改「≤」（敏感对）；生成方实际是否跳过不敏感对待 V3 交付验证 | DATA_SPEC_V2 R5/C1；DIFF §12.2c/12.2e |
-| I7 | 🔶 部分进行中 | **m4 三兄弟 Rust shadow 全跑完并定论**（nowave 19:29 / iag 19:09 / iaa 9-2 记录，均同 106 集/5390 行 pipeline；记录 PROJECT_LOG + DIFF §13.2/13.3）：**选择遗憾 nowave 10.87% < iag 12.19% < iaa 15.21%——无近似纯拓扑 serve 最优，近似 ids_avg 特征 serve 端净伤害**（iag 仅「最不伤」：Sp 0.210/严格@3 44.3% 三兄弟最高但 top1 落点输 nowave）；两阶段 nowave 3.95 ≈ iag 3.93（≤5%）。**仍全不达 10.3 主判据**（遗憾 >5%、严格@3 <90%）→ GNN = 启发式预排序，规模失配是硬底（nowave 训练 3.80→Rust 10.87 ≈7pp）；**交付含义：Rust 粗筛走纯拓扑 nowave 路线，USE_IDS_AVG_APPROX 对 serve 负贡献**（牵连 v2kdwave42iaa42 蒸馏学生，待其训完单验 Rust）。**剩 v2iaar42m4（排序 loss）/ v2kdwave42iaa42（iaa 蒸馏）训练中**——训练完 → 记 PROJECT_LOG → 各自 Rust shadow | OPERATIONS §5；DIFF §13.2/13.3 |
+| I7 | 🔶 部分进行中 | **m4 三兄弟 Rust shadow 全跑完并定论**（nowave 19:29 / iag 19:09 / iaa 9-2 记录，均同 106 集/5390 行 pipeline；记录 PROJECT_LOG + DIFF §13.2/13.3）：**选择遗憾 nowave 10.87% < iag 12.19% < iaa 15.21%——无近似纯拓扑 serve 最优，近似 ids_avg 特征 serve 端净伤害**（iag 仅「最不伤」：Sp 0.210/严格@3 44.3% 三兄弟最高但 top1 落点输 nowave）；两阶段 nowave 3.95 ≈ iag 3.93（≤5%）。**仍全不达 10.3 主判据**（遗憾 >5%、严格@3 <90%）→ GNN = 启发式预排序，规模失配是硬底（nowave 训练 3.80→Rust 10.87 ≈7pp）；**交付含义：Rust 粗筛走纯拓扑 nowave 路线，USE_IDS_AVG_APPROX 对 serve 负贡献**（牵连 v2kdwave42iaa42 蒸馏学生，待其训完单验 Rust）。剩 **v2iaar42m4（排序 loss）训练中**；**v2kdwave42iaa42 已训完**（9-3：train-side ≈ v2iaa42m4 无 KD 增益，见 PROJECT_LOG 16.11 批次）——其 Rust shadow 待跑 | OPERATIONS §5；DIFF §13.2/13.3 |
 | I8 | 🔶 未决 | **60 万行 V3 新数据尚未生成**：DATA_SPEC_V2（V3 单一数据集 + 形状-规模-深度锚定 + Tier A/B）待交付生成方；泛化闸门（旧数据固定 test 集 ≥ v2wave42m4 基线）执行时定 | DATA_SPEC_V2 |
 | I9 | 🔶 低优先 | serve 8000 端口现挂 **v2nowave42m4 midpoint_ep250**（无近似，in_dim=14，刚跑完 nowave shadow）；占 ~1.1GB 内存，下次换模型时一并停旧起新 | OPERATIONS §5 |
 | I10 | ✅ 已解决 | 弱驱动中间门验收判据已定（★ 档含弱驱动门电路 ≥30%；扇出≤2 或寄生≥2×中位）——数值是否需按 serve 候选校准，待 V3 实际数据验证 | DATA_SPEC_V2 P12/L306 |

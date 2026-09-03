@@ -730,6 +730,7 @@ Ordered best to worst:
 | v2iaa42m4 | 线性近似 | ✅ | 22.27% | 3.85% | 83.6% | 30.2% | 15.21% | 5.12% |
 | v2nowave42m4 | 无 wave | ✅ | 22.13% | 3.80% | 83.4% | 39.6% | **10.87%** | 3.95% |
 | v2iag42m4 | GBDT15 近似 | ✅ | 23.00% | 4.19% | 81.2% | **44.3%** | **12.19%** | **3.93%** |
+| v2kdwave42iaa42 | iaa 特征+wave教师KD(reg+rank) | ✅ | 21.69% | 4.17% | 80.8% | 待 Rust shadow | — | — |
 
 **v2iaa42m4 详细（2026-09-02）**：
 - 训练：234 epochs（早停），Test Median Rel Err 22.27%，选择遗憾 3.85%（spread>10%: 5.29%），Spearman 0.410，recall@3 B 83.6%。
@@ -745,6 +746,8 @@ Ordered best to worst:
 **v2iag42m4 详细（2026-09-03，完成）**：271 epochs early_stop（RESUME ep100 续训，Best Val 27.19%），best midpoint ep200（score 112.51，SUMMARY 显示其指标），Test Median 23.00%，选择遗憾 4.19%（spread>10%: 5.75%），Spearman 0.386/0.441，recall@3 B 81.2%（spread>10% 86.4%），top1 40.0%（spread>10% 52.6%），成对分辨 <2% 55%（≈随机）/ >10% 80%。**对比（同 548 组 test、各自 best midpoint）**：GBDT15 训练特征 vs 线性（v2iaa42m4）与无 wave（v2nowave42m4）**全线略差**——遗憾 4.19 vs 3.85/3.80、Test Median 23.00 vs 22.27/22.13、recall@3B 81.2 vs 83.6/83.4、Spearman 0.386 vs 0.410/0.393。→ 更高保真的 GBDT15 近似**训练侧无增益且略负**（不转化为组内排序提升，与「近似特征训练侧无增益」结论同形态）；价值仅在 serve「零仿真可算」+ 更低 serve 失配预期——GNN-test 无法裁决 serve，**决定性 = v2iag Rust shadow**（对照 v2iaa42m4 Rust；后者 DIFF §13 数字 ⚠ 不可复现，I1），待 I7。
 
 **v2iag42m4 Rust shadow（2026-09-03 19:09 完整收尾，106 候选集 / 5,390 成功行 / 8 失败，GBDT15 加载确认）**：严格 recall@3 44.3%（宽松 64.2%）、选择遗憾 12.19%（中位 6.41%）、两阶段 3.93%（中位 0.33%）、Spearman 0.210（hi_spread 79 集：严格@3 43.0% / 两阶段 4.96% / 遗憾 15.15% / Sp 0.262）。**I7 裁决**：两 run 报告**同为 106 集/5390 行/8 失败** → 同候选窗口，唯一变量 = serve 模型，A/B 干净。GBDT15 全线优于线性（对照 v2iaa42m4 记录）：遗憾 12.19 vs 15.21、两阶段 3.93 vs 5.12、严格@3 44.3 vs 30.2、宽松 64.2 vs 57.5、Spearman 0.210 vs 0.050——训练侧 GBDT15 反而略差（4.19 vs 3.85）而 Rust 端更好 → **增益来自 serve 端鲁棒性（特征一致性假设获支持，DIFF §13.1 佐证）**；**但仍不达 10.3 主判据**（遗憾 >5%、严格@3 <90%）→ GNN 仍只做启发式预排序，剩余训练 4.19%→Rust 12.19% 落差 = 规模失配 + 候选门结构分布差异为主（GBDT15 缓解非消除，A1 修 serve 不可行坐实）；两阶段 3.93% ≤ 5%（中位 0.33%）→「GNN 前 3 → SPICE 精排」粗筛流程实操可接受。附带：§14「106 集口径不明」修正——106 = 标准 pipeline 窗口级 ≥4 候选计数，**跨两 run 稳定**，714 = 复算另类聚合口径。
+
+**v2kdwave42iaa42 详细（2026-09-03，完成）**：194 epochs plateau 早停（train 降/val 平 → 过拟合，Best Val 26.69%），总 1268 min（Avg/epoch 391.6s）；SUMMARY 显示 **midpoint ep100** 指标（脚本注：SAVE_MIDPOINTS 载入 midpoint 最优 epoch；best_model.pt 15:12 另存）。Test Median 21.69%（Mean Abs 8.25ps；Mean Rel 28.27% 被小延迟放大仅参考），选择遗憾 4.17%（spread>10%: 5.68%），Spearman 0.377/0.424（spread>10%），recall@3 B 80.8%（spread>10% 85.5%），top1 40.1%（spread>10% 51.7%），成对分辨 <2% 55%（≈随机，SNR 墙同三兄弟）/ >10% 79%。同 548 组 test。**对比（vs 同 iaa 特征的非 KD 对照 v2iaa42m4，其余三兄弟同表）**：Test Median 21.69% 四者最好（v2iaa 22.27 / nowave 22.13 / iag 23.00）但仅 ~0.5-1.3pp 边际；**排序指标全线未超 v2iaa42m4——遗憾 4.17 vs 3.85（+0.32pp）、recall@3B 80.8 vs 83.6（-2.8pp）、Spearman 0.377 vs 0.410（-0.033）**，亦低于 nowave（3.80/83.4/0.393）→ **wave 教师（自身 Test 13.30 / 遗憾 0.65）reg+rank 蒸馏训练侧未把 iaa 学生拉到教师水平，相对朴素 iaa 还略负**；形态同「近似特征训练侧无增益」结论（v2iag 行）。**决定性子 = Rust shadow**（iaa 特征 serve 需 USE_IDS_AVG_APPROX=1，serve 失配预期同 v2iaa42m4 → 训练侧未赢则 Rust 大概率不赢），待跑。
 
 ### 项目文件归类规范（2026-08-25 起长期有效）
 

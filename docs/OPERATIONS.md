@@ -61,14 +61,15 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-03，16.11.35）
+## 5. 当前状态（2026-09-03，16.11.38）
 
-**正在跑（2 run = 12 核）**：
+**正在跑（1 run）**：
 
 | run | 内容 | 状态 |
 |---|---|---|
-| `~/project-107-v2iaar42m4` | 排序 loss #8 | 训练中（9-3 启动） |
-| `~/project-107-v2kdwave42iaa42` | iaa 蒸馏 #12 | 训练中（9-3 启动，KD 软标签已加载） |
+| `~/project-107-v2iaar42m4` | 排序 loss #8 | 训练中（9-3 启动，epoch ~179） |
+
+**已训完（2026-09-03）**：`v2kdwave42iaa42`（iaa 蒸馏 #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**（详见 PROJECT_LOG 16.11 批次）；Rust shadow 待跑。
 
 **其他现场**：
 - serve：8000 端口现挂 **v2nowave42m4 midpoint_ep250**（无近似，in_dim=14，serve log `serve_v2nowave42m4.log`）——刚跑完 v2nowave Rust shadow（9-3 19:29）；下次给新模型跑 shadow 时再停旧起新。
