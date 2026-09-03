@@ -38,13 +38,13 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `v2iaa<seed>` | ids_avg + **线性拟合近似**(`USE_IDS_AVG_APPROX=1`) | 零仿真可算特征 |
 | `v2iag<seed>` | ids_avg + **GBDT15 近似**(`USE_IDS_AVG_APPROX=2`) | 需 `outputs/idsavg_gbdt15.joblib` |
 | `v2iaar<seed>` | v2iaa + **真值排序 loss**(`RANK_LOSS_W=0.5`) | #8 排序直训（2026-09-03） |
-| `v2kdwave42iaa<seed>` | **iaa 学生 + v2wave42m4 教师蒸馏**(reg+rank) | #12；教师软标签在教师 outputs |
+| `v2kdwave42iaa<seed>` | **v2wave42m4 教师蒸馏**(reg+rank)；⚠ 名带 iaa 但学生**实为纯拓扑**——KD 分支 `USE_TRANSISTOR_WAVE=False` 把近似列门控挡掉（data_loader L507/L510），`USE_IDS_AVG_APPROX=1` 未生效 | #12；教师软标签在教师 outputs；「iaa 学生+KD」格从未真正测过（DIFF §13.4 更正） |
 | `v2kd<teacher><mode><seed>` | 旧蒸馏（teacher=123/ENS；mode=reg/rr） | 15.2；学生无近似特征（已弃路线） |
 | `rankloss1/2`、`bmsm`、`es`、`anneal`、`bestrank`、`seed*` | base 系调参/选点/种子 | V1 时代为主 |
 | `struct*`（structlogic/rich/elec…） | STRUCT_MODE 消融 | 默认 logic_only |
 
 - 命名规则：变体名 = 特征/目标前缀 + seed；尾部 `m4` 仅是历史标识（数据默认已含 m4）。
-- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**Rust 选择遗憾 10.87% = 三兄弟最优，serve 交付走此路线**，DIFF §13.3）；v2iaa42m4 = 线性近似（纯 huber，Rust 记录 ⚠ 不可复现、serve 净伤最大）；v2iag42m4 = GBDT15（Test 23.00%，Rust 严格@3 44.3%/遗憾 12.19%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（训练中）；v2kdwave42iaa42 = 蒸馏学生（训练中，用 iaa 特征，Rust 前景待验）。
+- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**Rust 选择遗憾 10.87% = m4 系最优，serve 交付走此路线**，DIFF §13.3）；v2iaa42m4 = 线性近似（纯 huber，Rust 记录 ⚠ 不可复现、serve 净伤最大）；v2iag42m4 = GBDT15（Test 23.00%，Rust 严格@3 44.3%/遗憾 12.19%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（训练中）；v2kdwave42iaa42 = wave 教师 KD 学生（**已验 Rust：名带 iaa 实 in=45 纯拓扑，遗憾 14.97% vs nowave 10.87% 双端不赢，DIFF §13.4**）。
 
 ## 4. 关键开关（config.py，多数可 env 覆盖）
 
@@ -69,28 +69,73 @@ RESUME=1 bash setup_exp.sh <原变体名>
 |---|---|---|
 | `~/project-107-v2iaar42m4` | 排序 loss #8 | 训练中（9-3 启动，epoch ~179） |
 
-**已训完（2026-09-03）**：`v2kdwave42iaa42`（iaa 蒸馏 #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**（详见 PROJECT_LOG 16.11 批次）；Rust shadow 待跑。
+**已训完（2026-09-03）**：`v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
-- serve：8000 端口现挂 **v2nowave42m4 midpoint_ep250**（无近似，in_dim=14，serve log `serve_v2nowave42m4.log`）——刚跑完 v2nowave Rust shadow（9-3 19:29）；下次给新模型跑 shadow 时再停旧起新。
+- serve：8000 端口现挂 **v2kdwave42iaa42 midpoint_ep100**（纯拓扑 in=45，无 env；serve log `~/-project/serve_v2kdwave42iaa42.log`）——其 Rust shadow 已跑完（22:03，遗憾 14.97%，DIFF §13.4，非交付路线）。**待换回交付基线 v2nowave42m4**（midpoint_ep250，命令见 §6 Step 6）。
 - 教师软标签：`~/project-107-v2wave42m4/outputs/kd_teacher_preds_{train,val,test}.npy`（已产出，train 514,494 行，对拍通过 regret 0.51%/Spearman 0.696）。
 - 已训完模型（m4 Rust 三兄弟全跑完，定论 DIFF §13.3）：v2wave42m4（教师）；**v2nowave42m4 = 纯拓扑，Rust 遗憾 10.87% 最优（serve 交付走此路线）**；v2iaa42m4 = 线性，Rust 记录 ⚠ 不可复现（遗憾 15.21%，serve 净伤最大）；v2iag42m4 = GBDT15，Rust 严格@3 44.3% / 遗憾 12.19%（最不伤近似）。
 
-## 6. serve / Rust shadow 操作
+## 6. serve / Rust shadow 标准流程（runbook：训完一个模型 → 换 serve → 跑 shadow → 判收尾 → 记录）
 
+> 每次一个新变体训完要跑 Rust shadow，**照此流程执行**（v2kdwave42iaa42 = 第一次按它走）。全程在服务器，命令直接复制。三处判据坑已固化：**①serve 该不该带 `USE_IDS_AVG_APPROX` 看 ckpt 真实 in_features，别信变体名；②serve 就绪判端口在听，别判 log（无 `-u` 块缓冲，log 空是正常的）；③shadow 收尾判首行时间戳被替换，别 grep `全部分片结束`（旧文件残留会误判）**。
+
+### 6.1 Step 0 — 确认训完 + 记 train-side（本地，先做）
+- 训完判据：ps 里训练进程消失 / `outputs/` 有新 `test_predictions.npz` + SUMMARY 停掉。
+- 记 PROJECT_LOG（train-side：epoch/stop 原因/Test Median/遗憾/Spearman/recall@3B/成对分辨，跟 m4三兄弟同表对比）+ 同步 OPERATIONS §5 状态 + OPEN_ISSUES I7 + 版本化 commit（16.11.N，≤20 字）。
+- ⚠ PROJECT_LOG 训练侧展示的 checkpoint 常是 SUMMARY 的 midpoint，跟 Rust 要 serve 的 ckpt **可以不同**——serve 选哪个另行定（见 Step 1 命令里的 `<ckpt>`）。
+
+### 6.2 Step 1 — 定 serve 特征布局：查 ckpt，不猜变体名
 ```bash
-# serve 启动（v2iaa 类要 USE_IDS_AVG_APPROX；v2iag 用 =2）
-cd ~/-project && USE_IDS_AVG_APPROX=1 nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
-  --ckpt ~/project-107-<V>/outputs/<best|midpoint_epN>.pt \
-  --scaler ~/project-107-<V>/outputs/scaler.pkl --port 8000 > serve_<V>.log 2>&1 &
-# shadow 跑 46 电路（NetlistOpt 内，标准入口）
-bash ~/-project/scripts/diag/run_shadow_batch.sh   # 内部:rm 旧 CSV → 并行分片 → cargo test tl_opt_shadow_batch
-# 分析
-python3 scripts/diag/_shadow_analyze.py   # 聚合 recall/遗憾/Spearman，输出 reports/_shadow_bench_final.txt
+~/venv/bin/python3 - <<'PY'
+import torch
+sd = torch.load("~/project-107-<V>/outputs/<ckpt>.pt", map_location="cpu", weights_only=False)
+print("convs.0.lin_rel.weight:", tuple(sd["convs.0.lin_rel.weight"].shape))
+PY
 ```
+- **in_features = 45 → 无近似列（纯拓扑，nowave 风格）→ serve 不带 `USE_IDS_AVG_APPROX`**
+- **in_features = 46 → 有 ids_avg 近似列 → serve 带 `USE_IDS_AVG_APPROX`（线性近似=1，GBDT15=2，对齐训练 config）**
+- ⚠ 教训：`v2kdwave42iaa42` 名字带 "iaa" 但 ckpt 实测 **45 → 纯拓扑、不带 env**。盲带 `=1` 会启动失败 `size mismatch ... [256, 45] from checkpoint ... [256, 46]`（serve.py L316-317 按 env 加 extra_dim）。
 
-- shadow CSV：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors）。**跑前必须整体清空该目录**（CSV append 会混旧行）。
-- 关键结果存档：`reports/_shadow_bench_final.txt`；分析脚本集中在 `~/-project/scripts/diag/`（`_` 前缀，同步到本地 scripts/diag/）。
+### 6.3 Step 2 — 换 serve（停旧起新）
+```bash
+pkill -f 'serve_htt[p].py'; sleep 1
+cd ~/-project && [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
+  --ckpt ~/project-107-<V>/outputs/<ckpt>.pt \
+  --scaler ~/project-107-<V>/outputs/scaler.pkl --port 8000 > serve_<V>.log 2>&1 &
+```
+- log 落在 `~/-project/serve_<V>.log`（先 cd 再重定向）→ tail 用全路径，别去 scripts/diag 下找。
+
+### 6.4 Step 3 — 判 serve 就绪：端口在听，不看 log
+```bash
+ss -ltnp | grep :8000    # 见到 LISTEN + pid 即就绪
+ps -p <pid> -o pid,stat,%cpu,etime    # Sl 存活
+```
+- python 无 `-u` 时 stdout 重定向到文件是块缓冲 → **log 空正常**，别等 log 出字。若想看启动日志用 `python3 -u` 或另开窗口 tail。
+
+### 6.5 Step 4 — 跑 shadow（46 电路，NetlistOpt 内）
+```bash
+bash ~/-project/scripts/diag/run_shadow_batch.sh   # 内部:rm 旧 CSV → 并行分片 → cargo test tl_opt_shadow_batch
+# 另开窗口看进度：
+tail -f ~/shadow_analyze.out
+```
+- shadow CSV 路径：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors）。**跑前 run_shadow 会整体清空该目录**（CSV append 会混旧行，勿手动残留）。
+
+### 6.6 Step 5 — 判收尾：首行时间戳被替换，不 grep 关键词
+```bash
+head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 → 才是本轮完成
+```
+- ⚠ 判收尾看**首行时间戳被替换**（run_shadow 的 waiter 每轮先盖首行再写 `全部分片结束` + 调 `_shadow_analyze.py`）。**别 grep `全部分片结束`**——旧文件残留尾部也会命中，会误判成已完成。
+- 完成标志：首行时间戳刷新 + 后面跟着本次聚合结果（recall/遗憾/Spearman 表）。
+
+### 6.7 Step 6 — 对齐口径 + 记录 + 恢复 serve（本地）
+- 读结果：`reports/_shadow_bench_final.txt`（服务器）+ `~/shadow_analyze.out`。**口径固定 = 106 集 / 5390 行 / 8 失败**（pipeline 窗口级 ≥4 候选计数），别拿 PROJECT_LOG 训练侧 714/548 集混着比。
+- 同口径基准（m4三兄弟 Rust，DIFF §13.2/13.3）：纯拓扑 **nowave 遗憾 10.87%**（serve 交付基线）；iag GBDT15 严格@3 44.3% / 遗憾 12.19%；iaa ⚠ 15.21%。**无近似列(in=45)的模型与此对比才干净**；带近似列(in=46) serve 端本身就净伤害。
+- 记 PROJECT_LOG（Rust 表行）+ 分析结论 → DIFF + 同步 I7 + 版本化 commit；push 仅按要求。
+- **恢复 serve**：若非交付路线的模型验完，按 Step 2 换回 v2nowave42m4（`--ckpt ~/project-107-v2nowave42m4/outputs/midpoint_ep250.pt`，不带 env）。
+
+### 6.8 分析脚本 / 存档位置
+- 分析脚本在 `~/-project/scripts/diag/`（`_` 前缀，与本地 scripts/diag/ 双向同步）；关键结果存档 `reports/_shadow_bench_final.txt`。
 
 ## 7. Git 同步现状（⚠ 三处代码源不同步）
 
