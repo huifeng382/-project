@@ -728,7 +728,7 @@ Ordered best to worst:
 |---|---|---|---|---|---|---|---|---|
 | v2wave42m4 | 真实 wave（教师） | ✅ | 13.30% | 0.65% | 94.0% | —（wave 不可 Rust 部署） | — | — |
 | v2iaa42m4 | 线性近似 | ✅ | 22.27% | 3.85% | 83.6% | 30.2% | 15.21% | 5.12% |
-| v2nowave42m4 | 无 wave | ✅ | 22.13% | 3.80% | 83.4% | —（Rust 未跑，I7） | — | — |
+| v2nowave42m4 | 无 wave | ✅ | 22.13% | 3.80% | 83.4% | 39.6% | **10.87%** | 3.95% |
 | v2iag42m4 | GBDT15 近似 | ✅ | 23.00% | 4.19% | 81.2% | **44.3%** | **12.19%** | **3.93%** |
 
 **v2iaa42m4 详细（2026-09-02）**：
@@ -739,6 +739,8 @@ Ordered best to worst:
 **v2wave42m4 详细（2026-09-02）**：60 epochs 早停（Best Val 11.40%），Test Median 13.30%，选择遗憾 0.65%（spread>10%: 0.54%），Spearman 0.688/0.780，recall@3 B 94.0%/98.3%——**真实 wave 是 gold 标准，作蒸馏教师**。
 
 **v2nowave42m4 详细（2026-09-03，完成）**：310 epochs early_stop（Best Val 26.65%），best midpoint ep250，Test Median 22.13%，选择遗憾 3.80%（spread>10%: 5.18%），Spearman 0.393/0.450，recall@3 B 83.4%（spread>10% 88.2%），top1 42.5%，成对分辨 <2% 55%（≈随机，SNR 未破）/ >10% 81%。**对比（仅同 548 组 test 可比）**：与 v2iaa42m4 几乎打平（遗憾 3.80 vs 3.85、Test Median 22.13 vs 22.27、recall@3B 83.4 vs 83.6）→ 线性近似 ids_avg 训练侧无增益，价值在 serve「零仿真可算」（serve 失配见 DIFF §13.1）；vs 旧 v2nowave42（full+io 139 组，遗憾 6.70/8.07）数值大降但 **test 口径不同，不作「rest/m4 提升 nowave」定论**。
+
+**v2nowave42m4 Rust shadow（2026-09-03 19:29 收尾，106 候选集 / 5,390 成功行 / 8 失败，serve in_dim=14 无近似列确认）**：严格 recall@3 39.6%（宽松 65.1%）、选择遗憾 **10.87%**（中位 6.17%）、两阶段 3.95%（中位 0.69%）、Spearman 0.142（hi_spread 79 集：严格@3 38.0% / 两阶段 5.03% / 遗憾 13.30% / Sp 0.232）。**三方 Rust 定论（nowave/iag 同本次 pipeline、iaa 同 pipeline 记录；选择遗憾轴 iaa 的 15.21 经 §14 复算 mean 15.9 吻合，可作 run 级对照）**：**选择遗憾 nowave 10.87% < iag 12.19% < iaa 15.21%——无近似的纯拓扑 serve 反而最好，加近似 ids_avg 特征（线性 +4.3pp / GBDT15 +1.3pp）serve 端是净伤害**；iag 赢在排序质量（Sp 0.210、严格@3 44.3% 三兄弟最高）但 top1 落点输给 nowave（DEPTH_MIX 大窗口 w=5/1/7/11 nowave 明显更好）；两阶段 nowave 3.95 ≈ iag 3.93（≤5%），iaa 5.12 略超标。→ 修订 §13.2「iag serve 增益」表述：GBDT15 仅是**最不伤的近似**，最优 serve = 不加近似（nowave 路线）。详见 DIFF §13.3。
 
 **v2iag42m4 详细（2026-09-03，完成）**：271 epochs early_stop（RESUME ep100 续训，Best Val 27.19%），best midpoint ep200（score 112.51，SUMMARY 显示其指标），Test Median 23.00%，选择遗憾 4.19%（spread>10%: 5.75%），Spearman 0.386/0.441，recall@3 B 81.2%（spread>10% 86.4%），top1 40.0%（spread>10% 52.6%），成对分辨 <2% 55%（≈随机）/ >10% 80%。**对比（同 548 组 test、各自 best midpoint）**：GBDT15 训练特征 vs 线性（v2iaa42m4）与无 wave（v2nowave42m4）**全线略差**——遗憾 4.19 vs 3.85/3.80、Test Median 23.00 vs 22.27/22.13、recall@3B 81.2 vs 83.6/83.4、Spearman 0.386 vs 0.410/0.393。→ 更高保真的 GBDT15 近似**训练侧无增益且略负**（不转化为组内排序提升，与「近似特征训练侧无增益」结论同形态）；价值仅在 serve「零仿真可算」+ 更低 serve 失配预期——GNN-test 无法裁决 serve，**决定性 = v2iag Rust shadow**（对照 v2iaa42m4 Rust；后者 DIFF §13 数字 ⚠ 不可复现，I1），待 I7。
 
