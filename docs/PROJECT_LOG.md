@@ -728,7 +728,7 @@ Ordered best to worst:
 |---|---|---|---|---|---|---|---|---|
 | v2wave42m4 | 真实 wave（教师） | ✅ | 13.30% | 0.65% | 94.0% | —（wave 不可 Rust 部署） | — | — |
 | v2iaa42m4 | 线性近似 | ✅ | 22.27% | 3.85% | 83.6% | 30.2% | 15.21% | 5.12% |
-| v2nowave42m4 | 无 wave | ⏳ 训练中 | — | — | — | — | — | — |
+| v2nowave42m4 | 无 wave | ✅ | 22.13% | 3.80% | 83.4% | —（Rust 未跑，I7） | — | — |
 | v2iag42m4 | GBDT15 近似 | ⏳ 训练中 | — | — | — | — | — | — |
 
 **v2iaa42m4 详细（2026-09-02）**：
@@ -737,6 +737,8 @@ Ordered best to worst:
 - **结论**：m4 数据加入 Rust 无改善（严格 recall 30.2% vs 无 m4 的 34.9% 反降）；线性近似 serve 失配（训练 3.85% → Rust 15.2% 落差）源于候选门结构分布差异，详见 GNN_RUST_DATA_DIFF §13.1。
 
 **v2wave42m4 详细（2026-09-02）**：60 epochs 早停（Best Val 11.40%），Test Median 13.30%，选择遗憾 0.65%（spread>10%: 0.54%），Spearman 0.688/0.780，recall@3 B 94.0%/98.3%——**真实 wave 是 gold 标准，作蒸馏教师**。
+
+**v2nowave42m4 详细（2026-09-03，完成）**：310 epochs early_stop（Best Val 26.65%），best midpoint ep250，Test Median 22.13%，选择遗憾 3.80%（spread>10%: 5.18%），Spearman 0.393/0.450，recall@3 B 83.4%（spread>10% 88.2%），top1 42.5%，成对分辨 <2% 55%（≈随机，SNR 未破）/ >10% 81%。**对比（仅同 548 组 test 可比）**：与 v2iaa42m4 几乎打平（遗憾 3.80 vs 3.85、Test Median 22.13 vs 22.27、recall@3B 83.4 vs 83.6）→ 线性近似 ids_avg 训练侧无增益，价值在 serve「零仿真可算」（serve 失配见 DIFF §13.1）；vs 旧 v2nowave42（full+io 139 组，遗憾 6.70/8.07）数值大降但 **test 口径不同，不作「rest/m4 提升 nowave」定论**。
 
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
