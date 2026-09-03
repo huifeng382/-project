@@ -751,6 +751,21 @@ Ordered best to worst:
 
 **v2kdwave42iaa42 Rust shadow（2026-09-03 22:03 完整收尾，106 候选集 / 5,390 成功行 / 8 失败，serve midpoint_ep100、纯拓扑 in=45 无近似列确认）**：严格 recall@3 36.8%（宽松 64.2%）、选择遗憾 **14.97%**（中位 7.17%）、两阶段 4.81%（中位 1.03%）、Spearman 0.098（hi_spread 79 集：严格@3 31.6% / 宽松 57.0% / 两阶段 6.19% / 遗憾 18.94% / Sp 0.184）。**与 m4三兄弟同 106 集同 pipeline 对比（唯一变量 = 权重；serve 全纯拓扑无 env）**：选择遗憾 14.97 vs nowave 10.87（+4.1pp）/ iag 12.19 / iaa 15.21 → **KD 学生劣于朴素 nowave，仅略优于 iaa 线性近似**；严格@3 36.8 vs nowave 39.6 / iag 44.3 / iaa 30.2（宽松 64.2 vs 65.1/64.2/57.5）；两阶段 4.81 vs 3.95/3.93/5.12（>5% 略超标）；Sp 0.098 vs 0.142/0.210/0.050。**定论（⚠ 16.11.40 修正：学生实为纯拓扑，非「蒸馏到 iaa 结构」）**：wave 教师（自己 Rust 不可部署，train 遗憾 0.65%）经 reg+rank 蒸馏到**纯拓扑学生**，训练侧无增益（L750：4.17 vs nowave 3.80）+ Rust serve 端亦不赢朴素 nowave（KD 学来的权重相对普通训练无 serve 优势，反而 +4.1pp 遗憾）——**「教师 wave 金标准通过软标签转移到无 wave 学生」在 train + Rust 双端坐实不成立**；机制 = 信息论天花板（软标签是学生够不着的目标），**不存在「iaa 权重污染」**（学生从未拿到近似列）。详见 DIFF §13.4。
 
+### 17.0.0 idsavg GNN 独立建模方向（2026-09-04，major）
+
+> 详档：`docs/IDS_AVG_GNN.md`。判定唯一尺度 = **per-gate 真实 ids_avg 预测 R²/Spearman**（与 delay 无关）。
+> 架构 = **DelayGNN 骨架纯 torch 复刻**（不 import pyg、不改 src/model.py）+ **刺激源锚定**（slew 只锚 switching_pin、load 只锚 output，沿有向 driver→receiver 边传播）——让模型感知"刺激源位置/是否在 fanout cone"，这是 GBDT15 均匀广播表达不了的信号。
+
+**本地受控对比（已验证，batch_v2_full 1500 电路 / 电路级切分 1200/150/150 / 80ep）**：
+| 模型 | test R² | Spearman | 意义 |
+|---|---|---|---|
+| A GBDT15（15 特征，部署同款） | **0.6740** | 0.621 | 精确复现既有近似 |
+| V gnn（复刻+锚定+有向边） | **0.7697** | 0.790 | train 0.778≈test，几乎不过拟合 |
+| W nograph（同特征无边 MLP） | 0.6773 | 0.603 | ≈GBDT15（广播特征天花板） |
+
+**判定**：消息传递自身贡献 **+0.092**（W→V，特征/模型只差"有无边"）；V 超 GBDT15 **+0.096** → 图传播携带 GBDT15 看不见的 per-gate ids_avg 信号，**方向成立，值得做 serve 端真模型**。
+**待办**：服务器全量（full+rest+m4，test 按批次分桶看 m4 泛化）由 `scripts/diag/_fit_idsavg_gnn_server.py` 跑（N_CAP/EPOCHS/NO_NOGRAPH 可调；⚠ GSZ>1 拼接提速实验性不稳勿开），结果未出前 m4 泛化不下定论。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**

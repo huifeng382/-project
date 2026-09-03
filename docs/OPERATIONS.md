@@ -1,7 +1,7 @@
 # 运行手册（OPERATIONS）——服务器 / 变体 / 开关 / 现状 / serve / git
 
 > 与 `TESTING_GUIDE.md`（测试流程）、`GNN_PROJECT_REQUIREMENTS.md` §4/§6.1（启动/命令安全规范）配套。
-> 最后更新：2026-09-03（16.11.35）。
+> 最后更新：2026-09-04（17.0.0）。
 
 ## 1. 环境与目录布局
 
@@ -143,9 +143,9 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 |---|---|---|
 | 本地 project（本机） | 16.11.32（已 push GitHub） | 最新；docs/setup_exp.sh/src 均在此 |
 | GitHub `10.3.3-fix-earlystop` | 16.11.32 | 训练代码源（服务器 setup_exp.sh clone 用它） |
-| 服务器 `~/-project` | 16.10.0 + 本地改动 | **分析工作区，落后**；setup_exp.sh 是手动上传的最新版（16.11.32 两个新变体已在）；数据源 data/ 全 |
+| 服务器 `~/-project` | 16.10.0 + 本地改动 | **分析工作区，落后**；setup_exp.sh 是手动上传的最新版（16.11.32 两个新变体已在）；数据源 data/ 全。**17.0.0 起：新分析脚本改走 GitHub 分支 git 拉取，不再 scp 单文件**（见下行规则） |
 
-- 规则：**改训练代码 → 本地提交 push GitHub → 新 run clone 生效**；改 setup_exp.sh → 顺手 `ssh_upload` 到服务器 `~/-project/`（不必等 push）；分析脚本 → 本地 scripts/diag 与服务器双向同步。
+- 规则：**改训练代码 → 本地提交 push GitHub → 新 run clone 生效**；**分析脚本/新能力（含 17.0.0 起的 diag 模型脚本）→ 一律随本地 commit 进 GitHub 分支，服务器用 git 获取（`git clone -b 10.3.3-fix-earlystop …` 或 `git pull`），不再 ssh_upload/scp 单文件同步**（2026-09-04，用户定；§4 16.2.1 路径推广到分析脚本）；改 setup_exp.sh → 顺手 `ssh_upload` 到服务器 `~/-project/`（仅脚本层即时项，不 push 也可）。
 - NetlistOpt（Rust）：本地与服务器各自独立，服务器源码曾落后 → 整体 `tar` 同步过；改动 Rust 需手动同步服务器（无 git 远端）。
 
 ## 8. 数据 / 缓存要点
