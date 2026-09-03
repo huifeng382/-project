@@ -26,9 +26,12 @@ config.USE_TRANSISTOR_WAVE = False
 config.USE_SUPPLY_NOISE = False
 config.USE_PARASITIC_CAPS = False
 config.USE_V2 = True
-# 16.11.3: 近似 ids_avg 特征（v2iaa 系列 checkpoint 用 USE_IDS_AVG_APPROX=1 训练，
-# 推理时按同一系数零仿真算每门近似 ids_avg 拼进 x 的末维，in_dim 才能对上）
-config.USE_IDS_AVG_APPROX = os.environ.get('USE_IDS_AVG_APPROX', '0') == '1'
+# 16.11.3/16.11.35: 近似 ids_avg 特征。v2iaa 系 checkpoint 用 USE_IDS_AVG_APPROX=1（线性系数）、
+# v2iag 系用 =2（GBDT15 joblib）训练。推理须按同一模式算每门近似 ids_avg 拼进 x 的绝对末维，
+# in_dim 才能对齐（46 = base+7+1）。config.USE_IDS_AVG_APPROX 作布尔（是否启用近似特征列）；
+# 具体模式存模块级 _APPROX_MODE（'0'/'1'/'2'）。
+_APPROX_MODE = os.environ.get('USE_IDS_AVG_APPROX', '0')
+config.USE_IDS_AVG_APPROX = _APPROX_MODE != '0'
 # STRUCT_MODE 必须与 checkpoint 训练一致（no-wave 交付用 logic_only，in_dim 才能对上）；
 # 可被 STRUCT_MODE 环境变量覆盖（服务其它 STRUCT_MODE 的 checkpoint 时）
 config.STRUCT_MODE = os.environ.get('STRUCT_MODE', 'logic_only')
@@ -112,14 +115,98 @@ def _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, swit
         return {}
 
 
+_GBDT15 = None
+
+
+def _load_gbdt15():
+    """加载 GBDT15 ids_avg 模型（USE_IDS_AVG_APPROX=2 推理用）。路径解析与 data_loader 一致
+    （优先 ~/-project/outputs/，再回退 serve 仓 outputs/）。缺失/失败返回 None（上层回退线性近似）。"""
+    global _GBDT15
+    if _GBDT15 is not None:
+        return _GBDT15
+    try:
+        import joblib
+        _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _cands = [
+            os.path.join(os.path.expanduser('~'), '-project', 'outputs', 'idsavg_gbdt15.joblib'),
+            os.path.join(_root, 'outputs', 'idsavg_gbdt15.joblib'),
+        ]
+        _p = next((p for p in _cands if os.path.exists(p)), None)
+        if _p is None:
+            print('[serve] WARN: idsavg_gbdt15.joblib 缺失，回退线性近似')
+            return None
+        _d = joblib.load(_p)
+        _GBDT15 = _d['model'] if isinstance(_d, dict) else _d
+        print(f'[serve] GBDT15 ids_avg 模型已加载: {_p}')
+        return _GBDT15
+    except Exception as e:
+        print(f'[serve] WARN: GBDT15 加载失败 ({e})，回退线性近似')
+        return None
+
+
+def _approx_ids_avg_vector(node_static):
+    """每节点绝对末维近似 ids_avg（零仿真）。Rust shadow 固定 corner s02p0_l01p0（2ps slew/1fF load）。
+    mode '2' = GBDT15（15 维特征布局与 data_loader L532-556 一致）；'1'（或 '2' 但 joblib 缺失）= 线性系数。
+    node_static: [N, base] 静态特征（列序与训练 build_static_graph 一致）。"""
+    import math
+    import numpy as _np
+    if hasattr(node_static, 'detach'):
+        node_static = node_static.detach().cpu().numpy()
+    else:
+        node_static = _np.asarray(node_static)
+    n = node_static.shape[0]
+    f_slew = math.log1p(SLEW_S * 1e12)     # 2ps
+    f_load = math.log1p(LOAD_F * 1e15)     # 1fF
+    f_cslew = math.log1p(CORNER[0])        # 2.0
+    f_cload = math.log1p(CORNER[1])        # 1.0
+    if _APPROX_MODE == '2' and _load_gbdt15() is not None:
+        gb = _GBDT15
+        xv = _np.zeros((n, 15), dtype=_np.float64)
+        xv[:, 0] = f_slew; xv[:, 1] = f_load
+        xv[:, 6] = f_cslew; xv[:, 7] = f_cload
+        xv[:, 3] = _np.array([math.log1p(float(node_static[i, 4])) for i in range(n)])   # par 已 log1p? 否→log1p
+        xv[:, 2] = _np.array([math.log1p(float(node_static[i, 3])) for i in range(n)])   # drive
+        xv[:, 4] = _np.array([float(node_static[i, 1]) for i in range(n)])               # fan(已 log1p)
+        xv[:, 5] = _np.array([float(node_static[i, 6]) for i in range(n)])               # h(已 log1p)
+        xv[:, 8] = xv[:, 2] * xv[:, 1]
+        xv[:, 9] = xv[:, 2] * xv[:, 5]
+        xv[:, 10] = xv[:, 4] * xv[:, 3]
+        xv[:, 11] = xv[:, 0] * xv[:, 1]
+        _fan = _np.expm1(xv[:, 4])
+        _drv = _np.maximum(_np.expm1(xv[:, 2]), 1e-6)
+        _par_f = _np.expm1(xv[:, 3])
+        _tau = (1.0 / _drv) * _np.maximum(_par_f * 1e-15, 1e-18)
+        xv[:, 12] = _np.log1p(_tau * 1e15)
+        xv[:, 13] = _np.log1p(_np.maximum(_par_f * _fan, 1e-9))
+        xv[:, 14] = _np.log1p(_np.maximum(1.0 / (1.0 + _fan), 1e-9))
+        return _np.expm1(gb.predict(xv))
+    # '1' 线性（或 '2' 但 joblib 缺失 → 回退线性）
+    C = config.IDS_AVG_APPROX_COEF
+    out = _np.zeros(n, dtype=_np.float64)
+    for i in range(n):
+        ns = node_static[i]
+        f_drive = math.log1p(float(ns[3]))
+        f_par = math.log1p(float(ns[4]))
+        f_fan = float(ns[1])             # 已 log1p(fanout)
+        f_h = float(ns[6])               # 已 log1p(电努力)
+        lg = (C[0] * f_slew + C[1] * f_load + C[2] * f_drive + C[3] * f_par
+              + C[4] * f_fan + C[5] * f_h + C[6] * f_cslew + C[7] * f_cload + C[8])
+        out[i] = math.expm1(lg)
+    return out
+
+
 def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device):
     """单候选、共享静态图：返回每模型的 avg_delay（list，长度 = len(models)）。
     每 (pin,dir) 行对每模型做一次前向，行内多模型求均值 → 电路级平均。
-    16.11.3: USE_IDS_AVG_APPROX=1 时 x = [静态 | 7动态 | 近似ids_avg]（与训练 data_loader 布局一致）"""
+    16.11.35: 近似 ids_avg（mode '1'=线性 / '2'=GBDT15）在 x 绝对末维，in_dim = base+7+1，与训练一致。"""
     num_nodes = len(node_names)
     num_dyn = 7                        # 动态特征固定 7 维（含 gate_states 在动态末位）
     extra_dim = 1 if config.USE_IDS_AVG_APPROX else 0
     base = node_static.shape[1]
+    # 末维近似 ids_avg 对同一候选所有 (pin,dir) 行相同（Rust corner 固定 2ps/1fF）→ 预算一次
+    approx_ids = _approx_ids_avg_vector(node_static) if config.USE_IDS_AVG_APPROX else None
+    if approx_ids is not None:
+        approx_ids = torch.as_tensor(approx_ids, dtype=node_static.dtype, device=device)
     node_static = node_static.to(device)
     edge_index = edge_index.to(device)
     acc = np.zeros(len(models))
@@ -132,23 +219,9 @@ def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, out
             for i, n in enumerate(node_names):
                 if n in dyn:
                     x[i, base:base + num_dyn] = torch.tensor(dyn[n], dtype=torch.float, device=device)
-            # 16.11.3: 绝对末维 = 近似 ids_avg（零仿真拟合，系数同 data_loader/config）
-            if config.USE_IDS_AVG_APPROX:
-                import math
-                f_slew = math.log1p(SLEW_S * 1e12)   # 2ps
-                f_load = math.log1p(LOAD_F * 1e15)   # 1fF
-                f_cslew = math.log1p(CORNER[0])      # 2.0
-                f_cload = math.log1p(CORNER[1])      # 1.0
-                C = config.IDS_AVG_APPROX_COEF
-                for i in range(num_nodes):
-                    ns = node_static[i]
-                    f_drive = math.log1p(float(ns[3]))
-                    f_par = math.log1p(float(ns[4]))
-                    f_fan = float(ns[1])             # 已 log1p(fanout)
-                    f_h = float(ns[6])               # 已 log1p(电努力)
-                    lg = (C[0]*f_slew + C[1]*f_load + C[2]*f_drive + C[3]*f_par
-                          + C[4]*f_fan + C[5]*f_h + C[6]*f_cslew + C[7]*f_cload + C[8])
-                    x[i, -1] = float(math.expm1(lg))
+            # 绝对末维 = 近似 ids_avg（零仿真，_approx_ids_avg_vector 按 _APPROX_MODE 算好）
+            if approx_ids is not None:
+                x[:, -1] = approx_ids
             gs = _gate_states_bfs(node_names, node_static, edge_index, vector_str, pins, switching, outs)
             gs_lc = {str(k).lower(): v for k, v in gs.items()}
             # gate_states 写在动态 7 维的末位（与训练一致）

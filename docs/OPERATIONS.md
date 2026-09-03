@@ -1,7 +1,7 @@
 # 运行手册（OPERATIONS）——服务器 / 变体 / 开关 / 现状 / serve / git
 
 > 与 `TESTING_GUIDE.md`（测试流程）、`GNN_PROJECT_REQUIREMENTS.md` §4/§6.1（启动/命令安全规范）配套。
-> 最后更新：2026-09-03（16.11.33）。
+> 最后更新：2026-09-03（16.11.34）。
 
 ## 1. 环境与目录布局
 
@@ -44,7 +44,7 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `struct*`（structlogic/rich/elec…） | STRUCT_MODE 消融 | 默认 logic_only |
 
 - 命名规则：变体名 = 特征/目标前缀 + seed；尾部 `m4` 仅是历史标识（数据默认已含 m4）。
-- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2iaa42m4 = 线性近似（纯 huber）；v2iag42m4 = GBDT15（训练中）；v2iaar42m4 = 线性+rank（训练中）；v2kdwave42iaa42 = 蒸馏学生（训练中）。
+- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2iaa42m4 = 线性近似（纯 huber，Rust 数字 ⚠ 不可复现，基线已切下）；v2iag42m4 = GBDT15（Test 23.00%，**Rust shadow 已跑完：严格@3 44.3% / 遗憾 12.19% / 两阶段 3.93%，serve 鲁棒性优于线性但仍启发式**）；v2iaar42m4 = 线性+rank（训练中）；v2kdwave42iaa42 = 蒸馏学生（训练中）。
 
 ## 4. 关键开关（config.py，多数可 env 覆盖）
 
@@ -61,20 +61,19 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-03，16.11.33）
+## 5. 当前状态（2026-09-03，16.11.34）
 
-**正在跑（3 run = 18 核）**：
+**正在跑（2 run = 12 核）**：
 
 | run | 内容 | 状态 |
 |---|---|---|
-| `~/project-107-v2iag42m4` | GBDT15（Epoch 180+，RESUME 100 续训） | 训练中 |
 | `~/project-107-v2iaar42m4` | 排序 loss #8 | 训练中（9-3 启动） |
 | `~/project-107-v2kdwave42iaa42` | iaa 蒸馏 #12 | 训练中（9-3 启动，KD 软标签已加载） |
 
 **其他现场**：
-- serve：`~/project-107-v2iaa42m4` 的 serve_http 仍挂 **8000 端口**（ckpt=v2iaa42m4 mid200，`USE_IDS_AVG_APPROX=1`）——v2iaa42m4 shadow 用后未退；给新模型跑 shadow 前需换 checkpoint。
+- serve：8000 端口现挂 **v2iag42m4 mid200**（`USE_IDS_AVG_APPROX=2`，serve log `serve_v2iag42m4.log`，GBDT15 `idsavg_gbdt15.joblib` 加载确认）——v2iag42m4 Rust shadow 已跑完（9-3 19:09）；下次给新模型跑 shadow 时再停旧起新。
 - 教师软标签：`~/project-107-v2wave42m4/outputs/kd_teacher_preds_{train,val,test}.npy`（已产出，train 514,494 行，对拍通过 regret 0.51%/Spearman 0.696）。
-- 已训完模型：v2wave42m4（教师）、v2iaa42m4（含 Rust shadow CSV 9-2 19:14）、v2nowave42m4（16.11.33 记录完成；Test 22.13%，Rust 未跑，I7）。
+- 已训完模型：v2wave42m4（教师）、v2iaa42m4（含 Rust shadow CSV 9-2 19:14，⚠ 数字不可复现，基线已切 v2iag）、v2nowave42m4（16.11.33 记录；Test 22.13%，Rust 未跑）、v2iag42m4（16.11.34 记录；Test Median 23.00%，**Rust shadow 已跑完 9-3：严格@3 44.3% / 遗憾 12.19% / 两阶段 3.93%，I7 已裁决**，见 PROJECT_LOG/DIFF §13.2）。
 
 ## 6. serve / Rust shadow 操作
 
