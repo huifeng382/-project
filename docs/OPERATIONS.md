@@ -66,7 +66,7 @@ RESUME=1 bash setup_exp.sh <原变体名>
 **正在跑（0 run）**：无（delay #8 `v2iaar42m4` 已于 09-04 00:54 收尾；idsavg 全量 diag 已完成 → IDS_AVG_GNN.md §4.2）。
 
 **已训完（2026-09-04 更新）**：
-- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 00:54 收尾；**train-side 已记 PROJECT_LOG 17.0.2**（排序指标 m4 系最优：遗憾 2.94/Sp 0.485/recall@3B 87.4,但 Test Med 26.0 绝对劣化）。**serve 决定 = midpoint_ep150 跑 Rust shadow**（线性近似 serve 失配风险,验真读数;Step 1 先查 in_features）——收尾后恢复交付基线 nowave。
+- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 收尾；**train-side + Rust 均已记**（PROJECT_LOG 17.0.2/17.0.3、DIFF §13.5）——Rust 选择遗憾 12.72%（中位 7.71）仍输 nowave 10.87，**两阶段 3.64% 五者最低**；nowave 纯拓扑交付基线不变，serve 已换回 nowave(midpoint_ep250)。
 - `v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
