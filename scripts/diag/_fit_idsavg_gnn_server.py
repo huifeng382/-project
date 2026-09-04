@@ -12,8 +12,10 @@
 用法 (服务器, 训练在服务器跑 = 用户执行):
   DATA_BATCHES='batch_v2_full,batch_v2_rest,batch_v2_m4' python scripts/diag/_fit_idsavg_gnn_server.py
   可选: N_CAP=<电路数上限> 快速验证; EPOCHS=<n> 默认 45; NO_NOGRAPH=1 跳过无边对照(省~一半时间)
+  17.0.5: K/HID/EMB/DROPOUT/LR/PATIENCE 可 env 覆盖(0=不早停); CONE_FEAT=1 追加锥体/距离通道(见 17.0.5 记录)
 """
 import sys, os, json, math, time, glob as _glob
+from collections import deque
 import numpy as np
 import pandas as pd
 import torch
@@ -35,9 +37,13 @@ N_CAP = int(os.environ.get('N_CAP', '0') or 0)     # 0=全部电路
 EPOCHS = int(os.environ.get('EPOCHS', '45'))
 NO_NOGRAPH = os.environ.get('NO_NOGRAPH', '0') == '1'
 CIRC_SPLIT = (0.85, 0.05, 0.10)
-# GNN 超参 (同 DelayGNN 复刻)
-EMB = 16; HID = 96; K = 3; DROPOUT = 0.25; LR = 3e-3
-N_CONT_BASE = 7; N_EXTRA = 7
+# GNN 超参 (同 DelayGNN 复刻); 17.0.5 起全部可 env 覆盖 (A/B 对照用)
+EMB = int(os.environ.get('EMB', '16')); HID = int(os.environ.get('HID', '96'))
+K = int(os.environ.get('K', '3')); DROPOUT = float(os.environ.get('DROPOUT', '0.25'))
+LR = float(os.environ.get('LR', '3e-3'))
+PATIENCE = int(os.environ.get('PATIENCE', '0') or 0)   # 0 = 不早停 (沿用历史行为)
+CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'     # B: 追加锥体/距离通道 (N_EXTRA 7->10)
+N_CONT_BASE = 7; N_EXTRA = 10 if CONE_FEAT else 7
 
 def parse_corner(corner):
     try:
@@ -177,7 +183,13 @@ for ci, cid in enumerate(circ_all):
         blk.append({'edges': edges, 'f_slew': f_slew, 'f_load': f_load, 'f_cs': f_cs,
                     'f_cl': f_cl, 'dir_code': dir_code, 'src_i': src_i, 'out_i': out_i, 'sup': sup})
     if blk:
-        blocks[cid] = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?')}
+        _be = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?')}
+        if CONE_FEAT and edges:      # B: 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
+            _adj = {}; _radj = {}
+            for _a, _b in edges:
+                _adj.setdefault(_a, []).append(_b); _radj.setdefault(_b, []).append(_a)
+            _be['adj'] = _adj; _be['radj'] = _radj
+        blocks[cid] = _be
     if (ci+1) % 5000 == 0:
         print(f'  电路 {ci+1}/{len(circ_all)}: GBDT样本 {len(ys)} / 块 {len(blocks)}, {time.time()-t0:.0f}s', flush=True)
 
@@ -251,6 +263,16 @@ class IdsAvgGNN(nn.Module):
                 x = x + residual
         return self.head(x).squeeze(-1)
 
+def _cone_dists(start, adj):
+    """BFS 沿有向边 (driver->receiver) 从 start 出发: 返回 {节点: 跳数}. 无边时仅含 start."""
+    dist = {start: 0}; dq = deque([start])
+    while dq:
+        u = dq.popleft()
+        for v in adj.get(u, ()):
+            if v not in dist:
+                dist[v] = dist[u] + 1; dq.append(v)
+    return dist
+
 def assemble(cids, use_edges=True):
     out = []
     for cid in cids:
@@ -271,6 +293,22 @@ def assemble(cids, use_edges=True):
             T[s:e, N_CONT_BASE+4] = row['dir_code']
             if row['src_i'] is not None: T[s+row['src_i'], N_CONT_BASE+5] = row['f_slew']
             if row['out_i'] is not None: T[s+row['out_i'], N_CONT_BASE+6] = row['f_load']
+            if CONE_FEAT:
+                # B: 锥体/距离通道 (N_EXTRA 已扩到 10, 原锚位 +5/+6 不变):
+                #   +7 在 src 扇出锥内(含 src) | +8 沿有向边下游深度 (src=0, 最深=1)
+                #   +9 反向(朝 out)上游深度 = 喂到该输出的路径深度; src_i/out_i=None => 全 0
+                co = np.zeros((N, 3), dtype=np.float32)
+                if row['src_i'] is not None:
+                    d1 = _cone_dists(row['src_i'], b.get('adj', {}))
+                    md1 = max(d1.values()) if d1 else 0
+                    for g, dd in d1.items():
+                        co[g, 0] = 1.0; co[g, 1] = dd / max(md1, 1)
+                if row['out_i'] is not None:
+                    d2 = _cone_dists(row['out_i'], b.get('radj', {}))
+                    md2 = max(d2.values()) if d2 else 0
+                    for g, dd in d2.items():
+                        co[g, 2] = dd / max(md2, 1)
+                T[s:e, N_CONT_BASE+7:N_CONT_BASE+10] = co
             Ty[s:e] = typ
         edges_t = []
         if use_edges:
@@ -303,7 +341,7 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
     model = IdsAvgGNN(NUM_TYPES, n_cont).to(DEV)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
-    best_va = -1e9; best_sd = None
+    best_va = -1e9; best_sd = None; best_ep = 0
     def eval_blocks(datas):
         model.eval()
         ps, ts = [], []
@@ -334,7 +372,11 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
             vr2, vrho, n = eval_blocks(va_data)
             print(f'  [{name}] ep {ep+1:2d}  train_loss={el/max(nb,1):.5f}  val_R^2={vr2:.4f} (n={n})', flush=True)
             if vr2 > best_va:
-                best_va = vr2; best_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+                best_va = vr2; best_ep = ep+1
+                best_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
+            elif PATIENCE > 0 and (ep+1) - best_ep >= PATIENCE:
+                print(f'  [{name}] early stop @ ep {ep+1} (patience {PATIENCE}; best val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
+                break
     model.load_state_dict(best_sd)
     tr2, trho, tn = eval_blocks(tr_data)
     te2, teho, ten = eval_blocks(te_data)

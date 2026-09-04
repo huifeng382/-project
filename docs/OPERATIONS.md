@@ -72,11 +72,11 @@ RESUME=1 bash setup_exp.sh <原变体名>
 idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽对照待办）。
 
 **已训完（2026-09-04 更新）**：
-- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 收尾；**train-side + Rust 均已记**（PROJECT_LOG 17.0.2/17.0.3、DIFF §13.5）——Rust 选择遗憾 12.72%（中位 7.71）仍输 nowave 10.87，**两阶段 3.64% 五者最低**；nowave 纯拓扑交付基线不变；serve 待换回 nowave（见 §5 其他现场，命令 §6 Step 6，用户待执行）。
+- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 收尾；**train-side + Rust 均已记**（PROJECT_LOG 17.0.2/17.0.3、DIFF §13.5）——Rust 选择遗憾 12.72%（中位 7.71）仍输 nowave 10.87，**两阶段 3.64% 五者最低**；nowave 纯拓扑交付基线不变；serve 已停（09-04 用户决定不常驻，要用再起，见 §5 其他现场）。
 - `v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
-- serve：8000 端口现挂 **v2iaar42m4 midpoint_ep150**（in=46 线性近似，带 USE_IDS_AVG_APPROX=1；serve log `~/-project/serve_v2iaar42m4.log`）——其 Rust shadow 已跑完（09-04 12:23，17.0.3，DIFF §13.5，非交付路线）。**待换回交付基线 v2nowave42m4**（midpoint_ep250，命令见 §6 Step 6 / 用户待执行）。
+- serve：**已停**（09-04 用户决定不常驻，要用再起）。下次起 serve 前先定挂哪个 ckpt：交付基线 = `v2nowave42m4/outputs/midpoint_ep250.pt`（不带 env）；验 v2nowaver42m4 / v2iagr42m4 Rust shadow 时挂各自 ckpt（Step 1 查 in_features 定 env）。起服命令见 §6 Step 2/Step 6。
 - 教师软标签：`~/project-107-v2wave42m4/outputs/kd_teacher_preds_{train,val,test}.npy`（已产出，train 514,494 行，对拍通过 regret 0.51%/Spearman 0.696）。
 - 已训完模型（m4 Rust 三兄弟全跑完，定论 DIFF §13.3）：v2wave42m4（教师）；**v2nowave42m4 = 纯拓扑，Rust 遗憾 10.87% 最优（serve 交付走此路线）**；v2iaa42m4 = 线性，Rust 记录 ⚠ 不可复现（遗憾 15.21%，serve 净伤最大）；v2iag42m4 = GBDT15，Rust 严格@3 44.3% / 遗憾 12.19%（最不伤近似）。
 
