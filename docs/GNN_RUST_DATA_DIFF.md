@@ -884,7 +884,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 1. **train-side rank 大优不转移 serve**：train 遗憾 2.94%（PROJECT_LOG 17.0.2，m4 系 train 最优）→ Rust **12.72%，仍输朴素纯拓扑 nowave（10.87，+1.85pp），仅 ≈ iag 12.19**；严格@3 31.1%（宽松 59.4% 五者最低）远逊 nowave 39.6 / iag 44.3。
 2. **机制** = §13.1 线性近似列 serve 失配未因 rank 修复：rank 把训练分布上 pairwise 排序练得更锐，但 serve 端候选门结构分布漂移（GNN 粗筛面对的正是候选集）把增益吃回 → **给 serve-hostile 特征加训练强度救不了 serve 失配**。
 3. **两阶段 3.64% 五者最低**（hi_spread 4.50 vs nowave 5.03 / iag 4.96）→ "GNN 前3→SPICE 精排"流程下 iaar 是 5 个里最有效的粗筛；但 serve 主判据按 GNN 自选 top1 遗憾（12.72 > 5%）仍不达标。
-4. **收敛强化**：m4 五模型 Rust 全验完，**加近似 ids_avg 特征（线性/GBDT15）serve 端即便叠 rank/KD 均赢不了朴素纯拓扑 → 交付基线锁定 v2nowave42m4**。若仍想验证 rank 杠杆能否在 serve 兑现，唯一未试 = **rank loss + 可 serve 特征（nowave 纯拓扑 或 iag GBDT15）**——候选 next、非必须（§十三已收敛，边际预期低）。
+4. **收敛强化**：m4 五模型 Rust 全验完，**加近似 ids_avg 特征（线性/GBDT15）serve 端即便叠 rank/KD 均赢不了朴素纯拓扑 → 交付基线锁定 v2nowave42m4**。若仍想验证 rank 杠杆能否在 serve 兑现，唯一未试 = **rank loss + 可 serve 特征（nowave 纯拓扑 或 iag GBDT15）**——候选 next、非必须（§十三已收敛，边际预期低）；**17.0.4 已起跑该两空格：`v2nowaver42m4`（纯拓扑×rank）+ `v2iagr42m4`（GBDT15×rank），见 OPERATIONS §5**。
 
 ---
 

@@ -160,6 +160,11 @@ case "$V" in
     sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
     _S=$(echo "${V#v2nowave}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v2nowaver[0-9]*)  # 17.0.4 空格2: nowave(纯拓扑无近似) + 真值组内 rank 直训（§13.5 rank×最佳serve特征）
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    sed -i "s/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/" config.py
+    _S=$(echo "${V#v2nowaver}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
 esac
 
 # V3 波形消融变体（16.3.0）：v2ia<seed> 只留 ids_avg 单字段；v2cov25<seed> 25% 行覆盖率（覆盖率种子固定 42）
@@ -179,6 +184,12 @@ case "$V" in
     export WAVE_FIELDS='ids_avg'
     export USE_IDS_AVG_APPROX=2
     _S=$(echo "${V#v2iag}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v2iagr[0-9]*)   # 17.0.4 空格1: iag(GBDT15近似) + 真值组内 rank 直训（§13.5 rank×可serve特征）
+    export WAVE_FIELDS='ids_avg'
+    export USE_IDS_AVG_APPROX=2
+    sed -i "s/^RANK_LOSS_W = .*/RANK_LOSS_W = 0.5/" config.py
+    _S=$(echo "${V#v2iagr}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2iaar[0-9]*)
     export WAVE_FIELDS='ids_avg'

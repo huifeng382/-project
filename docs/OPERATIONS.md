@@ -1,7 +1,7 @@
 # 运行手册（OPERATIONS）——服务器 / 变体 / 开关 / 现状 / serve / git
 
 > 与 `TESTING_GUIDE.md`（测试流程）、`GNN_PROJECT_REQUIREMENTS.md` §4/§6.1（启动/命令安全规范）配套。
-> 最后更新：2026-09-04（17.0.1）。
+> 最后更新：2026-09-04（17.0.4）。
 
 ## 1. 环境与目录布局
 
@@ -38,13 +38,15 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `v2iaa<seed>` | ids_avg + **线性拟合近似**(`USE_IDS_AVG_APPROX=1`) | 零仿真可算特征 |
 | `v2iag<seed>` | ids_avg + **GBDT15 近似**(`USE_IDS_AVG_APPROX=2`) | 需 `outputs/idsavg_gbdt15.joblib` |
 | `v2iaar<seed>` | v2iaa + **真值排序 loss**(`RANK_LOSS_W=0.5`) | #8 排序直训（2026-09-03） |
+| `v2iagr<seed>` | v2iag(GBDT15近似) + **真值排序 loss**(`RANK_LOSS_W=0.5`) | 17.0.4 空格1 = rank×最不伤近似（补 §13.5 矩阵空格） |
+| `v2nowaver<seed>` | v2nowave(纯拓扑) + **真值排序 loss**(`RANK_LOSS_W=0.5`) | 17.0.4 空格2 = rank×最佳 serve 特征 |
 | `v2kdwave42iaa<seed>` | **v2wave42m4 教师蒸馏**(reg+rank)；⚠ 名带 iaa 但学生**实为纯拓扑**——KD 分支 `USE_TRANSISTOR_WAVE=False` 把近似列门控挡掉（data_loader L507/L510），`USE_IDS_AVG_APPROX=1` 未生效 | #12；教师软标签在教师 outputs；「iaa 学生+KD」格从未真正测过（DIFF §13.4 更正） |
 | `v2kd<teacher><mode><seed>` | 旧蒸馏（teacher=123/ENS；mode=reg/rr） | 15.2；学生无近似特征（已弃路线） |
 | `rankloss1/2`、`bmsm`、`es`、`anneal`、`bestrank`、`seed*` | base 系调参/选点/种子 | V1 时代为主 |
 | `struct*`（structlogic/rich/elec…） | STRUCT_MODE 消融 | 默认 logic_only |
 
 - 命名规则：变体名 = 特征/目标前缀 + seed；尾部 `m4` 仅是历史标识（数据默认已含 m4）。
-- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**Rust 选择遗憾 10.87% = m4 系最优，serve 交付走此路线**，DIFF §13.3）；v2iaa42m4 = 线性近似（纯 huber，Rust 记录 ⚠ 不可复现、serve 净伤最大）；v2iag42m4 = GBDT15（Test 23.00%，Rust 严格@3 44.3%/遗憾 12.19%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（训练中）；v2kdwave42iaa42 = wave 教师 KD 学生（**已验 Rust：名带 iaa 实 in=45 纯拓扑，遗憾 14.97% vs nowave 10.87% 双端不赢，DIFF §13.4**）。
+- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**Rust 选择遗憾 10.87% = m4 系最优，serve 交付走此路线**，DIFF §13.3）；v2iaa42m4 = 线性近似（纯 huber，Rust 记录 ⚠ 不可复现、serve 净伤最大）；v2iag42m4 = GBDT15（Test 23.00%，Rust 严格@3 44.3%/遗憾 12.19%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（已双端验，DIFF §13.5）；v2kdwave42iaa42 = wave 教师 KD 学生（**已验 Rust：名带 iaa 实 in=45 纯拓扑，遗憾 14.97% vs nowave 10.87% 双端不赢，DIFF §13.4**）。
 
 ## 4. 关键开关（config.py，多数可 env 覆盖）
 
@@ -61,16 +63,20 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-04，17.0.1）
+## 5. 当前状态（2026-09-04，17.0.4）
 
-**正在跑（0 run）**：无（delay #8 `v2iaar42m4` 已于 09-04 00:54 收尾；idsavg 全量 diag 已完成 → IDS_AVG_GNN.md §4.2）。
+**正在跑（2 run，17.0.4 起，各 OMP_NUM_THREADS=6 = 12 核占用；补 §13.5「rank×可serve特征」矩阵两空格）**：
+- `~/project-107-v2nowaver42m4`（**空格2 纯拓扑×rank**，CACHE_SEED=`~/project-107-v2nowave42m4`）：rank 放最佳 serve 特征能否 < nowave Rust 遗憾 10.87%；≈/× → rank 目标线关闭
+- `~/project-107-v2iagr42m4`（**空格1 GBDT15×rank**，CACHE_SEED=`~/project-107-v2iag42m4`）：赌 rank 遗憾优势 × iag 严格@3 召回优势能否叠加 > nowave/iag
+
+idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽对照待办）。
 
 **已训完（2026-09-04 更新）**：
-- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 收尾；**train-side + Rust 均已记**（PROJECT_LOG 17.0.2/17.0.3、DIFF §13.5）——Rust 选择遗憾 12.72%（中位 7.71）仍输 nowave 10.87，**两阶段 3.64% 五者最低**；nowave 纯拓扑交付基线不变，serve 已换回 nowave(midpoint_ep250)。
+- `~/project-107-v2iaar42m4`（排序 loss #8 = iaa+rank）：09-04 收尾；**train-side + Rust 均已记**（PROJECT_LOG 17.0.2/17.0.3、DIFF §13.5）——Rust 选择遗憾 12.72%（中位 7.71）仍输 nowave 10.87，**两阶段 3.64% 五者最低**；nowave 纯拓扑交付基线不变；serve 待换回 nowave（见 §5 其他现场，命令 §6 Step 6，用户待执行）。
 - `v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
-- serve：8000 端口现挂 **v2kdwave42iaa42 midpoint_ep100**（纯拓扑 in=45，无 env；serve log `~/-project/serve_v2kdwave42iaa42.log`）——其 Rust shadow 已跑完（22:03，遗憾 14.97%，DIFF §13.4，非交付路线）。**待换回交付基线 v2nowave42m4**（midpoint_ep250，命令见 §6 Step 6）。
+- serve：8000 端口现挂 **v2iaar42m4 midpoint_ep150**（in=46 线性近似，带 USE_IDS_AVG_APPROX=1；serve log `~/-project/serve_v2iaar42m4.log`）——其 Rust shadow 已跑完（09-04 12:23，17.0.3，DIFF §13.5，非交付路线）。**待换回交付基线 v2nowave42m4**（midpoint_ep250，命令见 §6 Step 6 / 用户待执行）。
 - 教师软标签：`~/project-107-v2wave42m4/outputs/kd_teacher_preds_{train,val,test}.npy`（已产出，train 514,494 行，对拍通过 regret 0.51%/Spearman 0.696）。
 - 已训完模型（m4 Rust 三兄弟全跑完，定论 DIFF §13.3）：v2wave42m4（教师）；**v2nowave42m4 = 纯拓扑，Rust 遗憾 10.87% 最优（serve 交付走此路线）**；v2iaa42m4 = 线性，Rust 记录 ⚠ 不可复现（遗憾 15.21%，serve 净伤最大）；v2iag42m4 = GBDT15，Rust 严格@3 44.3% / 遗憾 12.19%（最不伤近似）。
 
