@@ -1,7 +1,7 @@
 # 运行手册（OPERATIONS）——服务器 / 变体 / 开关 / 现状 / serve / git
 
 > 与 `TESTING_GUIDE.md`（测试流程）、`GNN_PROJECT_REQUIREMENTS.md` §4/§6.1（启动/命令安全规范）配套。
-> 最后更新：2026-09-04（17.0.0）。
+> 最后更新：2026-09-04（17.0.1）。
 
 ## 1. 环境与目录布局
 
@@ -61,15 +61,13 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-03，16.11.38）
+## 5. 当前状态（2026-09-04，17.0.1）
 
-**正在跑（1 run）**：
+**正在跑（0 run）**：无（delay #8 `v2iaar42m4` 已于 09-04 00:54 收尾；idsavg 全量 diag 已完成 → IDS_AVG_GNN.md §4.2）。
 
-| run | 内容 | 状态 |
-|---|---|---|
-| `~/project-107-v2iaar42m4` | 排序 loss #8 | 训练中（9-3 启动，epoch ~179） |
-
-**已训完（2026-09-03）**：`v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
+**已训完（2026-09-04 更新）**：
+- `~/project-107-v2iaar42m4`（排序 loss #8）：09-04 00:54 产出 `test_predictions.npz`，midpoint 最远 ep200（23:17）——**已收尾，train-side SUMMARY 记录待补**（runbook §6.1 Step 0 口径）。
+- `v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
 - serve：8000 端口现挂 **v2kdwave42iaa42 midpoint_ep100**（纯拓扑 in=45，无 env；serve log `~/-project/serve_v2kdwave42iaa42.log`）——其 Rust shadow 已跑完（22:03，遗憾 14.97%，DIFF §13.4，非交付路线）。**待换回交付基线 v2nowave42m4**（midpoint_ep250，命令见 §6 Step 6）。

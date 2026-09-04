@@ -1,7 +1,7 @@
 # IDSAVG GNN —— 独立 per-gate ids_avg 预测模型（DelayGNN 复刻改造）
 
-> 版本记录首条：**17.0.0（2026-09-04）**。判定唯一尺度 = **per-gate 真实 `ids_avg` 预测准确率**（R²/Spearman），与 delay 无关。
-> 状态：本地受控对比**已验证**；服务器全量（含 m4）测试**待跑**。
+> 版本记录：**17.0.0（2026-09-04，本地受控）→ 17.0.1（2026-09-04，服务器全量基线）**。判定唯一尺度 = **per-gate 真实 `ids_avg` 预测准确率**（R²/Spearman），与 delay 无关。
+> 状态：本地受控 + **服务器全量（含 m4）均验证完成（17.0.1）**；参数放宽对照待定。
 
 ## 1. 目的与定位
 
@@ -34,10 +34,12 @@ x_i' = W1·x_i + W2·Σ_{j→i} x_j          # 有向 driver→receiver 边; ind
 - **本地受控**：`batch_v2_full` 采样 1500 电路（RandomState(42)），**电路级切分** 1200/150/150（RandomState(7)；
   test = 训练从未见过的电路，serve 真实口径）。80 epochs，AdamW lr 3e-3 wd 1e-4，cosine，best-val 选优。
 - **对照同图**：A GBDT15（15 特征部署同款）；V gnn（有向边）；W nograph（同特征无边 = per-node MLP，**隔离"消息传递"本身**）。
-- **服务器全量（待跑）**：`_fit_idsavg_gnn_server.py`，`DATA_BATCHES` 默认 full+rest+m4（同 config；rest 自动认 `*_partN.parquet`），
+- **服务器全量（17.0.1 已完成，见 §4.2）**：`_fit_idsavg_gnn_server.py`，`DATA_BATCHES` 默认 full+rest+m4（同 config；rest 自动认 `*_partN.parquet`），
   电路级切分，**test 按批次来源分桶**（full/rest/m4）专看 m4（V3.2 五形状）泛化。
 
-## 4. 结果（本地受控，已验证）
+## 4. 结果
+
+### 4.1 本地受控（17.0.0 · 1500c 子集 · 已验证）
 
 | 模型 | test R²（未见电路） | Spearman | 说明 |
 |---|---|---|---|
@@ -50,6 +52,20 @@ x_i' = W1·x_i + W2·Σ_{j→i} x_j          # 有向 driver→receiver 边; ind
 - gnn 超 GBDT15 = **+0.096**；Spearman 0.79 亦显著更高。
 - ⇒ 有向图传播 + 刺激源锚定携带 GBDT15 均匀广播**看不见**的 per-gate ids_avg 信号 → **方向成立，值得做 serve 端真模型**。
 - W ≈ A 印证"广播特征天花板 ~0.67"，只有图结构能突破。
+
+### 4.2 服务器全量（17.0.1 · full+rest+m4 全域 · 电路级切分 · 已验证）
+
+`_fit_idsavg_gnn_server.py`，EPOCHS=45、NO_NOGRAPH=1（W 无边对照本地已定论，不重跑）；test 按批次来源分桶。
+
+| test 分桶（未见电路） | n（row,gate 样本） | GNN R² | GBDT15 R² | Δ |
+|---|---|---|---|---|
+| batch_v2_full | 48,905 | **0.7131** | 0.6363 | +0.077 |
+| batch_v2_rest | 386,194 | **0.6954** | 0.5492 | +0.146 |
+| **batch_v2_m4（五形状）** | 125,143 | **0.6583** | **0.2391** | **+0.419** |
+
+- 总体：GNN test R²=**0.7012** / Spearman 0.7105 / best_val 0.6959；GBDT15 整体 ≈0.49（test 样本量加权粗估，精确值分桶见表）。
+- **m4 桶 = 关键读数**：未见电路（V3.2 五形状）上 GBDT15 均匀广播近似**近失效（0.24）**，结构 GNN 仍稳（0.66）→ **图结构跨形态泛化、广播特征近似不能，获全量证实**；serve 端真模型方向的支持度远强于本地子集（全域 +0.21 / m4 +0.42 vs 本地 +0.096）。
+- ⚠ 全量 GNN test **0.7012 < 本地子集 0.7697**：分布更广更难 + 只 45ep（本地 80ep）+ 模型按子集取偏小（K3/h96）；best_val≈test **无过拟合、偏欠拟合** ⇒ 层数/宽度/EPOCHS/patience 放宽有实证依据，列为待办对照（未跑）。
 
 ## 5. 文件与复现
 
@@ -67,5 +83,6 @@ DATA_BATCHES='batch_v2_full,batch_v2_rest,batch_v2_m4' OMP_NUM_THREADS=6 python 
 
 - ⚠ **GSZ>1 拼接提速为实验性**：block-diagonal 拼接前向与逐电路数值等价（实测差 ~3e-7），但 AdamW 训练大拼接不稳（val 崩）；**默认 GSZ=1 逐电路，勿开 GSZ>1**。
 - 本地无 `pyg`（import 崩）→ 纯 torch 复刻即为此；服务器若可用 pyg 亦无需换。
-- **待办 = 服务器全量（含 m4）测试**：跑 `_fit_idsavg_gnn_server.py` 后，把 A/V/W 判定 + 分桶（尤其 m4 桶 gnn vs GBDT15）贴回，据此看 m4 未见形态泛化再定 serve 端是否推进。
-- 结果以本文件 + PROJECT_LOG 17.0.0 为准；数据相关引用仍以 `docs/GNN_RUST_DATA_DIFF.md` §14 审计标注为基准。
+- ✅ **服务器全量（含 m4）基线已完成（17.0.1）**：判定 + 分桶见 §4.2——每桶 GNN 均胜，m4 桶 GBDT15 0.24 vs GNN 0.66。
+- **待办 = 参数放宽对照**：全量 gnn 偏欠拟合（§4.2，best_val≈test、0.7012 < 本地 0.7697）→ 试 K=4~5 / 宽度放大 / EPOCHS 加大 + patience 早停，专看 m4 桶能否再涨。需先给服务器脚本加 env 旋钮，改动清单确认后动。
+- 结果以本文件 + PROJECT_LOG 17.0.1 为准；数据相关引用仍以 `docs/GNN_RUST_DATA_DIFF.md` §14 审计标注为基准。
