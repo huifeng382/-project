@@ -98,7 +98,11 @@ ddf = ddf[ddf['transistor_wave_json'].notna()]
 print(f'总: 电路 {len(sdf)} / 行 {len(ddf)}', flush=True)
 
 # 电路级切分
-circ_all = [c for c in sdf.index if c in set(ddf['circuit_id'])]
+# ⚠ 17.0.9 修复: circuit_id 为 pyarrow-backed string, set()/list() 逐元素走 arrow.__iter__
+#   → 746k 行实测 30min+ 仍卡 (py-spy 定位; 此前 A2/B2 也在此磨 ~30-45min 未被察觉, N_CAP 探针"停滞"同源)
+#   先 C 速 to_numpy() 转 object 再做 set (语义相同, 亚秒级)。
+_cid_set = set(ddf['circuit_id'].to_numpy())
+circ_all = [c for c in sdf.index if c in _cid_set]
 if N_CAP > 0:
     circ_all = np.random.RandomState(42).choice(circ_all, size=min(N_CAP, len(circ_all)), replace=False).tolist()
 circ_all = list(circ_all)
