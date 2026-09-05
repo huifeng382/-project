@@ -13,6 +13,7 @@
   DATA_BATCHES='batch_v2_full,batch_v2_rest,batch_v2_m4' python scripts/diag/_fit_idsavg_gnn_server.py
   可选: N_CAP=<电路数上限> 快速验证; EPOCHS=<n> 默认 45; NO_NOGRAPH=1 跳过无边对照(省~一半时间)
   17.0.5: K/HID/EMB/DROPOUT/LR/PATIENCE 可 env 覆盖(0=不早停); CONE_FEAT=1 追加锥体/距离通道(见 17.0.5 记录)
+  17.0.8: CONE_V2=1 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13); 17.0.7 A2/B2 裁决见 docs
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -43,7 +44,9 @@ K = int(os.environ.get('K', '3')); DROPOUT = float(os.environ.get('DROPOUT', '0.
 LR = float(os.environ.get('LR', '3e-3'))
 PATIENCE = int(os.environ.get('PATIENCE', '0') or 0)   # 0 = 不早停 (沿用历史行为)
 CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'     # B: 追加锥体/距离通道 (N_EXTRA 7->10)
-N_CONT_BASE = 7; N_EXTRA = 10 if CONE_FEAT else 7
+CONE_V2   = os.environ.get('CONE_V2', '0') == '1'       # 17.0.8: 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13)
+N_CONT_BASE = 7
+N_EXTRA = 13 if CONE_V2 else (10 if CONE_FEAT else 7)
 
 def parse_corner(corner):
     try:
@@ -184,7 +187,7 @@ for ci, cid in enumerate(circ_all):
                     'f_cl': f_cl, 'dir_code': dir_code, 'src_i': src_i, 'out_i': out_i, 'sup': sup})
     if blk:
         _be = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?')}
-        if CONE_FEAT and edges:      # B: 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
+        if (CONE_FEAT or CONE_V2) and edges:      # B/V2: 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
             _adj = {}; _radj = {}
             for _a, _b in edges:
                 _adj.setdefault(_a, []).append(_b); _radj.setdefault(_b, []).append(_a)
@@ -293,11 +296,12 @@ def assemble(cids, use_edges=True):
             T[s:e, N_CONT_BASE+4] = row['dir_code']
             if row['src_i'] is not None: T[s+row['src_i'], N_CONT_BASE+5] = row['f_slew']
             if row['out_i'] is not None: T[s+row['out_i'], N_CONT_BASE+6] = row['f_load']
-            if CONE_FEAT:
-                # B: 锥体/距离通道 (N_EXTRA 已扩到 10, 原锚位 +5/+6 不变):
+            if CONE_V2 or CONE_FEAT:
+                # B/V2: 锥体/距离通道 (N_EXTRA 已扩; 原锚位 +5/+6 不变):
                 #   +7 在 src 扇出锥内(含 src) | +8 沿有向边下游深度 (src=0, 最深=1)
                 #   +9 反向(朝 out)上游深度 = 喂到该输出的路径深度; src_i/out_i=None => 全 0
-                co = np.zeros((N, 3), dtype=np.float32)
+                ncone = 6 if CONE_V2 else 3
+                co = np.zeros((N, ncone), dtype=np.float32)
                 if row['src_i'] is not None:
                     d1 = _cone_dists(row['src_i'], b.get('adj', {}))
                     md1 = max(d1.values()) if d1 else 0
@@ -308,7 +312,26 @@ def assemble(cids, use_edges=True):
                     md2 = max(d2.values()) if d2 else 0
                     for g, dd in d2.items():
                         co[g, 2] = dd / max(md2, 1)
-                T[s:e, N_CONT_BASE+7:N_CONT_BASE+10] = co
+                if CONE_V2:
+                    # V2 +3 通道 (17.0.8), 复用 d1/d2 同一次 BFS —— 描述每扇门在开关事件里的"角色":
+                    #   +3 主通路 (∈d1∧∈d2, 0/1) = 须驱动输出负载的贯穿门; +4 锥内扇出(child∈d1)=分支/叶
+                    #   +5 锥内扇入(parent∈d1)=再汇聚 (多路信号叠加 → 电流大); d1/d2 为空 => 该通道 0
+                    if row['src_i'] is not None and row['out_i'] is not None and d1 and d2:
+                        for g in d1:
+                            if g in d2: co[g, 3] = 1.0
+                    if d1:
+                        _adj = b.get('adj', {}); _radj = b.get('radj', {})
+                        _mxo = _mxi = 0
+                        for g in d1:
+                            _fo = sum(1 for c in _adj.get(g, ()) if c in d1); co[g, 4] = _fo
+                            _fi = sum(1 for p in _radj.get(g, ()) if p in d1); co[g, 5] = _fi
+                            if _fo > _mxo: _mxo = _fo
+                            if _fi > _mxi: _mxi = _fi
+                        if _mxo > 0:
+                            for g in d1: co[g, 4] /= _mxo
+                        if _mxi > 0:
+                            for g in d1: co[g, 5] /= _mxi
+                T[s:e, N_CONT_BASE+7 : N_CONT_BASE+7+ncone] = co
             Ty[s:e] = typ
         edges_t = []
         if use_edges:
