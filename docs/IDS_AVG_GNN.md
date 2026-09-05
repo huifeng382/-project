@@ -97,6 +97,13 @@ A2（K5/H160/EMB32、LR1e-3、80ep、PATIENCE=0）/ B2（同 + `CONE_FEAT=1`）�
 
 **待定（方向性利好）**：serve 端若采用 B2 需 Rust 侧补锥体/距离特征（下游 BFS + 输出深度），成本待估（§13 冲突清单 O 系列可行性）；m4/rest 桶的大优 = serve 端真结构模型收益上限显著上调，是否推进另议。
 
+### 4.5 长程对照 B2long / B2v2long（2026-09-05 启动 · 进行中 · 结果待更）
+
+**动机**：§4.4 A2/B2 best_val 恰落 ep80、末 5ep 增益最大、train_loss 尾段仍升 → 追问"80ep 硬停是否截早"。回应：**不加新硬上限，而是取消硬停作裁决**——EPOCHS=220 仅作天花板、PATIENCE=60 由 val 平台自动早停决定收尾（round-1 的"patience 失败"实为 LR 3e-3 冻优化器，非 patience 本身）。
+**配置**：沿用 A2/B2（K5/H160/E32/LR1e-3/DROPOUT0.25）+ NO_NOGRAPH=1 + 220ep 长程。B2long = `CONE_FEAT=1`（锥体 v1）；B2v2long = `CONE_V2=1`（17.0.8 锥体 v2 = v1 3 通道 + 主通路 d1∩d2 / 锥内扇出 / 锥内扇入，N_EXTRA 10→13）。同图同批次同切分 → 同口径对判。
+**阻塞与根因修复（17.0.9）**：两 run 首启卡在数据切分 `set(ddf['circuit_id'])` 30min+（py-spy 定位：pandas **pyarrow-backed** 字符串列逐元素 `arrow.array.__iter__` 病态慢，746k 行；A2/B2 与历史 N_CAP 探针"停滞"同源，A2/B2 当年在此磨 ~30-45min 未被察觉）。修复 = 先 `ddf['circuit_id'].to_numpy()` C 速转 object 再建 set，语义逐位不变；重启后 2-3min 即越过装配进训练（不再 30min+）。教训入 §6。
+**判读（待补）**：① B2long vs B2(ep80) → "80ep 截早"是否成立（auto early-stop 若收在 ep>80 即证实）；② B2v2long vs B2long → 锥体 v1→v2 增量（同 220ep 口径，重点 m4/rest 桶）。
+
 ## 5. 文件与复现
 
 | 文件 | 用途 |
@@ -115,4 +122,6 @@ DATA_BATCHES='batch_v2_full,batch_v2_rest,batch_v2_m4' OMP_NUM_THREADS=6 python 
 - 本地无 `pyg`（import 崩）→ 纯 torch 复刻即为此；服务器若可用 pyg 亦无需换。
 - ✅ **服务器全量（含 m4）基线已完成（17.0.1）**：判定 + 分桶见 §4.2——每桶 GNN 均胜，m4 桶 GBDT15 0.24 vs GNN 0.66。
 - ✅ **参数放宽对照已定论（17.0.6 A2/B2，§4.4）**：容量 K5/H160/E32+LR1e-3+80ep = test +0.041（0.7012→0.7424）；**叠加锥体 = 0.7866、m4 桶 0.8076**。全量欠拟合假设证实（§4.2 ⚠ 解除）。**未决：serve 端若采用锥体需 Rust 补特征，成本/收益另议**（方向性利好）。
+- 🔄 **长程对照跑中（§4.5，结果待更）**：B2long（CONE_FEAT v1）/ B2v2long（CONE_V2）= EPOCHS220/PATIENCE60 auto early-stop，判 ep80 是否截早 + 锥体 v1→v2 增量。
+- ⚠ **服务器 pandas pyarrow-backed 字符串列病态慢（17.0.9 定位修复）**：read_parquet 后 `circuit_id` 为 Arrow-backed string，`set()`/`list()` 逐元素迭代走 `arrow.array.__iter__`，746k 行实测 30min+（py-spy 实锤；A2/B2 与历史 N_CAP 探针停滞同源，均在此磨 30min+ 未被察觉）。任何脚本对同源 parquet 列做全量 Python 级迭代前，**先 `col.to_numpy()` C 速转 object 再做 set/list**。`_fit_idsavg_gnn_server.py` 已修（L104-105 `_cid_set`）。
 - 结果以本文件 + PROJECT_LOG 17.0.1 为准；数据相关引用仍以 `docs/GNN_RUST_DATA_DIFF.md` §14 审计标注为基准。

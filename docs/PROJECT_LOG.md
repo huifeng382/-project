@@ -785,6 +785,7 @@ Ordered best to worst:
 
 - **17.0.5 A/B 首轮（2026-09-04）= 无效对照，勿引用数值**：env 旋钮（K/HID/EMB/LR/PATIENCE/CONE_FEAT）入服务器脚本后，A（K5/H160/E32·LR3e-3·PAT40）/ B（+锥体）双双 best_val 0.3571/0.4257 且落 ep1/5、early-stop@ep45，train_loss 冻死 = **LR3e-3 × 大模型 4-5× × cosine220 前段不退火 × patience 早掐** 的配置错配，**非容量方向被判死、非代码回归**。唯一正信号 = B 坏训练下 m4 桶 0.7579 > 基线 0.6583（锥体对 m4 有真增益，待干净复验）。详档 §4.3 见 `docs/IDS_AVG_GNN.md`。
 - **17.0.6 A2/B2（2026-09-05）= 干净裁决：容量+锥体双生效**：修正配置（LR1e-3·PAT0·EPOCHS80·venv python3·不开 N_CAP）跑满 80ep 无早停。**A2（K5/H160/E32）= test 0.7424 / Sp 0.7385**（基线 0.7012/0.7105 → **容量 +0.041**，全量欠拟合假设证实）；**B2（+CONE_FEAT）= test 0.7866 / Sp 0.8150 / m4 桶 0.8076**（**锥体 +0.044，增益集中 rest/m4，full≈0**；m4 差 GBDT15 0.2391 达 +0.568，历史最高）。best_val@ep80、train≈test 无过拟合。首轮坏训练 B 的 m4 0.7579 信号被干净复验并放大。**未决：serve 端采用 B2 需 Rust 补锥体/距离特征，成本另议（方向性利好）**。详档 §4.4 见 `docs/IDS_AVG_GNN.md`。
+- **17.0.9（2026-09-05）= 追凶 + 修复：服务器 Arrow 字符串切分卡死**：B2long/B2v2long 首启均卡数据切分（`总: 电路` 后 30min+、单核 100%）。py-spy 定位 = **pandas pyarrow-backed `circuit_id` 字符串列，`set()`/`list()` 逐元素走 `arrow.array.__iter__` → 746k 行病态慢**；A2/B2 与历史 N_CAP 探针"停滞"同源（A2/B2 当年在此磨 ~30-45min 未被察觉）。修复 = 先 `to_numpy()` C 速转 object 再 set，语义逐位不变、亚秒级。**重启两条长程对照（pid 3554641/3554958）均 2-3min 越过装配**：B2long=CONE_FEAT v1、B2v2long=CONE_V2，EPOCHS220/PATIENCE60（auto early-stop，取消 80ep 硬停裁决），判 §4.4"ep80 截早？" + 锥体 v1→v2 增量。结果待更（详档 §4.5 `docs/IDS_AVG_GNN.md`）。
 
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
