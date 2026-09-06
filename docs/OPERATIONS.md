@@ -63,11 +63,11 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-06，17.0.12 记录后）
+## 5. 当前状态（2026-09-06，17.0.13 记录后）
 
-**rank 两空格已训完（2026-09-06），待 Rust shadow（§13.5 矩阵补行前的最后一步；train-side 已记 PROJECT_LOG 17.0.12）**：
-- `~/project-107-v2nowaver42m4`（**空格2 纯拓扑×rank**，CACHE_SEED=`~/project-107-v2nowave42m4`）：383ep 训完。train 遗憾 **2.91** vs nowave 无 rank 3.80（rank 抬过）→ **Rust 验能否 < nowave 10.87%**；≈/× → rank 目标线关闭。serve **midpoint_ep250**（同 nowave Rust 用点），预计 in=45 不带 env（Step 1 实锤）
-- `~/project-107-v2iagr42m4`（**空格1 GBDT15×rank**，CACHE_SEED=`~/project-107-v2iag42m4`）：347ep 训完。train 遗憾 **2.85**（三 rank 最低）→ Rust 验 rank×GBDT15 能否叠加 > nowave/iag。serve **midpoint_ep150**，预计 in=46 → USE_IDS_AVG_APPROX=2（Step 1 实锤）
+**rank 两空格 Rust shadow 已跑完（2026-09-06 21:22/21:31，17.0.13 记录；PROJECT_LOG 表行 + DIFF §13.6）**：
+- `~/project-107-v2nowaver42m4`（空格2 纯拓扑×rank）：Rust（serve midpoint_ep250、in=45 无 env）遗憾 **11.97%**（严格@3 34.9% / 宽松 57.5% / Sp 0.094）→ **> nowave 10.87% 全轴净伤害，纯拓扑×rank 槽位关闭（rank 目标线关）**
+- `~/project-107-v2iagr42m4`（空格1 GBDT15×rank）：Rust（serve midpoint_ep150、in=46 env=2）遗憾 **10.50%**（严格@3 34.0% / 宽松 52.8% / Sp 0.238）→ **首破交付基线 nowave 10.87%、Sp 家族最高，但严格召回自 iag 44.3% 崩到 34.0%；非交付**（GBDT15 serve 脆弱 + 输 5.6pp 严格召回）。serve 交付基线不变 = v2nowave42m4。
 
 idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽对照待办）。
 
@@ -76,7 +76,7 @@ idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽�
 - `v2kdwave42iaa42`（wave 教师 KD #12）——194 epochs plateau 早停；train-side ≈ v2iaa42m4、**无 KD 增益**；**Rust shadow 已跑完**（22:03，106 集，选择遗憾 14.97% vs nowave 10.87%，双端无增益，DIFF §13.4 收口）。
 
 **其他现场**：
-- serve：**已停**（09-04 用户决定不常驻，要用再起）。下次起 serve 前先定挂哪个 ckpt：交付基线 = `v2nowave42m4/outputs/midpoint_ep250.pt`（不带 env）；验 v2nowaver42m4 / v2iagr42m4 Rust shadow 时挂各自 ckpt（Step 1 查 in_features 定 env）。起服命令见 §6 Step 2/Step 6。
+- serve：**当前挂 v2iagr42m4（09-06 shadow 验完未收）**。恢复交付基线 = `v2nowave42m4/outputs/midpoint_ep250.pt`（不带 env，命令见 §6 Step 2/Step 6）；09-04 起「serve 不常驻」政策不变——确认无后续 shadow 需求可 `pkill -f 'serve_htt[p].py'` 停。
 - 教师软标签：`~/project-107-v2wave42m4/outputs/kd_teacher_preds_{train,val,test}.npy`（已产出，train 514,494 行，对拍通过 regret 0.51%/Spearman 0.696）。
 - 已训完模型（m4 Rust 三兄弟全跑完，定论 DIFF §13.3）：v2wave42m4（教师）；**v2nowave42m4 = 纯拓扑，Rust 遗憾 10.87% 最优（serve 交付走此路线）**；v2iaa42m4 = 线性，Rust 记录 ⚠ 不可复现（遗憾 15.21%，serve 净伤最大）；v2iag42m4 = GBDT15，Rust 严格@3 44.3% / 遗憾 12.19%（最不伤近似）。
 
