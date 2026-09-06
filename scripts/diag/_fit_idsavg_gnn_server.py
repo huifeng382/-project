@@ -15,6 +15,9 @@
   17.0.5: K/HID/EMB/DROPOUT/LR/PATIENCE 可 env 覆盖(0=不早停); CONE_FEAT=1 追加锥体/距离通道(见 17.0.5 记录)
   17.0.8: CONE_V2=1 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13); 17.0.7 A2/B2 裁决见 docs
   17.0.11: SCHED=rlp 用 ReduceLROnPlateau(以 val R^2 平台降 LR) 解耦调度与 EPOCHS 上限; 默认 cosine 逐位等价; 17.0.9 Arrow 切分修复/17.0.10 长程裁决见 docs
+  17.0.14: 默认升为 B2v2 好基座 (K5/H160/EMB32/LR1e-3/CONE_V2=1/NO_NOGRAPH=1) + 更快早停收口
+           (EPOCHS=400 仅安全上限; LR_TMAX=120 = cosine 退火期; PATIENCE=40/STOP_EPS=2e-3 = 阈值敏感早停)
+           ⚠ 裸跑不再=17.0.1; 复现任何历史配置须显式 env 传旧值 (见 docs/IDS_AVG_GNN_R2_DIRECTIONS.md)
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -36,17 +39,23 @@ print(f'DEV={DEV}', flush=True)
 DATA_ROOT = os.environ.get('DATA_ROOT', 'data')
 DATA_BATCHES = os.environ.get('DATA_BATCHES', 'batch_v2_full,batch_v2_rest,batch_v2_m4')
 N_CAP = int(os.environ.get('N_CAP', '0') or 0)     # 0=全部电路
-EPOCHS = int(os.environ.get('EPOCHS', '45'))
-NO_NOGRAPH = os.environ.get('NO_NOGRAPH', '0') == '1'
+EPOCHS = int(os.environ.get('EPOCHS', '400'))           # 17.0.14 起 = 安全上限 (早停/阈值收口决定实际跑长); 须 > LR_TMAX
+NO_NOGRAPH = os.environ.get('NO_NOGRAPH', '1') == '1'    # 17.0.14 默认跳无边对照 W (本地已证 gnn-nograph=+0.09); 复现旧档设 0
 CIRC_SPLIT = (0.85, 0.05, 0.10)
-# GNN 超参 (同 DelayGNN 复刻); 17.0.5 起全部可 env 覆盖 (A/B 对照用)
-EMB = int(os.environ.get('EMB', '16')); HID = int(os.environ.get('HID', '96'))
-K = int(os.environ.get('K', '3')); DROPOUT = float(os.environ.get('DROPOUT', '0.25'))
-LR = float(os.environ.get('LR', '3e-3'))
-PATIENCE = int(os.environ.get('PATIENCE', '0') or 0)   # 0 = 不早停 (沿用历史行为)
-CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'     # B: 追加锥体/距离通道 (N_EXTRA 7->10)
-CONE_V2   = os.environ.get('CONE_V2', '0') == '1'       # 17.0.8: 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13)
-N_CONT_BASE = 7
+# GNN 超参默认 = B2v2 好基座 (17.0.6 A2 容量 + 17.0.8 cone v2 裁决); 17.0.5 起全部可 env 覆盖
+EMB = int(os.environ.get('EMB', '32')); HID = int(os.environ.get('HID', '160'))
+K = int(os.environ.get('K', '5')); DROPOUT = float(os.environ.get('DROPOUT', '0.25'))
+LR = float(os.environ.get('LR', '1e-3'))
+PATIENCE = int(os.environ.get('PATIENCE', '40') or 0)   # 距最后"有意义进步"40ep 收 (eval 每5ep); 0=不早停
+CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'      # 锥体 v1 通道 (需显式开; 默认走 V2)
+CONE_V2   = os.environ.get('CONE_V2', '1') == '1'        # 17.0.8 锥体 v2; 17.0.14 默认开 (=B2v2 基座); 复现无锥体设 0
+# ① 17.0.15 候选: STRUCT_MODE 注入 graph_builder ('rich' = base 7 通道 + stack/parallel 两列, serve 零成本);
+#   ns 列序: col0=type, col1..6=fan/depth/drive/parasitic/logic_effort/h, col7=n_t, col8/9=stack/parallel(rich)
+#   rich 与 base 前 7 连续通道同公式同序 => 逐位一致, 无静默改口径 (17.0.15 本地已验)
+STRUCT_MODE = os.environ.get('STRUCT_MODE', 'base')
+import config as _cfg
+_cfg.STRUCT_MODE = STRUCT_MODE
+N_CONT_BASE = int(os.environ.get('N_CONT_BASE', '9' if STRUCT_MODE == 'rich' else '7'))   # base=7 (止于 n_t) / rich=9 (+stack/parallel)
 N_EXTRA = 13 if CONE_V2 else (10 if CONE_FEAT else 7)
 # 17.0.11: SCHED 解耦调度 —— 'cosine'(默认, T_max=EPOCHS 逐位不变) | 'rlp'(ReduceLROnPlateau: val R^2 平台降 LR, 与 EPOCHS 上限无关)
 SCHED = os.environ.get('SCHED', 'cosine')
@@ -55,6 +64,13 @@ RLP_PAT = int(os.environ.get('RLP_PAT', '8'))          # 单位=eval 点(每 5ep
 RLP_THRESH = float(os.environ.get('RLP_THRESH', '2e-3'))  # abs(原始 R^2): val 需超当前 best ≥ 此值才算改善
 RLP_COOL = int(os.environ.get('RLP_COOL', '2'))        # LR 降后冷却(eval 点数)
 RLP_MINLR = float(os.environ.get('RLP_MINLR', '1e-6'))
+# 17.0.14: 早停收口 (上不封顶, EPOCHS 只当安全上限) —— LR 预算期 + 阈值敏感早停 (默认已启用; 复现历史设 LR_TMAX=0/STOP_EPS=0/PATIENCE=0)
+LR_TMAX  = int(os.environ.get('LR_TMAX', '120') or 0)    # cosine 退火期=LR_TMAX (到期冻结 LR, 不与 EPOCHS 绑死); 0=历史 (T_max=EPOCHS)
+STOP_EPS = float(os.environ.get('STOP_EPS', '2e-3') or 0) # 仅当 val 提升 ≥STOP_EPS 视为"有意义进步"并重置早停钟; 0=历史 (任何抬升都重置)
+# ③ 17.0.15 候选: ckpt 落盘 (best_sd + 模型元信息) + test 残差/属性 dump (供本地分析 残差 vs n_t/锥深, 判 ②' 激活锥值不值投)
+_sck = os.environ.get('SAVE_CKPT', '')
+CKPT_PATH = ('idsavg_gnn_best.pt' if _sck == '1' else _sck)   # 非空即落盘
+DUMP_PATH = os.environ.get('DUMP_RESID', '')                   # 非空即 dump test 每 (row,门) 预测/真值/属性(n_t/锥深/type/batch)
 
 def parse_corner(corner):
     try:
@@ -380,8 +396,9 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
             opt, mode='max', factor=RLP_FACTOR, patience=RLP_PAT,
             threshold=RLP_THRESH, threshold_mode='abs', cooldown=RLP_COOL, min_lr=RLP_MINLR)
     else:
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
-    best_va = -1e9; best_sd = None; best_ep = 0
+        # 17.0.14: cosine 退火期可独立于 EPOCHS (LR_TMAX>0); 到期冻结 LR, 交给阈值早停收口
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=(LR_TMAX if LR_TMAX > 0 else EPOCHS))
+    best_va = -1e9; best_sd = None; best_ep = 0; last_imp_ep = 0
     def eval_blocks(datas):
         model.eval()
         ps, ts = [], []
@@ -407,8 +424,8 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
             loss = F.mse_loss(pred, s_y)
             opt.zero_grad(); loss.backward(); opt.step()
             el += loss.item(); nb += s_y.shape[0]
-        if SCHED == 'cosine':
-            sched.step()   # cosine 逐 ep 退火 (与历史逐位一致); rlp 则在下方 eval 后喂 val 步进
+        if SCHED == 'cosine' and (LR_TMAX == 0 or ep < LR_TMAX):
+            sched.step()   # cosine 逐 ep 退火 (历史逐位一致; 17.0.14 LR_TMAX>0 时退火期=LR_TMAX, 到期冻结不再退火重启); rlp 在下方 eval 后喂 val 步进
         if (ep+1) % 5 == 0 or ep == 0:
             vr2, vrho, n = eval_blocks(va_data)
             lr_now = opt.param_groups[0]['lr']
@@ -416,13 +433,24 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
                 sched.step(vr2)   # val R^2 平台降 LR (thr/patience 见 17.0.11)
                 lr_now = opt.param_groups[0]['lr']
             print(f'  [{name}] ep {ep+1:2d}  lr={lr_now:.1e}  train_loss={el/max(nb,1):.5f}  val_R^2={vr2:.4f} (n={n})', flush=True)
+            prev_va = best_va
             if vr2 > best_va:
                 best_va = vr2; best_ep = ep+1
                 best_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
-            elif PATIENCE > 0 and (ep+1) - best_ep >= PATIENCE:
-                print(f'  [{name}] early stop @ ep {ep+1} (patience {PATIENCE}; best val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
-                break
+            if STOP_EPS > 0 and vr2 >= prev_va + STOP_EPS:
+                last_imp_ep = ep + 1   # 有意义进步: 重置早停钟 (噪声级抬升不计; 17.0.14)
+            elif PATIENCE > 0:
+                _ref = last_imp_ep if STOP_EPS > 0 else best_ep   # STOP_EPS=0 → 历史行为 (以 best_ep 为钟)
+                if (ep+1) - _ref >= PATIENCE:
+                    print(f'  [{name}] early stop @ ep {ep+1} (patience {PATIENCE}; best val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
+                    break
     model.load_state_dict(best_sd)
+    if out_ckpt:
+        torch.save({'state_dict': model.state_dict(), 'num_types': NUM_TYPES, 'n_cont': n_cont,
+                    'emb': EMB, 'hid': HID, 'k': K, 'dropout': DROPOUT,
+                    'struct_mode': STRUCT_MODE, 'n_cont_base': N_CONT_BASE, 'cone_v2': CONE_V2,
+                    'val_r2': best_va, 'best_ep': best_ep}, out_ckpt)
+        print(f'  [{name}] ckpt saved -> {out_ckpt} (val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
     tr2, trho, tn = eval_blocks(tr_data)
     te2, teho, ten = eval_blocks(te_data)
     print(f'  [{name}] best_val_R^2={best_va:.4f}  train R^2={tr2:.4f} / test(未见电路) R^2={te2:.4f} Spearman={teho:.4f} (n={ten})', flush=True)
@@ -430,7 +458,7 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
 
 print('\n===== V. DelayGNN 复刻 idsavg GNN (有向边消息传递) =====', flush=True)
 tr_blk = assemble(tr_l, use_edges=True); va_blk = assemble(va_l, use_edges=True); te_blk = assemble(te_l, use_edges=True)
-mdl, g_te, g_rho, g_bv = run_variant('V_gnn', tr_blk, va_blk, te_blk)
+mdl, g_te, g_rho, g_bv = run_variant('V_gnn', tr_blk, va_blk, te_blk, out_ckpt=(CKPT_PATH or None))
 
 # 无边对照 (同特征 per-node MLP, 隔离「消息传递」贡献; 本地已证明, 全量可跳过省时)
 w_te2 = w_rho2 = w_bv = None
@@ -449,15 +477,44 @@ else:
     print('  W  nograph (MLP) skipped (NO_NOGRAPH=1; 本地对照已证 gnn-nograph=+0.09)')
 
 # 测试按批次分桶 (GNN 与 GBDT15 同电路同序: te_blk 按 te_l 建, gnn 预测序 = 电路内 sup 序 = gb_by_cid)
+# ③ 17.0.15: 每轮常开 n_t 分层残差 R² (判定 ②' 值不值投); DUMP_PATH 非空另存 parquet 供细看
 import collections
 per_b = collections.defaultdict(lambda: {'p_g': [], 'p_gb': [], 't': []})
+_tier = collections.defaultdict(lambda: [[], []])   # tier -> [y, pred]
+_recs = []
+_nb = N_CONT_BASE
 with torch.no_grad():
-    for cid, (ty, co, ei, s_i, s_y) in zip([c for c in te_l if c in blocks], te_blk):
+    for cid, (ty, feat, ei, s_i, s_y) in zip([c for c in te_l if c in blocks], te_blk):
         btag = blocks[cid]['batch']
-        ty = ty.to(DEV); co = co.to(DEV); ei = ei.to(DEV); s_i = s_i.to(DEV)
-        pred = mdl(ty, co, ei, ty.shape[0])[s_i].cpu().numpy()
+        ty = ty.to(DEV); feat = feat.to(DEV); ei = ei.to(DEV); s_i = s_i.to(DEV)
+        pred = mdl(ty, feat, ei, ty.shape[0])[s_i].cpu().numpy()
         per_b[btag]['p_g'].extend(pred.tolist()); per_b[btag]['t'].extend(s_y.numpy().tolist())
-        per_b[btag]['p_gb'].extend(gb_by_cid.get(cid, []))
+        _gb = gb_by_cid.get(cid, [])
+        per_b[btag]['p_gb'].extend(_gb)
+        ns = blocks[cid]['ns']; N = ns.shape[0]
+        s_i_cpu = s_i.cpu().numpy(); s_y_cpu = s_y.cpu().numpy()
+        sup_nt = ns[s_i_cpu % N, 7]
+        for _m, _k in [((sup_nt <= 2), 'n<=2'), ((sup_nt >= 3) & (sup_nt <= 7), 'n3-7'), ((sup_nt >= 8), 'n>=8')]:
+            if _m.any():
+                _tier[_k][0].extend(s_y_cpu[_m].tolist()); _tier[_k][1].extend(pred[_m].tolist())
+        if DUMP_PATH:
+            feat_cpu = feat.cpu().numpy()
+            for j in range(len(s_i_cpu)):
+                t = int(s_i_cpu[j]); gi = t % N
+                nsr = ns[gi]; fr = feat_cpu[t]
+                rec = {'circuit': cid, 'batch': btag, 'type': int(nsr[0]),
+                       'log_fan': float(nsr[1]), 'depth': float(nsr[2]), 'drive': float(nsr[3]),
+                       'parasitic': float(nsr[4]), 'logic_g': float(nsr[5]), 'log_h': float(nsr[6]),
+                       'n_t': float(nsr[7]), 'y': float(s_y_cpu[j]), 'pred': float(pred[j]),
+                       'gb_pred': (float(_gb[j]) if j < len(_gb) else float('nan')),
+                       'dir_code': float(fr[_nb + 4])}
+                if ns.shape[1] >= 10:
+                    rec['stack'] = float(nsr[8]); rec['parallel'] = float(nsr[9])
+                if N_EXTRA >= 7:                       # 锥体 v1/v2: cone 通道在 extras 的 +7.. 位
+                    rec['incone'] = float(fr[_nb + 7]); rec['cone_down'] = float(fr[_nb + 8]); rec['cone_up'] = float(fr[_nb + 9])
+                if N_EXTRA >= 13:                      # 锥体 v2 专属额外 3 通道 (v1 N_EXTRA=10 无, 勿读)
+                    rec['main_path'] = float(fr[_nb + 10]); rec['cone_fout'] = float(fr[_nb + 11]); rec['cone_fin'] = float(fr[_nb + 12])
+                _recs.append(rec)
 print('\n  --- test 按批次来源分桶 (R^2 GNN vs GBDT15) ---')
 for btag, d in per_b.items():
     if len(d['t']) < 10: continue
@@ -465,3 +522,12 @@ for btag, d in per_b.items():
     rg = 1-np.sum((t-pg)**2)/np.sum((t-t.mean())**2)
     rg2 = 1-np.sum((t-pgb)**2)/np.sum((t-t.mean())**2)
     print(f'    {btag:16s} n={len(t):6d}  GNN R^2={rg:.4f} | GBDT15 R^2={rg2:.4f}', flush=True)
+print('\n  --- ③ test 残差按 n_t 分层 (GNN R^2; 判残差是否集中高 n_t 堆叠门) ---')
+for _k in ('n<=2', 'n3-7', 'n>=8'):
+    y = np.array(_tier[_k][0]); p = np.array(_tier[_k][1])
+    if len(y) < 20: continue
+    r = 1 - np.sum((y - p) ** 2) / np.sum((y - y.mean()) ** 2)
+    print(f'    {_k:6s} n={len(y):7d}  R^2={r:.4f}  (mean_y={y.mean():.3f})', flush=True)
+if DUMP_PATH and _recs:
+    pd.DataFrame(_recs).to_parquet(DUMP_PATH)
+    print(f'\n  残差/属性 dump -> {DUMP_PATH} ({len(_recs)} test (row,门) 行)', flush=True)
