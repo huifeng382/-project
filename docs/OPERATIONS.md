@@ -63,11 +63,11 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `USE_CORNER_ATTN` / `USE_PARASITIC_CAPS` / `USE_SUPPLY_NOISE` / `USE_STRUCT_PRIOR` | 布尔 | 消融开关 |
 | `BEST_MODEL_METRIC` | smoothed_rel_err（默认） | checkpoint 选点 |
 
-## 5. 当前状态（2026-09-04，17.0.4）
+## 5. 当前状态（2026-09-06，17.0.12 记录后）
 
-**正在跑（2 run，17.0.4 起，各 OMP_NUM_THREADS=6 = 12 核占用；补 §13.5「rank×可serve特征」矩阵两空格）**：
-- `~/project-107-v2nowaver42m4`（**空格2 纯拓扑×rank**，CACHE_SEED=`~/project-107-v2nowave42m4`）：rank 放最佳 serve 特征能否 < nowave Rust 遗憾 10.87%；≈/× → rank 目标线关闭
-- `~/project-107-v2iagr42m4`（**空格1 GBDT15×rank**，CACHE_SEED=`~/project-107-v2iag42m4`）：赌 rank 遗憾优势 × iag 严格@3 召回优势能否叠加 > nowave/iag
+**rank 两空格已训完（2026-09-06），待 Rust shadow（§13.5 矩阵补行前的最后一步；train-side 已记 PROJECT_LOG 17.0.12）**：
+- `~/project-107-v2nowaver42m4`（**空格2 纯拓扑×rank**，CACHE_SEED=`~/project-107-v2nowave42m4`）：383ep 训完。train 遗憾 **2.91** vs nowave 无 rank 3.80（rank 抬过）→ **Rust 验能否 < nowave 10.87%**；≈/× → rank 目标线关闭。serve **midpoint_ep250**（同 nowave Rust 用点），预计 in=45 不带 env（Step 1 实锤）
+- `~/project-107-v2iagr42m4`（**空格1 GBDT15×rank**，CACHE_SEED=`~/project-107-v2iag42m4`）：347ep 训完。train 遗憾 **2.85**（三 rank 最低）→ Rust 验 rank×GBDT15 能否叠加 > nowave/iag。serve **midpoint_ep150**，预计 in=46 → USE_IDS_AVG_APPROX=2（Step 1 实锤）
 
 idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽对照待办）。
 
