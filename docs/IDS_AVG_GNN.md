@@ -1,7 +1,7 @@
 # IDSAVG GNN —— 独立 per-gate ids_avg 预测模型（DelayGNN 复刻改造）
 
 > 版本记录：**17.0.0（2026-09-04，本地受控）→ 17.0.1（2026-09-04，服务器全量基线）**。判定唯一尺度 = **per-gate 真实 `ids_avg` 预测准确率**（R²/Spearman），与 delay 无关。
-> 状态：本地受控 + **服务器全量（含 m4）均验证完成（17.0.1）**；参数放宽对照待定。
+> 状态：服务器全量基线（17.0.1）、容量+锥体 A2/B2（17.0.6/17.0.7）、**长程对照 B2long/B2v2long（17.0.10）均完成判定**，见 §4.4/§4.5。
 
 ## 1. 目的与定位
 
@@ -97,12 +97,22 @@ A2（K5/H160/EMB32、LR1e-3、80ep、PATIENCE=0）/ B2（同 + `CONE_FEAT=1`）�
 
 **待定（方向性利好）**：serve 端若采用 B2 需 Rust 侧补锥体/距离特征（下游 BFS + 输出深度），成本待估（§13 冲突清单 O 系列可行性）；m4/rest 桶的大优 = serve 端真结构模型收益上限显著上调，是否推进另议。
 
-### 4.5 长程对照 B2long / B2v2long（2026-09-05 启动 · 进行中 · 结果待更）
+### 4.5 长程对照 B2long / B2v2long（2026-09-05 启动 · 09-06 完成 · 已判定）
 
 **动机**：§4.4 A2/B2 best_val 恰落 ep80、末 5ep 增益最大、train_loss 尾段仍升 → 追问"80ep 硬停是否截早"。回应：**不加新硬上限，而是取消硬停作裁决**——EPOCHS=220 仅作天花板、PATIENCE=60 由 val 平台自动早停决定收尾（round-1 的"patience 失败"实为 LR 3e-3 冻优化器，非 patience 本身）。
 **配置**：沿用 A2/B2（K5/H160/E32/LR1e-3/DROPOUT0.25）+ NO_NOGRAPH=1 + 220ep 长程。B2long = `CONE_FEAT=1`（锥体 v1）；B2v2long = `CONE_V2=1`（17.0.8 锥体 v2 = v1 3 通道 + 主通路 d1∩d2 / 锥内扇出 / 锥内扇入，N_EXTRA 10→13）。同图同批次同切分 → 同口径对判。
 **阻塞与根因修复（17.0.9）**：两 run 首启卡在数据切分 `set(ddf['circuit_id'])` 30min+（py-spy 定位：pandas **pyarrow-backed** 字符串列逐元素 `arrow.array.__iter__` 病态慢，746k 行；A2/B2 与历史 N_CAP 探针"停滞"同源，A2/B2 当年在此磨 ~30-45min 未被察觉）。修复 = 先 `ddf['circuit_id'].to_numpy()` C 速转 object 再建 set，语义逐位不变；重启后 2-3min 即越过装配进训练（不再 30min+）。教训入 §6。
-**判读（待补）**：① B2long vs B2(ep80) → "80ep 截早"是否成立（auto early-stop 若收在 ep>80 即证实）；② B2v2long vs B2long → 锥体 v1→v2 增量（同 220ep 口径，重点 m4/rest 桶）。
+**结果（220ep 均跑满；PATIENCE=60 全程未触发 → best_val 落最后一 ep）**：
+
+| run | best_val | test R² | Spearman | full 桶 | rest 桶 | m4 桶 |
+|---|---|---|---|---|---|---|
+| B2（v1·80ep，§4.4） | 0.7810 | 0.7866 | 0.8150 | 0.7580 | 0.7812 | 0.8076 |
+| B2long（v1·220ep） | 0.7833 | 0.7882 | 0.8166 | 0.7641 | 0.7820 | 0.8143 |
+| **B2v2long（v2·220ep）** | 0.7841 | **0.7893** | 0.8168 | 0.7625 | 0.7826 | **0.8235** |
+
+**判定① "80ep 截早?" → 基本否（收益噪声级）**：B2→B2long test **+0.0016** / best_val +0.0023 / m4 +0.0067。追长到 220ep 几乎无 gain → §4.4"80ep 足够、追长边际很小"获干净反证。**方法论教训**：长程 val 在 cosine 尾段（ep200-220：0.741→0.783）仍陡升 → PATIENCE 全程未触发、跑满 220；cosine 硬 T_max 尾段 val 一路爬、patience 等不到平台期，**EPOCHS 上限实际就是裁决者**。而 ep80→220 的 test 增益 <0.002 证明尾段爬升对 test 是"清噪声"非真信号 → **未来跑 80-100ep 即够，不必长程**。
+**判定② 锥体 v1→v2（同 220ep 口径）= m4 特化 +0.009，总体≈0**：m4 .8143→**.8235**（历史最高，GBDT15 0.2391 差 **+0.584**）；rest +0.0006、full **−0.0016**（唯一退步桶）、overall test +0.0011。v2 的 3 通道（主通路 d1∩d2/锥内扇出/扇入）增益**全集中于 m4 五形状**（比 v1 的 rest/m4 结构泛化主题更窄）。**serve 建议：若采用锥体，v1（3 通道）已拿走全数据几乎全部价值；v2 额外 Rust 成本只换 m4 桶 +0.009，仅当 m4 形态鲁棒是 serve 目标才值得**。
+**累计**：全量最佳 = **B2v2long test 0.7893 / m4 0.8235**（GBDT15 全域 ≈0.49）。R² 已到 0.79 高区；剩余可挖 = serve 端锥体可行化 + GBDT15 混合/多 seed 集成（需 ckpt 落盘），另议。
 
 ## 5. 文件与复现
 
@@ -122,6 +132,6 @@ DATA_BATCHES='batch_v2_full,batch_v2_rest,batch_v2_m4' OMP_NUM_THREADS=6 python 
 - 本地无 `pyg`（import 崩）→ 纯 torch 复刻即为此；服务器若可用 pyg 亦无需换。
 - ✅ **服务器全量（含 m4）基线已完成（17.0.1）**：判定 + 分桶见 §4.2——每桶 GNN 均胜，m4 桶 GBDT15 0.24 vs GNN 0.66。
 - ✅ **参数放宽对照已定论（17.0.6 A2/B2，§4.4）**：容量 K5/H160/E32+LR1e-3+80ep = test +0.041（0.7012→0.7424）；**叠加锥体 = 0.7866、m4 桶 0.8076**。全量欠拟合假设证实（§4.2 ⚠ 解除）。**未决：serve 端若采用锥体需 Rust 补特征，成本/收益另议**（方向性利好）。
-- 🔄 **长程对照跑中（§4.5，结果待更）**：B2long（CONE_FEAT v1）/ B2v2long（CONE_V2）= EPOCHS220/PATIENCE60 auto early-stop，判 ep80 是否截早 + 锥体 v1→v2 增量。
+- ✅ **长程对照已判定（17.0.10，§4.5）**：80ep 只轻微截早（追 220ep test +0.0016、噪声级；patience 因 cosine 尾段 val 爬升不触发，跑满上限）；锥体 v1→v2 = m4 特化 +0.009（0.8143→0.8235 历史最高）、overall +0.001、full −0.002 → **serve 用 v1 即可，v2 仅 m4 鲁棒才值**。全量最佳 = B2v2long test 0.7893 / m4 0.8235。
 - ⚠ **服务器 pandas pyarrow-backed 字符串列病态慢（17.0.9 定位修复）**：read_parquet 后 `circuit_id` 为 Arrow-backed string，`set()`/`list()` 逐元素迭代走 `arrow.array.__iter__`，746k 行实测 30min+（py-spy 实锤；A2/B2 与历史 N_CAP 探针停滞同源，均在此磨 30min+ 未被察觉）。任何脚本对同源 parquet 列做全量 Python 级迭代前，**先 `col.to_numpy()` C 速转 object 再做 set/list**。`_fit_idsavg_gnn_server.py` 已修（L104-105 `_cid_set`）。
 - 结果以本文件 + PROJECT_LOG 17.0.1 为准；数据相关引用仍以 `docs/GNN_RUST_DATA_DIFF.md` §14 审计标注为基准。
