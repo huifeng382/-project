@@ -14,6 +14,7 @@
   可选: N_CAP=<电路数上限> 快速验证; EPOCHS=<n> 默认 45; NO_NOGRAPH=1 跳过无边对照(省~一半时间)
   17.0.5: K/HID/EMB/DROPOUT/LR/PATIENCE 可 env 覆盖(0=不早停); CONE_FEAT=1 追加锥体/距离通道(见 17.0.5 记录)
   17.0.8: CONE_V2=1 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13); 17.0.7 A2/B2 裁决见 docs
+  17.0.11: SCHED=rlp 用 ReduceLROnPlateau(以 val R^2 平台降 LR) 解耦调度与 EPOCHS 上限; 默认 cosine 逐位等价; 17.0.9 Arrow 切分修复/17.0.10 长程裁决见 docs
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -47,6 +48,13 @@ CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'     # B: 追加锥体/距离
 CONE_V2   = os.environ.get('CONE_V2', '0') == '1'       # 17.0.8: 锥体 v2 (含 v1 3通道 + 主通路/锥内扇出/锥内扇入, N_EXTRA 10->13)
 N_CONT_BASE = 7
 N_EXTRA = 13 if CONE_V2 else (10 if CONE_FEAT else 7)
+# 17.0.11: SCHED 解耦调度 —— 'cosine'(默认, T_max=EPOCHS 逐位不变) | 'rlp'(ReduceLROnPlateau: val R^2 平台降 LR, 与 EPOCHS 上限无关)
+SCHED = os.environ.get('SCHED', 'cosine')
+RLP_FACTOR = float(os.environ.get('RLP_FACTOR', '0.5'))
+RLP_PAT = int(os.environ.get('RLP_PAT', '8'))          # 单位=eval 点(每 5ep 一 eval); 连续 RLP_PAT 个 eval 无 >=RLP_THRESH 改善 → LR×factor
+RLP_THRESH = float(os.environ.get('RLP_THRESH', '2e-3'))  # abs(原始 R^2): val 需超当前 best ≥ 此值才算改善
+RLP_COOL = int(os.environ.get('RLP_COOL', '2'))        # LR 降后冷却(eval 点数)
+RLP_MINLR = float(os.environ.get('RLP_MINLR', '1e-6'))
 
 def parse_corner(corner):
     try:
@@ -367,7 +375,12 @@ def concat_group(group):
 def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
     model = IdsAvgGNN(NUM_TYPES, n_cont).to(DEV)
     opt = torch.optim.AdamW(model.parameters(), lr=LR, weight_decay=1e-4)
-    sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
+    if SCHED == 'rlp':
+        sched = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            opt, mode='max', factor=RLP_FACTOR, patience=RLP_PAT,
+            threshold=RLP_THRESH, threshold_mode='abs', cooldown=RLP_COOL, min_lr=RLP_MINLR)
+    else:
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=EPOCHS)
     best_va = -1e9; best_sd = None; best_ep = 0
     def eval_blocks(datas):
         model.eval()
@@ -394,10 +407,15 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
             loss = F.mse_loss(pred, s_y)
             opt.zero_grad(); loss.backward(); opt.step()
             el += loss.item(); nb += s_y.shape[0]
-        sched.step()
+        if SCHED == 'cosine':
+            sched.step()   # cosine 逐 ep 退火 (与历史逐位一致); rlp 则在下方 eval 后喂 val 步进
         if (ep+1) % 5 == 0 or ep == 0:
             vr2, vrho, n = eval_blocks(va_data)
-            print(f'  [{name}] ep {ep+1:2d}  train_loss={el/max(nb,1):.5f}  val_R^2={vr2:.4f} (n={n})', flush=True)
+            lr_now = opt.param_groups[0]['lr']
+            if SCHED == 'rlp':
+                sched.step(vr2)   # val R^2 平台降 LR (thr/patience 见 17.0.11)
+                lr_now = opt.param_groups[0]['lr']
+            print(f'  [{name}] ep {ep+1:2d}  lr={lr_now:.1e}  train_loss={el/max(nb,1):.5f}  val_R^2={vr2:.4f} (n={n})', flush=True)
             if vr2 > best_va:
                 best_va = vr2; best_ep = ep+1
                 best_sd = {k: v.detach().clone() for k, v in model.state_dict().items()}
