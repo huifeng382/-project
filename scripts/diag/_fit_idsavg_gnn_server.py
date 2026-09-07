@@ -22,6 +22,9 @@
            恒放 extras 尾部, N_EXTRA+3; 须 cone d1 可达, 与 CONE_V2/CONE_FEAT 正交叠加或单开);
            修 17.0.15 dump 守卫 bug (N_EXTRA>=7 → 语义守卫 CONE_N) + log 头配置回显 [CFG].
            R4 = 17.0.14 base (CONE_V2=1) + CONE_PIN=1, 与 R1 base 锚 (0.7861) 同 regime 对照
+  17.0.17: n_t 条件专家旋钮 TIER_ONLY (''/ge8/le2/3-7; 空串=行为不变)。判定口径:
+           默认 17.0.14 base (CONE_V2=1 无 CONE_PIN) + TIER_ONLY=ge8 跑专化模型, 其 test R² = n>=8 层 R²,
+           与 R1 base 锚 n>=8 层 0.5689 (同切分同 regime, 152k test 行) 直接可比; 显著 > 0.5689 → 复合路由有价值.
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -68,6 +71,17 @@ N_CONT_BASE = int(os.environ.get('N_CONT_BASE', '9' if STRUCT_MODE == 'rich' els
 CONE_N = 6 if CONE_V2 else (3 if CONE_FEAT else 0)       # 锥体连续通道数: v2=6 / v1=3 / 无=0 (cones 从 extras +7 起, 见 assemble)
 PIN_N  = 3 if CONE_PIN else 0                            # ②' 输入脚通道数 (恒在 extras 尾部)
 N_EXTRA = 7 + CONE_N + PIN_N                             # base 7 extras(+0..+6) + 锥体块 + ②' 尾部块
+# 17.0.17 候选 (并行 R5): n_t 条件专家 —— 只在该层上训练/评估 (镜像 m4 特化经验: 让模型专化难层)。
+#   判定口径: 默认 17.0.14 base (CONE_V2=1 无 CONE_PIN) + TIER_ONLY=ge8 跑一个专化模型, 其 test R² 即 n>=8 层 R²,
+#   与 R1 base 锚的 n>=8 层 0.5689 (同切分同 regime, 152k test 行) 直接可比; 显著 > 0.5689 => 复合(按 n_t 路由)才有意义。
+#   sup 过滤点: 采样门循环按 ns[i,7]=n_t (GBDT 与 GNN 同吃子集); 无命中门的整行(向量)照旧跳过。
+TIER_ONLY = os.environ.get('TIER_ONLY', '')               # ''=全层(默认, 行为不变) | 'ge8'=n_t>=8 | 'le2'=n_t<=2 | '3-7'=3<=n_t<=7
+def _tier_ok(nt):
+    if not TIER_ONLY: return True
+    if TIER_ONLY == 'ge8': return nt >= 8
+    if TIER_ONLY == 'le2': return nt <= 2
+    if TIER_ONLY == '3-7': return 3 <= nt <= 7
+    raise ValueError(f'TIER_ONLY={TIER_ONLY!r} 未知 (空/ge8/le2/3-7)')
 # 17.0.11: SCHED 解耦调度 —— 'cosine'(默认, T_max=EPOCHS 逐位不变) | 'rlp'(ReduceLROnPlateau: val R^2 平台降 LR, 与 EPOCHS 上限无关)
 SCHED = os.environ.get('SCHED', 'cosine')
 RLP_FACTOR = float(os.environ.get('RLP_FACTOR', '0.5'))
@@ -91,6 +105,7 @@ print('[CFG] ' + ' | '.join([
     f'K={K}', f'HID={HID}', f'EMB={EMB}', f'LR={LR}', f'DROPOUT={DROPOUT}',
     f'EPOCHS={EPOCHS}', f'LR_TMAX={LR_TMAX}', f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
     f'NO_NOGRAPH={int(NO_NOGRAPH)}', f'CKPT={CKPT_PATH or "-"}', f'DUMP={DUMP_PATH or "-"}',
+    f'TIER_ONLY={TIER_ONLY or "-"}',
 ]), flush=True)
 
 def parse_corner(corner):
@@ -218,6 +233,7 @@ for ci, cid in enumerate(circ_all):
             if gk not in gate_avg: continue
             real = float(np.mean(gate_avg[gk]))
             if real <= 0: continue
+            if not _tier_ok(float(ns[i, 7])): continue   # 17.0.17 n_t 条件专家: 只留该层采样门 (GBDT+GNN 同步收窄)
             y = math.log1p(real)
             sup.append((i, y))
             drive, par = float(ns[i, 3]), float(ns[i, 4])
