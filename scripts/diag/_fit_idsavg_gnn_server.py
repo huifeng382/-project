@@ -18,6 +18,10 @@
   17.0.14: 默认升为 B2v2 好基座 (K5/H160/EMB32/LR1e-3/CONE_V2=1/NO_NOGRAPH=1) + 更快早停收口
            (EPOCHS=400 仅安全上限; LR_TMAX=120 = cosine 退火期; PATIENCE=40/STOP_EPS=2e-3 = 阈值敏感早停)
            ⚠ 裸跑不再=17.0.1; 复现任何历史配置须显式 env 传旧值 (见 docs/IDS_AVG_GNN_R2_DIRECTIONS.md)
+  17.0.16: ②' 激活锥/腿数代理 CONE_PIN=1 (输入脚级锥粒度: 每门 driver∈d1 的输入计数 count/frac/ge2,
+           恒放 extras 尾部, N_EXTRA+3; 须 cone d1 可达, 与 CONE_V2/CONE_FEAT 正交叠加或单开);
+           修 17.0.15 dump 守卫 bug (N_EXTRA>=7 → 语义守卫 CONE_N) + log 头配置回显 [CFG].
+           R4 = 17.0.14 base (CONE_V2=1) + CONE_PIN=1, 与 R1 base 锚 (0.7861) 同 regime 对照
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -49,6 +53,11 @@ LR = float(os.environ.get('LR', '1e-3'))
 PATIENCE = int(os.environ.get('PATIENCE', '40') or 0)   # 距最后"有意义进步"40ep 收 (eval 每5ep); 0=不早停
 CONE_FEAT = os.environ.get('CONE_FEAT', '0') == '1'      # 锥体 v1 通道 (需显式开; 默认走 V2)
 CONE_V2   = os.environ.get('CONE_V2', '1') == '1'        # 17.0.8 锥体 v2; 17.0.14 默认开 (=B2v2 基座); 复现无锥体设 0
+# ②' 17.0.16 候选 (R4): 激活锥/腿数代理 = 输入脚级锥粒度。锥体粗量(门在不在切换锥上)已贡献 +0.045;
+#   本旋钮给每门标"这次切换锥拉动了它几条输入脚"(driver∈d1 的输入计数) —— serve 可行的 log(n_on) 代理
+#   (标签向量间运动 84% 由 log(n_on) 驱动(§0.5); 残差集中 n>=8 堆叠门(§0.6 ③))。三通道恒放 extras 尾部:
+#   count / frac(=count/输入脚总数) / ge2(1=多腿同拉)。须 d1 可达; 与 CONE_V2/CONE_FEAT 正交叠加或单开。
+CONE_PIN = os.environ.get('CONE_PIN', '0') == '1'        # ②' 输入脚级激活锥通道 (默认关; R4 = 17.0.14 base + 本旋钮=1)
 # ① 17.0.15 候选: STRUCT_MODE 注入 graph_builder ('rich' = base 7 通道 + stack/parallel 两列, serve 零成本);
 #   ns 列序: col0=type, col1..6=fan/depth/drive/parasitic/logic_effort/h, col7=n_t, col8/9=stack/parallel(rich)
 #   rich 与 base 前 7 连续通道同公式同序 => 逐位一致, 无静默改口径 (17.0.15 本地已验)
@@ -56,7 +65,9 @@ STRUCT_MODE = os.environ.get('STRUCT_MODE', 'base')
 import config as _cfg
 _cfg.STRUCT_MODE = STRUCT_MODE
 N_CONT_BASE = int(os.environ.get('N_CONT_BASE', '9' if STRUCT_MODE == 'rich' else '7'))   # base=7 (止于 n_t) / rich=9 (+stack/parallel)
-N_EXTRA = 13 if CONE_V2 else (10 if CONE_FEAT else 7)
+CONE_N = 6 if CONE_V2 else (3 if CONE_FEAT else 0)       # 锥体连续通道数: v2=6 / v1=3 / 无=0 (cones 从 extras +7 起, 见 assemble)
+PIN_N  = 3 if CONE_PIN else 0                            # ②' 输入脚通道数 (恒在 extras 尾部)
+N_EXTRA = 7 + CONE_N + PIN_N                             # base 7 extras(+0..+6) + 锥体块 + ②' 尾部块
 # 17.0.11: SCHED 解耦调度 —— 'cosine'(默认, T_max=EPOCHS 逐位不变) | 'rlp'(ReduceLROnPlateau: val R^2 平台降 LR, 与 EPOCHS 上限无关)
 SCHED = os.environ.get('SCHED', 'cosine')
 RLP_FACTOR = float(os.environ.get('RLP_FACTOR', '0.5'))
@@ -71,6 +82,16 @@ STOP_EPS = float(os.environ.get('STOP_EPS', '2e-3') or 0) # 仅当 val 提升 �
 _sck = os.environ.get('SAVE_CKPT', '')
 CKPT_PATH = ('idsavg_gnn_best.pt' if _sck == '1' else _sck)   # 非空即落盘
 DUMP_PATH = os.environ.get('DUMP_RESID', '')                   # 非空即 dump test 每 (row,门) 预测/真值/属性(n_t/锥深/type/batch)
+# 17.0.16: log 头配置回显 —— 防 R3 式静默误配 (跑前先核这行配置对不对; 候选必须与想跑的完全一致)
+print('[CFG] ' + ' | '.join([
+    f'DATA={DATA_BATCHES}', f'N_CAP={N_CAP}',
+    f'STRUCT_MODE={STRUCT_MODE}', f'N_CONT_BASE={N_CONT_BASE}',
+    f'CONE_V2={int(CONE_V2)}', f'CONE_FEAT={int(CONE_FEAT)}', f'CONE_PIN={int(CONE_PIN)}',
+    f'CONE_N={CONE_N}', f'PIN_N={PIN_N}', f'N_EXTRA={N_EXTRA}', f'n_cont={N_CONT_BASE + N_EXTRA}',
+    f'K={K}', f'HID={HID}', f'EMB={EMB}', f'LR={LR}', f'DROPOUT={DROPOUT}',
+    f'EPOCHS={EPOCHS}', f'LR_TMAX={LR_TMAX}', f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
+    f'NO_NOGRAPH={int(NO_NOGRAPH)}', f'CKPT={CKPT_PATH or "-"}', f'DUMP={DUMP_PATH or "-"}',
+]), flush=True)
 
 def parse_corner(corner):
     try:
@@ -215,7 +236,7 @@ for ci, cid in enumerate(circ_all):
                     'f_cl': f_cl, 'dir_code': dir_code, 'src_i': src_i, 'out_i': out_i, 'sup': sup})
     if blk:
         _be = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?')}
-        if (CONE_FEAT or CONE_V2) and edges:      # B/V2: 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
+        if (CONE_FEAT or CONE_V2 or CONE_PIN) and edges:      # B/V2/②': 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
             _adj = {}; _radj = {}
             for _a, _b in edges:
                 _adj.setdefault(_a, []).append(_b); _radj.setdefault(_b, []).append(_a)
@@ -324,22 +345,27 @@ def assemble(cids, use_edges=True):
             T[s:e, N_CONT_BASE+4] = row['dir_code']
             if row['src_i'] is not None: T[s+row['src_i'], N_CONT_BASE+5] = row['f_slew']
             if row['out_i'] is not None: T[s+row['out_i'], N_CONT_BASE+6] = row['f_load']
-            if CONE_V2 or CONE_FEAT:
-                # B/V2: 锥体/距离通道 (N_EXTRA 已扩; 原锚位 +5/+6 不变):
-                #   +7 在 src 扇出锥内(含 src) | +8 沿有向边下游深度 (src=0, 最深=1)
-                #   +9 反向(朝 out)上游深度 = 喂到该输出的路径深度; src_i/out_i=None => 全 0
-                ncone = 6 if CONE_V2 else 3
-                co = np.zeros((N, ncone), dtype=np.float32)
+            if CONE_N or CONE_PIN:
+                # B/V2/②': 锥体块(宽 CONE_N) 恒从 extras +7 起, 原锚位 +5/+6 不变; ②' 三通道恒在尾部, 总宽 Wc=CONE_N+PIN_N
+                #   cone 块: +7 在 src 扇出锥内(含 src) | +8 沿有向边下游深度 (src=0, 最深=1)
+                #           +9 反向(朝 out)上游深度; v2 追加 +10 主通路 / +11 锥内扇出 / +12 锥内扇入
+                #   src_i/out_i=None => 相应通道全 0; d1 在 src_i 存在时恒算 (②' 也要用)
+                Wc = CONE_N + PIN_N
+                co = np.zeros((N, Wc), dtype=np.float32)
+                d1 = {}
                 if row['src_i'] is not None:
                     d1 = _cone_dists(row['src_i'], b.get('adj', {}))
-                    md1 = max(d1.values()) if d1 else 0
-                    for g, dd in d1.items():
-                        co[g, 0] = 1.0; co[g, 1] = dd / max(md1, 1)
-                if row['out_i'] is not None:
-                    d2 = _cone_dists(row['out_i'], b.get('radj', {}))
-                    md2 = max(d2.values()) if d2 else 0
-                    for g, dd in d2.items():
-                        co[g, 2] = dd / max(md2, 1)
+                if CONE_N:
+                    if d1:
+                        md1 = max(d1.values())
+                        for g, dd in d1.items():
+                            co[g, 0] = 1.0; co[g, 1] = dd / max(md1, 1)
+                    if row['out_i'] is not None:
+                        d2 = _cone_dists(row['out_i'], b.get('radj', {}))
+                        if d2:
+                            md2 = max(d2.values())
+                            for g, dd in d2.items():
+                                co[g, 2] = dd / max(md2, 1)
                 if CONE_V2:
                     # V2 +3 通道 (17.0.8), 复用 d1/d2 同一次 BFS —— 描述每扇门在开关事件里的"角色":
                     #   +3 主通路 (∈d1∧∈d2, 0/1) = 须驱动输出负载的贯穿门; +4 锥内扇出(child∈d1)=分支/叶
@@ -359,7 +385,20 @@ def assemble(cids, use_edges=True):
                             for g in d1: co[g, 4] /= _mxo
                         if _mxi > 0:
                             for g in d1: co[g, 5] /= _mxi
-                T[s:e, N_CONT_BASE+7 : N_CONT_BASE+7+ncone] = co
+                if CONE_PIN and d1:
+                    # ②' 输入脚级激活锥 (17.0.16 R4): 该门"几条输入脚被这次切换锥拉动" —— g 的 driver 中∈d1 的计数
+                    #   count: 输入条数(其输出随动 → 该输入对应腿被拉); frac: count/该门输入脚总数 (归一腿占比);
+                    #   ge2: 1 若 count>=2 (多腿同拉 → 深堆叠/并联门电流最敏感区, = §0.6 n>=8 残差池)
+                    #   count>0 ⟺ g∈d1 锥内 (driver→g 可达); 种子 src 自身无 in-d1 driver → 恒 0 (区分源 vs 锥内)
+                    _radj = b.get('radj', {})
+                    for g in d1:
+                        _drv = _radj.get(g, ()); _nt = len(_drv)
+                        if not _nt: continue
+                        _cnt = sum(1 for _p in _drv if _p in d1)
+                        co[g, CONE_N + 0] = float(_cnt)
+                        co[g, CONE_N + 1] = _cnt / _nt
+                        co[g, CONE_N + 2] = 1.0 if _cnt >= 2 else 0.0
+                T[s:e, N_CONT_BASE+7 : N_CONT_BASE+7+Wc] = co
             Ty[s:e] = typ
         edges_t = []
         if use_edges:
@@ -449,6 +488,7 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
         torch.save({'state_dict': model.state_dict(), 'num_types': NUM_TYPES, 'n_cont': n_cont,
                     'emb': EMB, 'hid': HID, 'k': K, 'dropout': DROPOUT,
                     'struct_mode': STRUCT_MODE, 'n_cont_base': N_CONT_BASE, 'cone_v2': CONE_V2,
+                    'cone_feat': CONE_FEAT, 'cone_pin': CONE_PIN,
                     'val_r2': best_va, 'best_ep': best_ep}, out_ckpt)
         print(f'  [{name}] ckpt saved -> {out_ckpt} (val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
     tr2, trho, tn = eval_blocks(tr_data)
@@ -510,10 +550,13 @@ with torch.no_grad():
                        'dir_code': float(fr[_nb + 4])}
                 if ns.shape[1] >= 10:
                     rec['stack'] = float(nsr[8]); rec['parallel'] = float(nsr[9])
-                if N_EXTRA >= 7:                       # 锥体 v1/v2: cone 通道在 extras 的 +7.. 位
+                if CONE_N:                             # 锥体 v1/v2 (cones 从 +7 起; 无锥体 CONE_N=0 => 不读) —— 修 17.0.15 R3 越界 bug (原守卫 N_EXTRA>=7 在 N_EXTRA=7 也误触发)
                     rec['incone'] = float(fr[_nb + 7]); rec['cone_down'] = float(fr[_nb + 8]); rec['cone_up'] = float(fr[_nb + 9])
-                if N_EXTRA >= 13:                      # 锥体 v2 专属额外 3 通道 (v1 N_EXTRA=10 无, 勿读)
+                if CONE_V2:                            # v2 专属 +10..+12 (v1 N_EXTRA=10 无, 勿读)
                     rec['main_path'] = float(fr[_nb + 10]); rec['cone_fout'] = float(fr[_nb + 11]); rec['cone_fin'] = float(fr[_nb + 12])
+                if CONE_PIN:                           # ②' 三通道恒在 extras 尾部 (offset = N_EXTRA-PIN_N, 见 assemble)
+                    _po = N_EXTRA - PIN_N
+                    rec['leg_cnt'] = float(fr[_nb + _po + 0]); rec['leg_frac'] = float(fr[_nb + _po + 1]); rec['leg_ge2'] = float(fr[_nb + _po + 2])
                 _recs.append(rec)
 print('\n  --- test 按批次来源分桶 (R^2 GNN vs GBDT15) ---')
 for btag, d in per_b.items():
