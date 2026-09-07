@@ -25,6 +25,10 @@
   17.0.17: n_t 条件专家旋钮 TIER_ONLY (''/ge8/le2/3-7; 空串=行为不变)。判定口径:
            默认 17.0.14 base (CONE_V2=1 无 CONE_PIN) + TIER_ONLY=ge8 跑专化模型, 其 test R² = n>=8 层 R²,
            与 R1 base 锚 n>=8 层 0.5689 (同切分同 regime, 152k test 行) 直接可比; 显著 > 0.5689 → 复合路由有价值.
+  17.0.18: LR 冻结尾死时间取消 (纯省时, 结果逐位不变)。Cosine eta_min 暴露为 LR_FLOOR (默认 0 = 历史行为);
+           lr 退火到底(=0)后权重冻结, val 不可能再超 → FREEZE_STOP=1 (默认) 在冻结边界后首个 eval 即收,
+           不再空转到 patience (省 ~19% 墙钟, 史 R1-R3/R4 均白烧)。best_sd 在 best_va 处存盘 → test 结果与旧协议逐位一致,
+           R5(TIER ge8) vs R1 n>=8 锚 0.5689 对比不受影响。R4 在跑(旧代码)不受影响, 自然收尾。
 """
 import sys, os, json, math, time, glob as _glob
 from collections import deque
@@ -92,6 +96,12 @@ RLP_MINLR = float(os.environ.get('RLP_MINLR', '1e-6'))
 # 17.0.14: 早停收口 (上不封顶, EPOCHS 只当安全上限) —— LR 预算期 + 阈值敏感早停 (默认已启用; 复现历史设 LR_TMAX=0/STOP_EPS=0/PATIENCE=0)
 LR_TMAX  = int(os.environ.get('LR_TMAX', '120') or 0)    # cosine 退火期=LR_TMAX (到期冻结 LR, 不与 EPOCHS 绑死); 0=历史 (T_max=EPOCHS)
 STOP_EPS = float(os.environ.get('STOP_EPS', '2e-3') or 0) # 仅当 val 提升 ≥STOP_EPS 视为"有意义进步"并重置早停钟; 0=历史 (任何抬升都重置)
+# 17.0.18: LR 冻结尾死时间取消。CosineAnnealingLR 默认 eta_min=0 → 退火到 LR_TMAX 终点 lr 精确归零并冻结,
+#   lr=0 后 AdamW 一步不动, 原设计"交给阈值早停收口"被冻死 → ep121..160 纯死时间白烧 ~19% 墙钟 (R1-R3/R4 均中招)。
+#   best_sd 只在 best_va 处存盘, 而冻结后 val 不可能再超 → 在冻结边界后首个 eval 即收, 结果与旧行为逐位一致 (纯省时, 非精度改动)。
+#   仅当退火到底且 floor=0 (权重真的冻住) 才触发; LR_FLOOR>0 的"活尾微调"是独立实验候选 (docs/任务 #32), 需同协议 base 对照定档。
+LR_FLOOR = float(os.environ.get('LR_FLOOR', '0') or 0)     # cosine eta_min; 默认 0 = 历史逐位不变 (勿与 R5/R1 锚混开)
+FREEZE_STOP = os.environ.get('FREEZE_STOP', '1') == '1'    # 默认开: lr=0 冻结后即收, 死时间取消; 设 0 = 保留旧空转行为(复刻旧 log)
 # ③ 17.0.15 候选: ckpt 落盘 (best_sd + 模型元信息) + test 残差/属性 dump (供本地分析 残差 vs n_t/锥深, 判 ②' 激活锥值不值投)
 _sck = os.environ.get('SAVE_CKPT', '')
 CKPT_PATH = ('idsavg_gnn_best.pt' if _sck == '1' else _sck)   # 非空即落盘
@@ -103,7 +113,8 @@ print('[CFG] ' + ' | '.join([
     f'CONE_V2={int(CONE_V2)}', f'CONE_FEAT={int(CONE_FEAT)}', f'CONE_PIN={int(CONE_PIN)}',
     f'CONE_N={CONE_N}', f'PIN_N={PIN_N}', f'N_EXTRA={N_EXTRA}', f'n_cont={N_CONT_BASE + N_EXTRA}',
     f'K={K}', f'HID={HID}', f'EMB={EMB}', f'LR={LR}', f'DROPOUT={DROPOUT}',
-    f'EPOCHS={EPOCHS}', f'LR_TMAX={LR_TMAX}', f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
+    f'EPOCHS={EPOCHS}', f'LR_TMAX={LR_TMAX}', f'LR_FLOOR={LR_FLOOR}', f'FREEZE_STOP={int(FREEZE_STOP)}',
+    f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
     f'NO_NOGRAPH={int(NO_NOGRAPH)}', f'CKPT={CKPT_PATH or "-"}', f'DUMP={DUMP_PATH or "-"}',
     f'TIER_ONLY={TIER_ONLY or "-"}',
 ]), flush=True)
@@ -452,7 +463,9 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
             threshold=RLP_THRESH, threshold_mode='abs', cooldown=RLP_COOL, min_lr=RLP_MINLR)
     else:
         # 17.0.14: cosine 退火期可独立于 EPOCHS (LR_TMAX>0); 到期冻结 LR, 交给阈值早停收口
-        sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=(LR_TMAX if LR_TMAX > 0 else EPOCHS))
+        # 17.0.18: eta_min=LR_FLOOR (默认 0 = 历史逐位一致); 冻结后死时间由下方 FREEZE_STOP 取消
+        sched = torch.optim.lr_scheduler.CosineAnnealingLR(
+            opt, T_max=(LR_TMAX if LR_TMAX > 0 else EPOCHS), eta_min=LR_FLOOR)
     best_va = -1e9; best_sd = None; best_ep = 0; last_imp_ep = 0
     def eval_blocks(datas):
         model.eval()
@@ -499,6 +512,12 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
                 if (ep+1) - _ref >= PATIENCE:
                     print(f'  [{name}] early stop @ ep {ep+1} (patience {PATIENCE}; best val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
                     break
+            # 17.0.18: lr 退火到底(=LR_FLOOR=0) → AdamW 权重冻结, 冻结后 val 不可能再超 best (当前 eval 已在冻结边界,
+            #   best 本块已捕捉) → 死时间取消: 直接收, 结果与旧"空转到 patience"逐位一致 (纯省时)。见头部 LR_FLOOR 注。
+            if FREEZE_STOP and SCHED == 'cosine' and LR_TMAX > 0 and LR_FLOOR == 0 \
+                    and ep >= LR_TMAX - 1 and lr_now < 1e-12:
+                print(f'  [{name}] lr=0 冻结到顶: 死时间取消 @ ep {ep+1} (best val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
+                break
     model.load_state_dict(best_sd)
     if out_ckpt:
         torch.save({'state_dict': model.state_dict(), 'num_types': NUM_TYPES, 'n_cont': n_cont,
