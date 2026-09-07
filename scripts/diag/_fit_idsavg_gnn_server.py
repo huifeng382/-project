@@ -30,7 +30,7 @@
            不再空转到 patience (省 ~19% 墙钟, 史 R1-R3/R4 均白烧)。best_sd 在 best_va 处存盘 → test 结果与旧协议逐位一致,
            R5(TIER ge8) vs R1 n>=8 锚 0.5689 对比不受影响。R4 在跑(旧代码)不受影响, 自然收尾。
 """
-import sys, os, json, math, time, glob as _glob
+import sys, os, json, math, time, gc, glob as _glob
 from collections import deque
 import numpy as np
 import pandas as pd
@@ -271,6 +271,10 @@ for ci, cid in enumerate(circ_all):
         blocks[cid] = _be
     if (ci+1) % 5000 == 0:
         print(f'  电路 {ci+1}/{len(circ_all)}: GBDT样本 {len(ys)} / 块 {len(blocks)}, {time.time()-t0:.0f}s', flush=True)
+# 17.0.19: 释放 wave JSON 字符串层。rowg/sdf 只在逐电路建块循环内用 (sdf L201/rowg L214), 之后 mean/std、masks、
+#   assemble、训练全不碰 (已核) → 建块完即放。全量三批实测该层 ~9.1GB 常驻; 放后训练稳态峰值 24→~15GB
+#   (纯省内存, 不碰任何数值, 结果逐位不变)。此行为对 N_CAP/全量/各 TIER 通用, 无 env 开关 = 默认。
+del rowg, sdf; gc.collect()
 
 Xs = np.array(Xs); ys = np.array(ys)
 NUM_TYPES = max_type + 2
