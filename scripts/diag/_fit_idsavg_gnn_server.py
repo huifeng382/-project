@@ -43,7 +43,10 @@ from sklearn.ensemble import HistGradientBoostingRegressor
 from scipy.stats import spearmanr
 from src.graph_builder import build_static_graph, rebuild_gate_types
 
-torch.manual_seed(0); np.random.seed(0)
+# 17.0.21: SEED 旋钮 (多 seed 集成)。默认 0 = 历史逐位不变。电路切分用 RandomState(7)、GBDT 用 random_state=42,
+#   GSZ=1 无 shuffle → 各 seed 行序/切分逐位对齐, resid 可直接按行平均集成; seed 只改 torch 初始化 + dropout。
+SEED = int(os.environ.get('SEED', '0') or 0)
+torch.manual_seed(SEED); np.random.seed(SEED)
 DEV = 'cuda' if torch.cuda.is_available() else 'cpu'
 print(f'DEV={DEV}', flush=True)
 
@@ -116,7 +119,7 @@ print('[CFG] ' + ' | '.join([
     f'EPOCHS={EPOCHS}', f'LR_TMAX={LR_TMAX}', f'LR_FLOOR={LR_FLOOR}', f'FREEZE_STOP={int(FREEZE_STOP)}',
     f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
     f'NO_NOGRAPH={int(NO_NOGRAPH)}', f'CKPT={CKPT_PATH or "-"}', f'DUMP={DUMP_PATH or "-"}',
-    f'TIER_ONLY={TIER_ONLY or "-"}',
+    f'TIER_ONLY={TIER_ONLY or "-"}', f'SEED={SEED}',
 ]), flush=True)
 
 def parse_corner(corner):
