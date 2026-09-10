@@ -29,6 +29,14 @@
            lr 退火到底(=0)后权重冻结, val 不可能再超 → FREEZE_STOP=1 (默认) 在冻结边界后首个 eval 即收,
            不再空转到 patience (省 ~19% 墙钟, 史 R1-R3/R4 均白烧)。best_sd 在 best_va 处存盘 → test 结果与旧协议逐位一致,
            R5(TIER ge8) vs R1 n>=8 锚 0.5689 对比不受影响。R4 在跑(旧代码)不受影响, 自然收尾。
+  17.1.2: 交叉拟合 + 推理模式 (把本 GNN 预测的 per-gate ids_avg 当 delayGNN 的特征列)。
+    NFOLD=5 FOLD_IDX=i → 全电路按 RandomState(7) 排列均分 5 折, 第 i 折 = 预测折(全档, 不进训练),
+      其余 4 折 = 训练池, 池内再按 5% 切 val(早停); 各折训练池互不重叠 ⟹ 预测折对模型完全未见(OOF 无泄漏)。
+      NFOLD=0 时逐位保持旧 85/5/10 切分(默认, 历史结果不受影响)。
+    INFER_CKPT=<ckpt> PRED_OUT=<parquet> → 不训练: 载 ckpt 对 te_c(=预测折) 的**全部 (行,门)** 前向 dump
+      列 = circuit_id/switching_pin/direction/output/corner/gate(小写)/pred_log1p
+      (含无监督门; 与训练共用同一条建块/特征路径 ⟹ 推理与训练口径逐位一致)。
+    ckpt 追加 sta_mean/sta_std → 推理自包含(旧 ckpt 无此键则按本次 tr_c 重算, 数值等价)。
 """
 import sys, os, json, math, time, gc, glob as _glob
 from collections import deque
@@ -109,6 +117,16 @@ FREEZE_STOP = os.environ.get('FREEZE_STOP', '1') == '1'    # 默认开: lr=0 冻
 _sck = os.environ.get('SAVE_CKPT', '')
 CKPT_PATH = ('idsavg_gnn_best.pt' if _sck == '1' else _sck)   # 非空即落盘
 DUMP_PATH = os.environ.get('DUMP_RESID', '')                   # 非空即 dump test 每 (row,门) 预测/真值/属性(n_t/锥深/type/batch)
+# 17.1.2: 交叉拟合 + 推理模式 (delayGNN 侧把 GNN 预测的 ids_avg 当特征列; 见头部)
+NFOLD    = int(os.environ.get('NFOLD', '0') or 0)      # >0 = 交叉拟合切分 (全电路均分 NFOLD 折); 0 = 旧 85/5/10 逐位不变
+FOLD_IDX = int(os.environ.get('FOLD_IDX', '0') or 0)   # 第几折当预测折 (仅 NFOLD>0 有意义)
+INFER_CKPT = os.environ.get('INFER_CKPT', '')          # 非空 = 推理模式 (载 ckpt → dump 预测折全部 (行,门)), 不训练
+PRED_OUT   = os.environ.get('PRED_OUT', '')            # 推理模式输出 parquet 路径
+INFER = bool(INFER_CKPT)
+if INFER and not PRED_OUT:
+    raise SystemExit('INFER_CKPT 已设但 PRED_OUT 为空 (推理模式必须给输出路径)')
+if NFOLD > 0 and not (0 <= FOLD_IDX < NFOLD):
+    raise SystemExit(f'FOLD_IDX={FOLD_IDX} 越界 (NFOLD={NFOLD})')
 # 17.0.16: log 头配置回显 —— 防 R3 式静默误配 (跑前先核这行配置对不对; 候选必须与想跑的完全一致)
 print('[CFG] ' + ' | '.join([
     f'DATA={DATA_BATCHES}', f'N_CAP={N_CAP}',
@@ -120,6 +138,7 @@ print('[CFG] ' + ' | '.join([
     f'STOP_EPS={STOP_EPS}', f'PATIENCE={PATIENCE}', f'SCHED={SCHED}',
     f'NO_NOGRAPH={int(NO_NOGRAPH)}', f'CKPT={CKPT_PATH or "-"}', f'DUMP={DUMP_PATH or "-"}',
     f'TIER_ONLY={TIER_ONLY or "-"}', f'SEED={SEED}',
+    f'NFOLD={NFOLD}/{FOLD_IDX}', f'INFER={INFER_CKPT or "-"}', f'PRED_OUT={PRED_OUT or "-"}',
 ]), flush=True)
 
 def parse_corner(corner):
@@ -181,8 +200,21 @@ if N_CAP > 0:
     circ_all = np.random.RandomState(42).choice(circ_all, size=min(N_CAP, len(circ_all)), replace=False).tolist()
 circ_all = list(circ_all)
 order = np.asarray(circ_all); rp = np.random.RandomState(7).permutation(len(order))
-n1 = int(len(order)*CIRC_SPLIT[0]); n2 = n1 + int(len(order)*CIRC_SPLIT[1])
-tr_c = set(order[rp[:n1]].tolist()); va_c = set(order[rp[n1:n2]].tolist()); te_c = set(order[rp[n2:]].tolist())
+if NFOLD > 0:
+    # 17.1.2 交叉拟合: 同一 RandomState(7) 排列均分 NFOLD 折; 第 FOLD_IDX 折 = 预测折(全档不参与训练),
+    #   其余折合并 = 训练池, 池内再切 5% 作 val(早停)。各折训练池互不重叠 ⟹ 预测折对模型完全未见 (OOF 无泄漏)。
+    _chunks = np.array_split(rp, NFOLD)
+    _pr_i = _chunks[FOLD_IDX]
+    _rs_i = np.concatenate([_chunks[j] for j in range(NFOLD) if j != FOLD_IDX])
+    _rp2 = np.random.RandomState(7).permutation(len(_rs_i)); _nv = max(10, int(len(_rs_i) * 0.05))
+    tr_c = set(order[_rs_i[_rp2[_nv:]]].tolist())
+    va_c = set(order[_rs_i[_rp2[:_nv]]].tolist())
+    te_c = set(order[_pr_i].tolist())
+    print(f'[FOLD] NFOLD={NFOLD} FOLD_IDX={FOLD_IDX}: 训练池 {len(_rs_i)} → train {len(tr_c)} / val {len(va_c)}; '
+          f'预测折 {len(te_c)} 电路', flush=True)
+else:
+    n1 = int(len(order)*CIRC_SPLIT[0]); n2 = n1 + int(len(order)*CIRC_SPLIT[1])
+    tr_c = set(order[rp[:n1]].tolist()); va_c = set(order[rp[n1:n2]].tolist()); te_c = set(order[rp[n2:]].tolist())
 # 有序列表 (set 迭代序不确定, assemble/分桶一律用有序列表保证块顺序可复现)
 tr_l = [c for c in circ_all if c in tr_c]
 va_l = [c for c in circ_all if c in va_c]
@@ -231,7 +263,7 @@ for ci, cid in enumerate(circ_all):
             g, v = tv.get('gate'), tv.get('ids_avg')
             if g is None or v is None: continue
             gate_avg.setdefault(str(g).lower(), []).append(float(v))
-        if not gate_avg: continue
+        if not gate_avg and not INFER: continue   # 17.1.2: 推理模式不依赖标签(wave/ids_avg), 无标签行也照常预测
         slew_s = float(r.get('slew_s', 0) or 0); load_f = float(r.get('output_load_f', 0) or 0)
         c_slew, c_load = parse_corner(r.get('corner'))
         row_slew = (slew_s if slew_s > 0 else c_slew*1e-12)
@@ -250,6 +282,7 @@ for ci, cid in enumerate(circ_all):
             if not _tier_ok(float(ns[i, 7])): continue   # 17.0.17 n_t 条件专家: 只留该层采样门 (GBDT+GNN 同步收窄)
             y = math.log1p(real)
             sup.append((i, y))
+            if INFER: continue                       # 17.1.2 推理模式: 不建 GBDT 样本 (Xs/ys 全省, 预测走全节点前向)
             drive, par = float(ns[i, 3]), float(ns[i, 4])
             fan, hh = float(np.expm1(ns[i, 1])), float(np.expm1(ns[i, 6]))
             dep, g = float(ns[i, 2]), float(ns[i, 5])
@@ -261,11 +294,14 @@ for ci, cid in enumerate(circ_all):
                        math.log1p(r_on*c_l*1e15), math.log1p(max(par*fan, 1e-9)),
                        math.log1p(max(1.0/(1.0+fan), 1e-9)), dep, g])
             ys.append(y); row_m.append(cid)
-        if not sup: continue
+        if not sup and not INFER: continue
         blk.append({'edges': edges, 'f_slew': f_slew, 'f_load': f_load, 'f_cs': f_cs,
-                    'f_cl': f_cl, 'dir_code': dir_code, 'src_i': src_i, 'out_i': out_i, 'sup': sup})
+                    'f_cl': f_cl, 'dir_code': dir_code, 'src_i': src_i, 'out_i': out_i, 'sup': sup,
+                    # 17.1.2 行身份 (推理 dump 用; 训练路径不读, 零数值影响)
+                    'switching_pin': str(r.get('switching_pin', '')), 'direction': str(r.get('direction', '')),
+                    'output': str(r.get('output', '')), 'corner': str(r.get('corner', ''))})
     if blk:
-        _be = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?')}
+        _be = {'ns': ns, 'rows': blk, 'batch': batch_of_circ.get(cid, '?'), 'node_names': node_names}
         if (CONE_FEAT or CONE_V2 or CONE_PIN) and edges:      # B/V2/②': 每电路邻接表一次建好, assemble 三份 (tr/va/te) 复用
             _adj = {}; _radj = {}
             for _a, _b in edges:
@@ -290,10 +326,12 @@ def masks(cids):
     m = np.array([c in cids for c in row_m])
     return m
 mtr = masks(tr_c); mva = masks(va_c); mte = masks(te_c)
-print('GBDT 样本量 train/val/test:', mtr.sum(), mva.sum(), mte.sum(), flush=True)
+print('GBDT 样本量 train/val/test:', mtr.sum(), mva.sum(), mte.sum(),
+      ('  [推理模式: 不建样本]' if INFER else ''), flush=True)
 
 # ============================================================ A. GBDT15 基线
-print('\n===== A. GBDT15 (15特征, 部署同款, 电路级切分) =====', flush=True)
+if not INFER:
+    print('\n===== A. GBDT15 (15特征, 部署同款, 电路级切分) =====', flush=True)
 def gbdt_r2(name, Xtr, ytr, Xte, yte):
     gb = HistGradientBoostingRegressor(max_iter=400, learning_rate=0.06, random_state=42,
                                        validation_fraction=0.1, early_stopping=True, n_iter_no_change=40)
@@ -303,13 +341,13 @@ def gbdt_r2(name, Xtr, ytr, Xte, yte):
     rho, _ = spearmanr(yte, p)
     print(f'  {name:34s} R^2={r2:.4f}  Spearman={rho:.4f}  n_iter={gb.n_iter_}', flush=True)
     return gb, p
-gb, pte = gbdt_r2('A. GBDT15', Xs[mtr][:, :15], ys[mtr], Xs[mte][:, :15], ys[mte])
-
-# test 每样本 GBDT 预测按电路聚合 (分桶复用; 避免逐电路 O(N) 扫描)
-_carr = np.array(row_m)
-gb_by_cid = {}
-for j, pos in enumerate(np.where(mte)[0]):
-    gb_by_cid.setdefault(_carr[pos], []).append(pte[j])
+gb = pte = None; gb_by_cid = {}    # 17.1.2: 推理模式不跑 GBDT (Xs 为空)
+if not INFER:
+    gb, pte = gbdt_r2('A. GBDT15', Xs[mtr][:, :15], ys[mtr], Xs[mte][:, :15], ys[mte])
+    # test 每样本 GBDT 预测按电路聚合 (分桶复用; 避免逐电路 O(N) 扫描)
+    _carr = np.array(row_m)
+    for j, pos in enumerate(np.where(mte)[0]):
+        gb_by_cid.setdefault(_carr[pos], []).append(pte[j])
 
 # ============================================================ DelayGNN 复刻骨架
 class GraphConvL(nn.Module):
@@ -531,6 +569,8 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
                     'emb': EMB, 'hid': HID, 'k': K, 'dropout': DROPOUT,
                     'struct_mode': STRUCT_MODE, 'n_cont_base': N_CONT_BASE, 'cone_v2': CONE_V2,
                     'cone_feat': CONE_FEAT, 'cone_pin': CONE_PIN,
+                    # 17.1.2: 训练期静态归一化统计随 ckpt 落盘 → 推理/服务端自包含 (旧 ckpt 无此键则回退重算)
+                    'sta_mean': np.asarray(_sta_mean).tolist(), 'sta_std': np.asarray(_sta_std).tolist(),
                     'val_r2': best_va, 'best_ep': best_ep}, out_ckpt)
         print(f'  [{name}] ckpt saved -> {out_ckpt} (val_R^2={best_va:.4f} @ ep {best_ep})', flush=True)
     tr2, trho, tn = eval_blocks(tr_data)
@@ -538,9 +578,61 @@ def run_variant(name, tr_data, va_data, te_data, out_ckpt=None):
     print(f'  [{name}] best_val_R^2={best_va:.4f}  train R^2={tr2:.4f} / test(未见电路) R^2={te2:.4f} Spearman={teho:.4f} (n={ten})', flush=True)
     return model, te2, teho, best_va
 
+def dump_oof(mdl, cids, out_path):
+    """17.1.2: 对 cids 的**全部 (行,门)** 前向 dump → parquet（delayGNN 侧查表用）。
+    列 = circuit_id/switching_pin/direction/output/corner/gate(小写)/pred_log1p。
+    归一化统计走模块级 _sta_mean/_sta_std（训练路径 = 本次训练值; INFER 路径 = ckpt 落盘值）。"""
+    mdl.eval()                                  # ⚠ 必须: 否则 dropout(0.25) 污染 dump
+    pcids = [c for c in cids if c in blocks]
+    pblk = assemble(pcids, use_edges=True)
+    out_rows = []; ntot = nkeep = 0
+    with torch.no_grad():
+        for cid, (ty, feat, ei, s_i, s_y) in zip(pcids, pblk):
+            b = blocks[cid]; ns = b['ns']; N = ns.shape[0]; names = b['node_names']; rws = b['rows']
+            ty_ = ty.to(DEV); feat_ = feat.to(DEV); ei_ = ei.to(DEV)
+            pr = mdl(ty_, feat_, ei_, ty.shape[0]).cpu().numpy()   # R*N: 全部门, 不限监督位
+            keep = np.array([_tier_ok(float(ns[gi, 7])) for gi in range(N)], dtype=bool)
+            ki = np.where(keep)[0]
+            for rk, rd in enumerate(rws):
+                o = rk*N
+                for gi in ki:   # gate 名小写 (与 delay 侧 node_names 的 .lower() 对齐)
+                    out_rows.append((cid, rd['switching_pin'], rd['direction'], rd['output'], rd['corner'],
+                                     str(names[gi]).lower(), float(pr[o+gi])))
+            ntot += N * len(rws); nkeep += int(keep.sum()) * len(rws)
+    pd.DataFrame(out_rows, columns=['circuit_id', 'switching_pin', 'direction', 'output', 'corner',
+                                    'gate', 'pred_log1p']).to_parquet(out_path, index=False)
+    print(f'[OOF] dump -> {out_path}: {len(out_rows)} 行 / {len(pcids)} 电路 '
+          f'(门保留率 {nkeep/max(ntot,1):.3f}; TIER_ONLY={TIER_ONLY or "-"})', flush=True)
+
+# 17.1.2 独立推理模式（载 ckpt 不训练；用于重 dump / 已有 ckpt 补跑）
+if INFER:
+    _ck = torch.load(INFER_CKPT, map_location=DEV)
+    for _k, _want in (('num_types', NUM_TYPES), ('n_cont', n_cont), ('n_cont_base', N_CONT_BASE)):
+        if int(_ck.get(_k, -1)) != int(_want):
+            raise SystemExit(f'[INFER] ckpt {_k}={_ck.get(_k)} 与本次配置 {_want} 不一致 (env 旋钮没对上, 勿混用)')
+    if str(_ck.get('struct_mode', STRUCT_MODE)) != STRUCT_MODE:
+        raise SystemExit(f'[INFER] ckpt struct_mode={_ck.get("struct_mode")} != {STRUCT_MODE}')
+    if 'sta_mean' in _ck:      # 用训练期落盘的归一化统计 (推理自包含); 旧 ckpt 回退按本次 tr_c 现算, 数值等价
+        _sta_mean = np.asarray(_ck['sta_mean'], dtype=np.float32)
+        _sta_std  = np.asarray(_ck['sta_std'],  dtype=np.float32)
+        _sta_src = 'ckpt'
+    else:
+        _sta_src = '本次 tr_c 重算'
+    _mdl = IdsAvgGNN(NUM_TYPES, n_cont, emb=int(_ck['emb']), hid=int(_ck['hid']),
+                     K=int(_ck['k']), dropout=float(_ck.get('dropout', 0.0))).to(DEV)
+    _mdl.load_state_dict(_ck['state_dict'])
+    print(f'\n===== INFER: 交叉拟合 OOF 特征表 =====', flush=True)
+    print(f'  ckpt={INFER_CKPT}  val_R^2={_ck.get("val_r2", float("nan")):.4f} @ ep {_ck.get("best_ep", "?")}'
+          f'  | 归一化统计来源={_sta_src}', flush=True)
+    dump_oof(_mdl, [c for c in circ_all if c in te_c], PRED_OUT)
+    sys.exit(0)
+
 print('\n===== V. DelayGNN 复刻 idsavg GNN (有向边消息传递) =====', flush=True)
 tr_blk = assemble(tr_l, use_edges=True); va_blk = assemble(va_l, use_edges=True); te_blk = assemble(te_l, use_edges=True)
 mdl, g_te, g_rho, g_bv = run_variant('V_gnn', tr_blk, va_blk, te_blk, out_ckpt=(CKPT_PATH or None))
+# 17.1.2: 训练轮里直接 dump 本折 OOF（预测折 = te_l）——与训练共用同一份已建好的 blocks, 不重复建图
+if PRED_OUT:
+    dump_oof(mdl, [c for c in circ_all if c in te_c], PRED_OUT)
 
 # 无边对照 (同特征 per-node MLP, 隔离「消息传递」贡献; 本地已证明, 全量可跳过省时)
 w_te2 = w_rho2 = w_bv = None

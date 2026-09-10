@@ -85,6 +85,13 @@ USE_PARASITIC_CAPS = False     # 每门寄生电容 -> 1 个节点特征
 USE_TRANSISTOR_WAVE = os.environ.get('USE_TRANSISTOR_WAVE', '1') == '1'   # 晶体管波形 -> 3 个节点特征（13.5 消融实验证明有效，设为默认；0=no-wave）
 USE_SUPPLY_NOISE = False       # 电源噪声 -> 2 个节点特征(vdd_droop_mV/gnd_bounce_mV, 广播到所有节点)
 
+# 17.1.2: GNN 预测的 per-gate ids_avg 特征列 —— 独立 extra_feats 块（不在 USE_TRANSISTOR_WAVE 里），
+#   表 = idsavg GNN 的 OOF 推理产物（scripts/diag/_fit_idsavg_gnn_server.py 的 INFER_CKPT/PRED_OUT 模式）:
+#   列 circuit_id/switching_pin/direction/output/corner/gate/pred_log1p。
+#   取 expm1(pred_log1p) 喂入 → 与真实 ids_avg / 近似槽(USE_IDS_AVG_APPROX)同尺度，可直接对比。
+#   查表键 = (circuit_id, switching_pin, direction, output, corner)，门名小写；缺失 → 0（同 wave 缺失行为）。
+IDS_GNN_TABLE = os.environ.get('IDS_GNN_TABLE', '')   # 非空 = 表路径 → 启用该 1 列节点特征（多折可逗号分隔）
+
 # 蒸馏（KD）：teacher 有 wave → student 无 wave（Rust 集成用，见 docs/DISTILL_PLAN.md）
 # student 训练时按 dataset row_idx 索引 teacher 预测；KD_ENABLED=1 生效
 KD_ENABLED = os.environ.get('KD_ENABLED', '0') == '1'          # 1=启用蒸馏损失

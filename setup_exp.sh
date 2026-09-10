@@ -153,6 +153,18 @@ fi
 # 用法：v2wave42 / v2nowave123 等，后缀即 TRAIN_SEED；v2nowave 关 wave（Rust 推理拿不到 wave 的验证）
 # 16.11.4: 支持 v2nowave42m4 / v2iaa42m4 等（尾部可带 m4 标记，seed 取数字前缀）
 case "$V" in
+  v2nowavegnn[0-9]*)   # 17.1.2: 纯拓扑 nowave + GNN 预测 ids_avg 特征列（交叉拟合 OOF 表, 无泄漏）
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    # 表 = ~/idsavg17/idsgnn_oof_f*.parquet（Phase 1 每折一个；缺表必须炸, 不能静默退化成 v2nowave）
+    _T="${IDS_GNN_TABLE:-$(ls -1 "$HOME"/idsavg17/idsgnn_oof_f*.parquet 2>/dev/null | paste -sd,)}"
+    if [ -z "$_T" ]; then
+      echo "ERROR: 未找到 ids GNN OOF 表 (~/idsavg17/idsgnn_oof_f*.parquet)。先跑 Phase 1, 或 IDS_GNN_TABLE=a.parquet,b.parquet bash setup_exp.sh $V"
+      exit 1
+    fi
+    export IDS_GNN_TABLE="$_T"
+    echo "IDS_GNN_TABLE=$IDS_GNN_TABLE"
+    _S=$(echo "${V#v2nowavegnn}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2wave[0-9]*)
     _S=$(echo "${V#v2wave}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;

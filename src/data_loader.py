@@ -12,6 +12,48 @@ import config
 # 背景：_prepare_static_graphs 曾把全部分区图驻留内存（43.7k 图/run），4 run 并发 OOM（2026-08-28）。
 _GRAPH_LRU = {}
 
+# 17.1.2: GNN 预测 ids_avg 查表（进程级缓存；train/val/test 三个 DelayDataset 共用同一份）。
+# 表 = idsavg GNN OOF 推理产物（.parquet: circuit_id/switching_pin/direction/output/corner/gate/pred_log1p）。
+_IDS_GNN_TABLE = {}
+
+def _load_ids_gnn_table(paths):
+    """读 GNN ids_avg 表（可多文件，逗号分隔：交叉拟合每折一个）→
+       ({(电路,开关脚,方向,输出,corner): {门名小写: 值}}, 电路 id 集合)。
+    值 = expm1(pred_log1p)（与真实 ids_avg 同尺度，可直接对标真值口径）。同一路径串只解析一次。"""
+    if paths in _IDS_GNN_TABLE:
+        return _IDS_GNN_TABLE[paths]
+    tbl, cids, nrows = {}, set(), 0
+    for path in [p.strip() for p in str(paths).split(',') if p.strip()]:
+        if not os.path.exists(path):
+            print(f'[data_loader] WARN: ids GNN 表缺失，跳过: {path}')
+            continue
+        try:
+            df = pd.read_parquet(path, columns=['circuit_id', 'switching_pin', 'direction',
+                                                'output', 'corner', 'gate', 'pred_log1p'])
+            # pyarrow-backed 字符串列先 to_numpy() 再走 Python 级拼接（逐元素 arrow 迭代会卡死）
+            _c = df['circuit_id'].astype(str).to_numpy(dtype=object)
+            _k = (_c
+                  + '|' + df['switching_pin'].astype(str).to_numpy(dtype=object)
+                  + '|' + df['direction'].astype(str).to_numpy(dtype=object)
+                  + '|' + df['output'].astype(str).to_numpy(dtype=object)
+                  + '|' + df['corner'].astype(str).to_numpy(dtype=object))
+            _g = df['gate'].astype(str).to_numpy(dtype=object)
+            _v = np.expm1(df['pred_log1p'].to_numpy().astype(np.float64))
+            for k, g, v in zip(_k, _g, _v):
+                d = tbl.get(k)
+                if d is None:
+                    d = tbl[k] = {}
+                d[g] = float(v)
+            cids.update(_c.tolist())
+            nrows += len(df)
+            print(f'[data_loader] ids GNN 表: {path} ({len(df)} 行)')
+        except Exception as e:
+            print(f'[data_loader] WARN: ids GNN 表加载失败 ({path}): {e} → 该文件跳过')
+    print(f'[data_loader] ids GNN 表合计: {nrows} 行 / {len(tbl)} 键 / {len(cids)} 电路')
+    _IDS_GNN_TABLE[paths] = (tbl, cids)
+    return tbl, cids
+
+
 class DelayDataset(Dataset):
     def __init__(self, static_parquets, dynamic_parquets, circuit_ids=None, scaler=None, cache_dir="cache",
                  dynamic_df=None, prefiltered=False):
@@ -121,6 +163,19 @@ class DelayDataset(Dataset):
                     print(f"[data_loader] WARN: GBDT15 模型不存在 {_cands}，回退线性近似")
             except Exception as e:
                 print(f"[data_loader] WARN: GBDT15 加载失败 ({e})，回退线性近似")
+
+        # 17.1.2: GNN 预测 ids_avg 特征列（IDS_GNN_TABLE 非空才加载；表按路径进程级缓存，三个数据集共享）
+        self._idsgnn_path = str(getattr(config, 'IDS_GNN_TABLE', '') or '')
+        self._idsgnn = {}
+        if self._idsgnn_path:
+            self._idsgnn, _ig_cids = _load_ids_gnn_table(self._idsgnn_path)
+            if self._idsgnn:
+                try:
+                    _cov = float(self.dynamic_df['circuit_id'].astype(str).isin(_ig_cids).mean())
+                    print(f"[data_loader] ids GNN 电路覆盖率: 本数据集 {len(self.dynamic_df)} 行中 "
+                          f"{_cov * 100:.2f}% 的电路在表内")
+                except Exception:
+                    pass
 
         # 动态数据：传入已过滤 df 则直接使用（16.4.0 内存修复：避免全量重读 parquet，
         # transistor_wave_json 列实测占动态 df ~93% 内存，此前每 run 持有 5 份 + 3 次重读堆残留 ≈ 41GB）
@@ -610,6 +665,22 @@ class DelayDataset(Dataset):
             except Exception:
                 pass
             extra_feats.append(sn_feat)
+        # 17.1.2: GNN 预测 per-gate ids_avg -> 1 节点特征。
+        #   独立块（不在 if USE_TRANSISTOR_WAVE 内）：wave 关掉时也能用，且不依赖 transistor_wave_json 列。
+        #   查表键 (circuit_id, switching_pin, direction, output, corner) 含 corner（同一 (电路,脚,方向,输出)
+        #   在不同 corner 下 slew/load 不同 → GNN 预测不同）；缺失的门保持 0（与 wave 缺失行为一致）。
+        if self._idsgnn:
+            ig_feat = torch.zeros(num_nodes, 1)
+            _key = '|'.join((str(row.get('circuit_id', '')), str(row.get('switching_pin', '')),
+                             str(row.get('direction', '')), str(row.get('output', '')),
+                             str(row.get('corner', ''))))
+            _gv = self._idsgnn.get(_key)
+            if _gv:
+                for i, n in enumerate(node_names):
+                    _v = _gv.get(str(n).lower())
+                    if _v is not None:
+                        ig_feat[i, 0] = _v
+            extra_feats.append(ig_feat)
         if extra_feats:
             x = torch.cat([x] + extra_feats, dim=1)
 
