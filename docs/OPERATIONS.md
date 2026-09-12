@@ -40,7 +40,7 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `v2iaar<seed>` | v2iaa + **真值排序 loss**(`RANK_LOSS_W=0.5`) | #8 排序直训（2026-09-03） |
 | `v2iagr<seed>` | v2iag(GBDT15近似) + **真值排序 loss**(`RANK_LOSS_W=0.5`) | 17.0.4 空格1 = rank×最不伤近似（补 §13.5 矩阵空格） |
 | `v2nowaver<seed>` | v2nowave(纯拓扑) + **真值排序 loss**(`RANK_LOSS_W=0.5`) | 17.0.4 空格2 = rank×最佳 serve 特征 |
-| `v2nowavegnn<seed>` | v2nowave(纯拓扑) + **GNN 预测 ids_avg 列**(`IDS_GNN_TABLE=<OOF 表>`) | 17.1.2；表由 `scripts/diag/_fit_idsavg_gnn_server.py` 的 `NFOLD/FOLD_IDX` + `INFER_CKPT/PRED_OUT` 交叉拟合产出（OOF 无泄漏）；缺表 → 该列全 0 = 退化成 v2nowave |
+| `v2nowavegnn<seed>` | v2nowave(纯拓扑) + **GNN 预测 ids_avg 列**(`IDS_GNN_TABLE=<OOF 表>`) | 17.1.2；表由 `scripts/diag/_fit_idsavg_gnn_server.py` 的 `NFOLD/FOLD_IDX` + `INFER_CKPT/PRED_OUT` 交叉拟合产出（OOF 无泄漏）；缺表 → 该列全 0 = 退化成 v2nowave。**起训练前先跑 `scripts/diag/check_ids_gnn_table.py` 验键对齐**（17.1.3），行键命中须 ≈100% |
 | `v2kdwave42iaa<seed>` | **v2wave42m4 教师蒸馏**(reg+rank)；⚠ 名带 iaa 但学生**实为纯拓扑**——KD 分支 `USE_TRANSISTOR_WAVE=False` 把近似列门控挡掉（data_loader L507/L510），`USE_IDS_AVG_APPROX=1` 未生效 | #12；教师软标签在教师 outputs；「iaa 学生+KD」格从未真正测过（DIFF §13.4 更正） |
 | `v2kd<teacher><mode><seed>` | 旧蒸馏（teacher=123/ENS；mode=reg/rr） | 15.2；学生无近似特征（已弃路线） |
 | `rankloss1/2`、`bmsm`、`es`、`anneal`、`bestrank`、`seed*` | base 系调参/选点/种子 | V1 时代为主 |

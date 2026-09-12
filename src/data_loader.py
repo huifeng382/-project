@@ -165,17 +165,12 @@ class DelayDataset(Dataset):
                 print(f"[data_loader] WARN: GBDT15 加载失败 ({e})，回退线性近似")
 
         # 17.1.2: GNN 预测 ids_avg 特征列（IDS_GNN_TABLE 非空才加载；表按路径进程级缓存，三个数据集共享）
+        # ⚠ 覆盖率自检放在 dynamic_df 建好之后（见下方 17.1.2 覆盖率块）：写在这里会 AttributeError 被吞，静默无输出
         self._idsgnn_path = str(getattr(config, 'IDS_GNN_TABLE', '') or '')
         self._idsgnn = {}
+        _ig_cids = set()
         if self._idsgnn_path:
             self._idsgnn, _ig_cids = _load_ids_gnn_table(self._idsgnn_path)
-            if self._idsgnn:
-                try:
-                    _cov = float(self.dynamic_df['circuit_id'].astype(str).isin(_ig_cids).mean())
-                    print(f"[data_loader] ids GNN 电路覆盖率: 本数据集 {len(self.dynamic_df)} 行中 "
-                          f"{_cov * 100:.2f}% 的电路在表内")
-                except Exception:
-                    pass
 
         # 动态数据：传入已过滤 df 则直接使用（16.4.0 内存修复：避免全量重读 parquet，
         # transistor_wave_json 列实测占动态 df ~93% 内存，此前每 run 持有 5 份 + 3 次重读堆残留 ≈ 41GB）
@@ -212,6 +207,27 @@ class DelayDataset(Dataset):
         # 确保 vector 列格式正确（保持原样，不 zfill）
         if 'vector' in self.dynamic_df.columns:
             self.dynamic_df['vector'] = self.dynamic_df['vector'].astype(str)
+
+        # 17.1.2 覆盖率自检：键 = 电路|开关脚|方向|输出|corner（与 __getitem__ 查表键逐字同构）。
+        # 行键命中率 << 100% = 两边键对不上 → 该列大面积填 0 = 静默退化成 v2nowave，跑再久也读不出真结论。
+        if self._idsgnn:
+            try:
+                _dd = self.dynamic_df
+
+                def _gcol(_n):
+                    return _dd[_n].astype(str).to_numpy(dtype=object) if _n in _dd.columns \
+                        else np.full(len(_dd), '', dtype=object)
+
+                _dk = (_gcol('circuit_id') + '|' + _gcol('switching_pin') + '|' + _gcol('direction')
+                       + '|' + _gcol('output') + '|' + _gcol('corner'))
+                _hit = np.fromiter((k in self._idsgnn for k in _dk), dtype=bool, count=len(_dk))
+                _ccov = float(pd.Series(_gcol('circuit_id')).isin(_ig_cids).mean())
+                print(f"[data_loader] ids GNN 覆盖率: 行键命中 {_hit.mean() * 100:.2f}% "
+                      f"({int(_hit.sum())}/{len(_dk)}) | 电路在表内 {_ccov * 100:.2f}%")
+                if not _hit.all():
+                    print(f"[data_loader]   ⚠ 未命中样例: {[str(x) for x in _dk[~_hit][:3]]}")
+            except Exception as e:
+                print(f"[data_loader] WARN: ids GNN 覆盖率统计失败 ({e})")
 
         # 组ID：同 (expr,corner,switching_pin,direction,vector) = 同功能同激励下的不同变体（成对排序用）
         def _col(name):
