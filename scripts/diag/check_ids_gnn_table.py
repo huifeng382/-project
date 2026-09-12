@@ -47,14 +47,20 @@ def main():
         sys.exit('未找到 OOF 表')
     oof = keys_of(tf, '表')
 
+    # 数据按批次目录组织，规则同 _fit_idsavg_gnn_server.py L157-162:
+    #   <root>/<batch>/timing_arcs.parquet  或  <root>/<batch>/timing_arcs_part*.parquet
     src = []
     for b in ('batch_v2_full', 'batch_v2_rest', 'batch_v2_m4'):
-        src += sorted(glob.glob(os.path.join(data_root, '**', f'{b}*.parquet'), recursive=True))
+        d = os.path.join(data_root, b)
+        one = os.path.join(d, 'timing_arcs.parquet')
+        if os.path.exists(one):
+            src.append(one)
+        src += sorted(glob.glob(os.path.join(d, 'timing_arcs_part*.parquet')))
     print(f'[数据] root={data_root} -> {len(src)} 个 parquet')
     if not src:
-        cand = sorted(glob.glob(os.path.join(data_root, '**', '*.parquet'), recursive=True))
-        print(f'  {data_root} 下 parquet 候选 (前20): {cand[:20]}')
-        sys.exit('未找到 batch_v2_full/rest/m4 parquet（用第二个参数指定数据根目录）')
+        cand = sorted(glob.glob(os.path.join(data_root, '*', 'timing_arcs*.parquet')))
+        print(f'  {data_root}/*/timing_arcs*.parquet 候选: {cand[:20]}')
+        sys.exit('未找到 batch_v2_full/rest/m4 的 timing_arcs parquet（用第二个参数指定数据根目录）')
     dl = keys_of(src, '数据')
 
     miss = dl - oof
