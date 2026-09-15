@@ -261,7 +261,10 @@ def parse_netlist(netlist_str, input_pins=None, output_pins=None):
     edges = list(set(edges))
     return nodes, edges
 
-def build_static_graph(circuit_id, netlist_str, input_pins=None, output_pins=None):
+def build_static_graph(circuit_id, netlist_str, input_pins=None, output_pins=None, mode=None):
+    """mode=None 时读 config.STRUCT_MODE (历史行为, 逐位不变); 显式传 mode 则覆盖 —— 供同进程内
+    需要两种 STRUCT_MODE 的场景 (如 serve 端同时服务 logic_only 的 delay 模型与 base 的 idsavg GNN),
+    免去改全局 config 带来的多线程竞态。"""
     nodes, edges = parse_netlist(netlist_str, input_pins, output_pins)
     node_names = list(nodes.keys())
     
@@ -278,7 +281,7 @@ def build_static_graph(circuit_id, netlist_str, input_pins=None, output_pins=Non
     edge_index = torch.tensor(edge_index, dtype=torch.long).t().contiguous()
     
     # 节点门类型索引 + 结构特征（按 STRUCT_MODE 决定用哪些）
-    mode = getattr(config, 'STRUCT_MODE', 'base')
+    mode = mode if mode is not None else getattr(config, 'STRUCT_MODE', 'base')
     node_type_idx = []
     struct_info = {}
     for n in node_names:

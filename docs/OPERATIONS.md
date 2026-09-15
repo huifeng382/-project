@@ -92,15 +92,41 @@ idsavg diag：服务器全量已完成 → IDS_AVG_GNN.md §4.2（参数放宽�
 
 ### 6.2 Step 1 — 定 serve 特征布局：查 ckpt，不猜变体名
 ```bash
-~/venv/bin/python3 - <<'PY'
-import torch
-sd = torch.load("~/project-107-<V>/outputs/<ckpt>.pt", map_location="cpu", weights_only=False)
-print("convs.0.lin_rel.weight:", tuple(sd["convs.0.lin_rel.weight"].shape))
-PY
+~/venv/bin/python3 -c "import torch,os; ck=torch.load(os.path.expanduser('~/project-107-<V>/outputs/<ckpt>.pt'),map_location='cpu',weights_only=False); sd=ck.get('state_dict',ck); print('in_features', tuple(sd['convs.0.lin_rel.weight'].shape)[1])"
 ```
-- **in_features = 45 → 无近似列（纯拓扑，nowave 风格）→ serve 不带 `USE_IDS_AVG_APPROX`**
-- **in_features = 46 → 有 ids_avg 近似列 → serve 带 `USE_IDS_AVG_APPROX`（线性近似=1，GBDT15=2，对齐训练 config）**
+（⚠ 用 `os.path.expanduser` —— Python 不展开 `~`，直接抄字符串会 FileNotFoundError。）
+
+- **in_features = 45 → 无 ids 列（纯拓扑，nowave 风格）→ serve 不带 `USE_IDS_AVG_APPROX`**
+- **in_features = 46 → 有 1 列 ids 特征 → 按下面 `struct_mode`/训练配置再分三种模式**
+
+**⚠ 46 是二义的，形状分不出来**（延迟侧静态块恒为 `logic_only` 7 列，故 7+7+1=15→46 对三种来源都一样）；
+且 delay ckpt = **裸 `state_dict()`**（train_sweep L824/829），**不带任何元信息**，所以只能从训练配置反推：
+
+| ids 列来源 | serve 模式 | 怎么确认 |
+|---|---|---|
+| 无（纯拓扑） | 不带 env（in=45） | 形状即证 |
+| 线性系数近似 | `USE_IDS_AVG_APPROX=1` | 训练跑的是 `v2iaa*` 臂（`config.IDS_AVG_APPROX_COEF`） |
+| GBDT15 近似 | `USE_IDS_AVG_APPROX=2` | 训练跑的是 `v2iag*` 臂 |
+| **idsavg GNN 现场预测（17.1.5 新增）** | **`USE_IDS_AVG_APPROX=3`** | 训练跑的是 `v2nowavegnn*` 臂 |
+
+判据用**训练那次 setup_exp.sh 的回显**（`grep -m1 IDS_GNN_TABLE` 该次的启动/训练 log）——`v2nowavegnn[0-9]*`
+臂会 `export IDS_GNN_TABLE=...` 并回显 `IDS_GNN_TABLE=<表路径>`，只有它设；`v2iaa*`/`v2iag*` 走 `USE_IDS_AVG_APPROX`。
+（`v2nowavegnn42b` 的训练 log 里 `Version: 64dcdcf 17.1.2 - GNN预测ids入delay特征+交叉拟合` 也印证这一点。）
 - ⚠ 教训：`v2kdwave42iaa42` 名字带 "iaa" 但 ckpt 实测 **45 → 纯拓扑、不带 env**。盲带 `=1` 会启动失败 `size mismatch ... [256, 45] from checkpoint ... [256, 46]`（serve.py L316-317 按 env 加 extra_dim）。
+- ⚠ **模式选错不会报错**（45↔46 才报错；1/2/3 之间形状相同）→ 只会静默喂进一条口径不对的列。
+
+### 6.2b Step 1b — 模式 3 必过的 parity 闸门（不过就别跑 shadow）
+模式 3 的那一列是 serve 端**现场**跑 idsavg GNN 算的，必须先证明它 == 训练时喂给 delay 模型的那一列，
+否则 shadow 数字测的是"另一条特征路径 + delay 模型"的混合效果，得不出结论。
+```bash
+cd ~/-project && ~/venv/bin/python3 scripts/diag/check_idsgnn_serve_parity.py
+```
+- 做法：第 i 折 ckpt ↔ 第 i 折 OOF 表配对，抽电路用表内各行的真实 corner/slew/load 重建 serve 侧输入 → 前向
+  → 与表里 `pred_log1p` 逐 (行,门) 对比。**同时验证"逐行前向 == 训练侧 R×N 拼块前向"的等价性**（本地已用
+  AST 抽训练侧原函数比对，ΔT=0）。
+- 通过判据：全局 `max|diff|` ≤ `--tol`（默认 1e-4），脚本自己 exit 非 0 就是失败。
+- ⚠ ckpt 缺 `sta_mean`/`sta_std` 会直接炸（17.1.2 起落盘）——serve 端没有训练折数据，**无法"回退重算"**，
+  这是故意设计的硬失败，不要绕过。
 
 ### 6.3 Step 2 — 换 serve（停旧起新）
 ```bash
@@ -110,6 +136,14 @@ cd ~/-project && [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 script
   --scaler ~/project-107-<V>/outputs/scaler.pkl --port 8000 > serve_<V>.log 2>&1 &
 ```
 - log 落在 `~/-project/serve_<V>.log`（先 cd 再重定向）→ tail 用全路径，别去 scripts/diag 下找。
+- **模式 3 额外需要 idsavg GNN 折 ckpt**：默认 glob `~/idsavg17/idsgnn_fold*.pt`，可用 `IDSGNN_CKPT` 覆盖
+  （如 `IDSGNN_CKPT='~/idsavg17/idsgnn_fold*.pt'`）。**glob 无命中 / ckpt 缺 `sta_mean` 一律启动即炸**（不静默退化）。
+  多折默认**在预测空间等权平均**（= OOF 集成的行平均口径）。启动日志会打印折数、结构配置与各折 val_R²。
+- **模式 3 的 `IDSGNN_FOLDS`（默认全折集成）**：逗号分隔折下标，如 `IDSGNN_FOLDS=0` 只用第 0 折。
+  ⚠ 这不是纯省时旋钮 —— delay 模型**训练时**每张电路只拿到"留出它的那一折"的预测（单折、噪声大），
+  而 serve 默认多折平均（更平滑）。Phase B 判负的机制假说正是"特征行间不一致破坏排序"，故**更平滑的
+  serve 侧特征有可能反而变好**（shadow 与训练侧结论分叉）。要分离"特征本身"与"特征噪声水平"，
+  全折与 `IDSGNN_FOLDS=0` 各跑一次 shadow 对照。
 
 ### 6.4 Step 3 — 判 serve 就绪：端口在听，不看 log
 ```bash
@@ -135,7 +169,7 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 
 ### 6.7 Step 6 — 对齐口径 + 记录 + 恢复 serve（本地）
 - 读结果：`reports/_shadow_bench_final.txt`（服务器）+ `~/shadow_analyze.out`。**口径固定 = 106 集 / 5390 行 / 8 失败**（pipeline 窗口级 ≥4 候选计数），别拿 PROJECT_LOG 训练侧 714/548 集混着比。
-- 同口径基准（m4三兄弟 Rust，DIFF §13.2/13.3）：纯拓扑 **nowave 遗憾 10.87%**（serve 交付基线）；iag GBDT15 严格@3 44.3% / 遗憾 12.19%；iaa ⚠ 15.21%。**无近似列(in=45)的模型与此对比才干净**；带近似列(in=46) serve 端本身就净伤害。
+- 同口径基准（m4三兄弟 Rust，DIFF §13.2/13.3）：纯拓扑 **nowave 遗憾 10.87%**（serve 交付基线）；iag GBDT15 严格@3 44.3% / 遗憾 12.19%；iaa ⚠ 15.21%。**无 ids 列(in=45)的模型与此对比才干净**；带 ids 列(in=46) serve 端本身就净伤害 —— ⚠ 该结论来自**近似**列（iag GBDT15 / iaa 线性，两个都是 serve 端净伤害的近似），**不能外推到模式 3（GNN 现场列）**：模式 3 的那一列本身是准的（R²≈0.79），它测的是"GNN ids 特征入 delay"在部署口径下的效果，是一个独立问题（17.1.5 Phase B 训练侧已判负，Rust 复验是为了确认部署口径同结论）。
 - 记 PROJECT_LOG（Rust 表行）+ 分析结论 → DIFF + 同步 I7 + 版本化 commit；push 仅按要求。
 - **恢复 serve**：若非交付路线的模型验完，按 Step 2 换回 v2nowave42m4（`--ckpt ~/project-107-v2nowave42m4/outputs/midpoint_ep250.pt`，不带 env）。
 
