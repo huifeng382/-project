@@ -833,7 +833,7 @@ Ordered best to worst:
 - **Rust 改动**：`gnn_shadow.rs` 增第二端点（读 env `GNN_PORT2` / `GNN_HOST2`，在 `ShadowGnnTlEvaluator::new()` 内解析 → `tl_opt.rs` **零改动**）。第二路与第一路一样是**纯观察者，只写日志、不参与决策**（`evaluate` 返回的始终是 inner 的 SPICE 真值）。不设 `GNN_PORT2` 时 `gnn2 = None`，输出与旧版**逐字节相同**（新列追加在行尾，旧解析器用不锚定的 `re.search`，不受影响）。内层仓库版本 `15.9.3`。
 - **端口 → 模型的映射由外部约定，Rust 不知道也不关心**：**8000 = 模型1 = `v2nowave42b` ep100（拓扑臂，不带 env）**；**8001 = 模型2 = `v2nowavegnn42b` ep150（ids 臂，`USE_IDS_AVG_APPROX=3`）**。`run_shadow_batch.sh` 内部硬编码 `GNN_PORT=8000` 且**不设** `GNN_PORT2` → 在父 shell `export GNN_PORT2=8001` 即被全部 12 个分片继承。
 - **收尾状态**：12 分片全部归零；**全程 Xyce 进程数 0**（`XYCE_CACHE` 内容寻址缓存全命中）；**总行 5398、第二列 NaN 0**。
-- **⚠ `gnn42b` 的 ep150 尚未旁证**：`best_model.pt` 的 md5 与任何 `midpoint_epN.pt` 都不撞（两臂皆然）→ `best_model.pt` 另存了额外状态，**该办法验不了 epoch**。42b 的 ep100 有本文件上方结果表的支撑，gnn42b 的 ep150 还需训练 log 侧证据（或人工确认）。**若最终确认选错 epoch，因缓存全命中，重跑一趟成本很低。**
+- **⚠ epoch 的"独立旁证"没做成，但选择本身有据**：两臂 serve 的 ckpt 都取自上方结果表的 **Best midpoint** 列（42b→ep100、gnn42b→ep150），**来源完全相同、证据强度相同**。本想再用 md5 交叉确认一次，但**两臂的 `best_model.pt` 与任何 `midpoint_epN.pt` 都不撞** → `best_model.pt` 落盘时另存了额外状态（epoch/optimizer 之类），**这个办法验不了 epoch**。故剩下的只是"磁盘上 `midpoint_ep150.pt` 就是表里那个 ep150"这一层，由文件名自证，**不是选错 epoch 的风险**。**若日后确需改 epoch 重跑，因缓存全命中，一趟成本很低。**
 - **「轨迹与模型无关」的实证（本趟为 m4 族第 8 趟）**：总行 5398 = 规范口径的 **5390 成功行 + 8 失败行**，与 m4 族七趟的 **106 集 / 5390 行 / 8 失败**逐项相同。这正是"一趟 shadow 能同时记录两个模型"的前提 —— 候选集与真值列全由 SPICE 决定，与 serve 挂哪个模型无关；同时 12 分片并发下模式 3 一次都没超时（第二列 0 NaN），说明现场跑 GNN 的 serve 撑得住这个并发度。
 - 待办：服务器 `git pull` 拿到 17.1.7 的新版 `_shadow_analyze.py` 后重跑解析，取「两列并排 A/B」一节的配对结果 → 回填本节 Rust 表行与 `GNN_RUST_DATA_DIFF.md` §13.2/13.3。
 
