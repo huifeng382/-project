@@ -230,9 +230,41 @@ def _approx_ids_avg_vector(node_static):
     return out
 
 
+def static_scalars(netlist, transistor_count=None):
+    """从网表文本算 serve 侧可复算的静态标量 → (n_gates, tc, and_r, inv_r)。
+    tc=None 表示 payload 未提供（旧版 Rust / 离线 JSON 无该字段）。
+
+    口径与训练侧**逐字对齐**（GNN_RUST_DATA_DIFF §13.8）：
+      · n_gates  —— `data_loader.py:318`：行首为 'X_' 的行数（**不是图节点数**）
+      · and_r/inv_r —— `data_loader.py:716-717`：在**唯一 cell 名**集合上按训练原样字符串模式
+        计数；训练用的是 `cell_types_json`，两者在 14,727 行上 **98.6148%** 等值，204 个例外
+        全是同一方向且无害（ct 多出一个常量折叠的 `SC_JOIN_BOOL*`，从不缺失，且不匹配下面
+        两条模式）→ and_r/inv_r 逐行 **100.0000%** 相等（17.3.5 闸门，见 §13.8.3-6）
+      · tc —— 生成器元数据（`convert_to_parquet.py:21`），serve **无法复算**：真口径是 Rust 在
+        内部 module/e-graph 上数 SC 网络（Join/Inv/Bridge/And/Or）的 `M_` 实例
+        （`NetlistOpt/src/utils/transistor_count.rs:69`），serve 手里只有扁平网表文本。
+        ⚠ 别用估计值顶：`serve_fixTC_recon`（喂复算值）**+2.23pp，比完全不修的 +2.06pp 还差**
+        （§13.8.3-4；17.3.2 曾按 ASAP7 Σn_t 试复算，那是错口径，见 §13.8.3-5）
+        → 只能由 Rust payload 提供；拿不到就保持 None（= 改动前行为）
+    """
+    lines = [l.strip() for l in str(netlist).split('\n')]
+    xs = [l for l in lines if l.startswith('X_')]
+    cells = set()
+    for l in xs:
+        parts = l.split()
+        if len(parts) >= 4:
+            cells.add(parts[-1])
+    and_r = sum(1 for g in cells if 'SC_AND' in g and 'SC_AND_' not in g)
+    inv_r = sum(1 for g in cells if 'SC_INV_WIRE' in g)
+    tc = None if transistor_count is None else float(transistor_count)
+    return len(xs), tc, and_r, inv_r
+
+
 def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device,
-                          gnn_ids=None):
+                          gnn_ids=None, scalars=None):
     """单候选、共享静态图：返回每模型的 avg_delay（list，长度 = len(models)）。
+    scalars：`static_scalars()` 的返回值（可选）。给了就按训练口径填 csig 与 struct_prior；
+    不给（None）则完全保持 17.3.4 之前的行为（csig=[num_nodes,0,#pins]、struct_prior=None）。
     每 (pin,dir) 行对每模型做一次前向，行内多模型求均值 → 电路级平均。
     16.11.35: 近似 ids_avg（mode '1'=线性 / '2'=GBDT15）在 x 绝对末维，in_dim = base+7+1，与训练一致。
     17.1.5: mode '3' 时该列由 gnn_ids（{(pin_lower,dir): arr[N]}）**逐行**提供。"""
@@ -250,6 +282,16 @@ def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, out
     edge_index = edge_index.to(device)
     acc = np.zeros(len(models))
     n_rows = 0
+    # 17.3.5: csig / struct_prior 一次算好（与行无关）。scalars=None → 保持 17.3.4 前行为。
+    if scalars is None:
+        _csig0, _csig1, _prior = float(num_nodes), 0.0, None
+    else:
+        _n_gates, _tc, _and_r, _inv_r = scalars
+        _csig0 = float(_n_gates)
+        _csig1 = 0.0 if _tc is None else float(_tc)
+        _prior = (None if _tc is None else
+                  torch.tensor([[float(_tc), float(_and_r), float(_inv_r)]],
+                               dtype=torch.float, device=device))
     for switching in pins:
         for direction in ('rise', 'fall'):
             dyn, vector_str = row_dynamic_features(pins, switching, direction, SLEW_S, LOAD_F, scaler)
@@ -278,12 +320,12 @@ def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, out
                     x[i, dyn_last] = 1.0
             with torch.no_grad():
                 corner = torch.tensor([CORNER], dtype=torch.float, device=device)
-                csig = torch.tensor([[float(num_nodes), 0.0, float(len(pins))]],
+                csig = torch.tensor([[_csig0, _csig1, float(len(pins))]],
                                     dtype=torch.float, device=device)
                 for mi, m in enumerate(models):
                     m.eval()
                     out, _ = m(x, edge_index, torch.zeros(num_nodes, dtype=torch.long, device=device),
-                               corner, csig, None)
+                               corner, csig, _prior)
                     acc[mi] += float((10 ** out.cpu()).clamp(1e-12, 1e-8).item())
             n_rows += 1
     if n_rows == 0:
@@ -292,15 +334,17 @@ def _per_model_avg_delays(models, node_names, node_static, edge_index, pins, out
 
 
 def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
-                      gate_logics=None):
+                      gate_logics=None, transistor_count=None):
     """预测单个候选电路的 avg_delay（每 (pin,dir) 行延迟的线性平均，对齐 Rust）。
     models：list[DelayGNN] —— 多模型（集成）时对每行预测取平均。
-    gate_logics：可选 {门名 -> 逻辑类}，Rust 侧传入时覆盖 sc_expansion 查不到的门的逻辑类。"""
+    gate_logics：可选 {门名 -> 逻辑类}，Rust 侧传入时覆盖 sc_expansion 查不到的门的逻辑类。
+    transistor_count：可选，Rust payload 带来的真值（= 训练侧口径）。给了才填 csig[1]/struct_prior；
+    None 则保持旧行为（见 static_scalars 与 §13.8 —— 不要传估计值，近似值比缺失更伤）。"""
     set_gate_logic_overrides(gate_logics)
     node_names, node_static, edge_index, pins, outs, gnn_ids = build_candidate_tensors(
         netlist, input_pins, output_pins, scaler)
     pm = _per_model_avg_delays(models, node_names, node_static, edge_index, pins, outs, scaler, device,
-                               gnn_ids=gnn_ids)
+                               gnn_ids=gnn_ids, scalars=static_scalars(netlist, transistor_count))
     return float(np.mean(pm)) if pm else float('nan')
 
 
@@ -322,7 +366,9 @@ def predict_rank_batch(models, cands, scaler, device):
         try:
             nn, ns, ei, pins, outs, gid = build_candidate_tensors(
                 c.get('netlist', ''), c.get('input_pins', []), c.get('output_pins', []), scaler)
-            pm = _per_model_avg_delays(models, nn, ns, ei, pins, outs, scaler, device, gnn_ids=gid)
+            pm = _per_model_avg_delays(models, nn, ns, ei, pins, outs, scaler, device, gnn_ids=gid,
+                                       scalars=static_scalars(c.get('netlist', ''),
+                                                              c.get('transistor_count')))
         except Exception:
             pm = [float('nan')] * len(models)
         rows.append({'id': c.get('id', '?'), 'pm': pm, 'nan': any(v != v for v in pm)})
@@ -409,7 +455,8 @@ def main():
     for c in cands:
         try:
             ad = predict_avg_delay(models, c['netlist'], c.get('input_pins', []),
-                                   c.get('output_pins', []), scaler, device)
+                                   c.get('output_pins', []), scaler, device,
+                                   transistor_count=c.get('transistor_count'))
             results.append({'id': c.get('id', c.get('circuit_id', '?')), 'avg_delay': ad})
         except Exception as e:
             results.append({'id': c.get('id', '?'), 'avg_delay': None, 'error': str(e)})
