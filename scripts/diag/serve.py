@@ -304,10 +304,29 @@ def predict_avg_delay(models, netlist, input_pins, output_pins, scaler, device,
     return float(np.mean(pm)) if pm else float('nan')
 
 
+# 并列判定的相对容差（17.2.3）。为什么不是位级相等：
+# 2026-09-15 实测并定因 —— 同一 ckpt、同一输入、同一份代码，**只换 serve 进程**，
+# level2/DEPTH_MIX 的 gnn_pred 就有 239/4190 行变化，且全是 ±0.5 的整跳
+# （2.500000e0 ↔ 3.000000e0 / 2.000000e0）。根因是本函数原先用 `==` 判并列：
+# 同一份网表被反复评估时（实测 transistors=34 与 36 那两族在 w=7/12/14/15/16 反复出现），
+# 两次前向的归约顺序差 1 ulp → 位级不等 → 本该并列的两个候选被拆成一先一后 →
+# 平均秩 (i+j)/2+1 整组平移 0.5 → 粗网格上的大跳 → top-1 翻转 →
+# 选择遗憾在 0.00% ↔ 19.92% 之间翻，全局两跑差 0.53pp。
+# 容差取 1e-9（相对）：远大于 1 ulp（~1e-16 相对）足以吸收进程间抖动，又远小于模型
+# 能分辨的真实差异 —— 若两个预测真落在 1e-9 内，模型本就分不开它们，判并列才是对的。
+TIE_RTOL = 1e-9
+
+
+def _tied(a, b):
+    """按相对容差判近似相等（并列分组用，见 TIE_RTOL 说明）。"""
+    return abs(a - b) <= TIE_RTOL * max(abs(a), abs(b))
+
+
 def predict_rank_batch(models, cands, scaler, device):
     """批量候选秩聚合（方案 1，15.3.x）：每候选先得每模型 avg_delay，再在候选集内按模型排名，
     取平均秩（competition ranking，并列取平均）作为得分——得分越低 = 共识越快。
-    返回 [{id, avg_delay: 平均秩得分}]，按得分升序（快→慢）。"""
+    返回 [{id, avg_delay: 平均秩得分}]，按得分升序（快→慢）。
+    17.2.3: 并列判定由位级相等改为相对容差 `_tied`（原 `==` 让结果依赖 serve 进程身份）。"""
     rows = []
     for c in cands:
         set_gate_logic_overrides(c.get('gate_logics'))
@@ -337,7 +356,7 @@ def predict_rank_batch(models, cands, scaler, device):
         i = 0
         while i < len(order):
             j = i
-            while j + 1 < len(order) and gvals[order[j + 1]] == gvals[order[i]]:
+            while j + 1 < len(order) and _tied(gvals[order[j + 1]], gvals[order[i]]):
                 j += 1
             avg = (i + j) / 2.0 + 1.0
             for k in range(i, j + 1):
