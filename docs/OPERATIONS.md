@@ -131,10 +131,16 @@ cd ~/-project && ~/venv/bin/python3 scripts/diag/check_idsgnn_serve_parity.py
 ### 6.3 Step 2 — 换 serve（停旧起新）
 ```bash
 pkill -f 'serve_htt[p].py'; sleep 1
-cd ~/-project && [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
+cd ~/-project && PYTHONHASHSEED=0 [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
   --ckpt ~/project-107-<V>/outputs/<ckpt>.pt \
   --scaler ~/project-107-<V>/outputs/scaler.pkl --port 8000 > serve_<V>.log 2>&1 &
 ```
+- **`PYTHONHASHSEED=0` 是必带项（17.2.4 起）**：serve 的进程间数值抖动根因 = 边序随哈希种子变
+  （`parse_netlist` 原 `list(set(edges))` → `edge_index` 行序 → float32 累加序 → 同一候选跨进程
+  差 ~1e-7 相对 → 近并列候选互换名次 → 平均秩 ±0.5 → 选择遗憾两跑跨度 0.62pp）。根已由
+  `sorted(set(edges))` 定序，这一项是兜底（防我尚未发现的其它哈希序依赖），**漏了不报错、只让
+  数字悄悄变**，所以写进 runbook。线程变量（`OMP/MKL_NUM_THREADS`、`MKL_DYNAMIC`）实测零影响，
+  不必钉；但 `_shadow_analyze.py` 的运行配置戳会记录这四个变量，便于事后对账。
 - log 落在 `~/-project/serve_<V>.log`（先 cd 再重定向）→ tail 用全路径，别去 scripts/diag 下找。
 - **模式 3 额外需要 idsavg GNN 折 ckpt**：默认 glob `~/idsavg17/idsgnn_fold*.pt`，可用 `IDSGNN_CKPT` 覆盖
   （如 `IDSGNN_CKPT='~/idsavg17/idsgnn_fold*.pt'`）。**glob 无命中 / ckpt 缺 `sta_mean` 一律启动即炸**（不静默退化）。

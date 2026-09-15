@@ -7,18 +7,22 @@
 #   本脚本把该臂每个 ckpt 的部署口径指标都测出来 → 看 epoch-部署质量曲线的形状。
 # 成本：每趟约 2min（候选集与真值列全走 XYCE_CACHE，几乎不耗 Xyce）。
 #
-# ⚠ 分辨率（2026-09-15 实测并定因；此前给过的两条解释都已作废，勿再引用）：
+# ⚠ 分辨率（2026-09-15 实测并定因；此前给过的解释全部作废，勿再引用）：
 #   同一 ckpt 连测多次 = 10.51 / 10.60 / 10.66 / 10.86 / 11.13% —— 跨度 0.62pp。
-#   定因是**双向对照**（不是相关）：同一个 serve 进程连跑两趟 batch，CSV 逐字节一致；
-#   **只换 serve 进程**再跑，level2/DEPTH_MIX 就有 239/4190 行变化，且全是 ±0.5 的整跳
-#   （gnn_pred 2.500000e0 ↔ 3.000000e0 / 2.000000e0）。根因在 serve 的秩聚合：
-#   predict_rank_batch 原先用 `==` 判并列，同一份网表两次前向差 1 ulp 就被拆成一先一后
-#   → 平均秩 (i+j)/2+1 整组平移 0.5 → top-1 翻转 → 该集 0.00% ↔ 19.92%。
-#   已修：17.2.2 分析器按 eval_idx 定序 + argsort kind="stable"（治 CSV 行序那一路）；
-#         17.2.3 serve 并列判定改相对容差 1e-9（治进程间 1 ulp 那一路）。
-#   **作废的两条旧解释**：(a)「gnn_pred 只存 7 位有效数字」——gnn_pred 是平均秩，值是
-#   2.5/3.0 这种半整数，7 位一位没丢；(b)「噪声底 0.3pp / 上限 0.38pp」——实测跨度 0.62pp。
-#   所以旧数据：<1pp 当打平，1.5pp 以上才是真差。17.2.3 之后每个 ckpt 一次即可。
+#   根因 = **边序随哈希种子变**：src/graph_builder.py 的 parse_netlist 原为 list(set(edges))，
+#   字符串元组集合的迭代序随 PYTHONHASHSEED 变 → edge_index 行序变 → 前向的 float32 累加序变
+#   → 同一候选跨进程预测差 float32 的 1 ulp 量级（~1e-7 相对）→ 近并列候选（大量候选本就是
+#   同一份网表，float32 下位级相等）互换名次 → 平均秩 (i+j)/2+1 整组 ±0.5 → top-1 翻转 →
+#   该集 0.00% ↔ 19.92%。
+#   定因链（都是双向对照，不是相关）：同一个 serve 进程连跑两趟 CSV 逐字节一致；**只换进程**
+#   就有 239/4190 行变化、全是 ±0.5 整跳；钉 PYTHONHASHSEED 后两个新进程逐字节一致；
+#   三个线程变量（OMP/MKL_NUM_THREADS/MKL_DYNAMIC）钉与不钉**零差别** → 与线程无关。
+#   已修（17.2.4）：边序规范化 sorted(set(edges))（源头定序）+ 启动行加 PYTHONHASHSEED=0 兜底；
+#   同时**撤销** 17.2.3 的相对容差 —— 容差取 1e-9，比真实抖动小两个量级，实测无效。
+#   **作废的旧解释**：(a)「gnn_pred 只存 7 位有效数字」——它是平均秩，值就是 2.5/3.0 这种
+#   半整数，7 位一位没丢；(b)「噪声底 0.3pp / 上限 0.38pp」——实测跨度 0.62pp；
+#   (c)「17.2.3 的相对容差已修」——1e-9 瞄错了量级。
+#   所以旧数据：<1pp 当打平，1.5pp 以上才是真差。17.2.4 之后每个 ckpt 一次即可。
 #
 # 用法：bash ~/-project/scripts/diag/_shadow_ckpt_sweep.sh ARM_DIR ARM_TAG [EPOCHS...]
 #   bash ~/-project/scripts/diag/_shadow_ckpt_sweep.sh ~/project-107-v2nowave42b v2nowave42b 50 100 150 200 250
@@ -47,9 +51,10 @@ for CK in "${EPOCHS[@]}"; do
   # ---- 1) 换 serve：杀掉所有旧 serve，等端口释放，再起新的 ----
   # env -u …：显式清掉 ids/第二端点相关变量。42b/42m4 都是纯拓扑臂，父 shell 里若残留
   # USE_IDS_AVG_APPROX 或 IDSGNN_CKPT，serve 就不再是对照臂了（此前用 /proc/PID/environ 验证过这点）。
+  # PYTHONHASHSEED=0：17.2.4 兜底（根因已由 sorted(set(edges)) 在源头定序，这里防其它哈希序依赖）。
   pkill -f 'serve_htt[p].py' 2>/dev/null
   for i in $(seq 15); do ss -ltn 2>/dev/null | grep -q ':8000' || break; sleep 1; done
-  ( cd "$HOME/-project" && env -u USE_IDS_AVG_APPROX -u IDSGNN_CKPT -u GNN_PORT2 \
+  ( cd "$HOME/-project" && env -u USE_IDS_AVG_APPROX -u IDSGNN_CKPT -u GNN_PORT2 PYTHONHASHSEED=0 \
       nohup "$HOME/venv/bin/python3" scripts/diag/serve_http.py \
       --ckpt "$CP" --scaler "$SCALER" --port 8000 \
       > "$HOME/serve_${ARM_TAG}_ep${CK}.log" 2>&1 & )

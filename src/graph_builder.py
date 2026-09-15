@@ -258,7 +258,15 @@ def parse_netlist(netlist_str, input_pins=None, output_pins=None):
         if op in wire_to_driver:
             edges.append((wire_to_driver[op], op))
 
-    edges = list(set(edges))
+    # 边序必须与哈希种子无关（2026-09-15 定因，17.2.4）。原为 list(set(edges))：字符串元组的
+    # 集合迭代序随 PYTHONHASHSEED 变 → edge_index 行序变 → 进 GCNConv / global_add_pool 的
+    # **浮点累加序**变 → 同一候选跨进程预测差 float32 的 1 ulp 量级（~1e-7 相对）。
+    # 大量候选本就是同一份网表（float32 下位级相等），被这点差撬开 → 平均秩 (i+j)/2+1 整组 ±0.5
+    # → top-1 翻转 → serve 选择遗憾两跑跨度 0.62pp（17.2.3 用 1e-9 容差治它，小了两个量级，无效）。
+    # 规范化排序：去重内容不变，顺序对任何进程 / 机器 / 哈希种子唯一。
+    # ⚠ 训练侧共享本函数，但 data_loader 会把 edge_index 落盘到 cache/graphs/ 复用 —— 旧缓存
+    #   保持落盘时的序（合法，只是累加序不同），新缓存起为规范化序。
+    edges = sorted(set(edges))
     return nodes, edges
 
 def build_static_graph(circuit_id, netlist_str, input_pins=None, output_pins=None, mode=None):

@@ -91,7 +91,11 @@ def per_window_metrics(rows, key="gnn"):
 # 脚本版本，一个都没记。排查只能靠重跑 + 猜。这里把每一项都写进结果文件。
 # 原则：只记「事后能拿来回放的量」，不记推断。
 ENV_KEYS = ("SIM_OPTIONS", "SIM_TRAN", "TL_MAX_ITERS", "XYCE_CACHE", "GNN_HOST",
-            "GNN_PORT", "GNN_PORT2", "USE_IDS_AVG_APPROX", "IDSGNN_CKPT")
+            "GNN_PORT", "GNN_PORT2", "USE_IDS_AVG_APPROX", "IDSGNN_CKPT",
+            # 17.2.4 补：进程间数值复现性直接受这几个变量影响（PYTHONHASHSEED 是 serve
+            # 抖动根因、已由边序定序修掉，钉它是兜底；线程变量实测零影响，但既然会影响
+            # 浮点归约序，就该进戳 —— 不记的话事后无法回答「这两趟到底哪项设置不同」）
+            "PYTHONHASHSEED", "OMP_NUM_THREADS", "MKL_NUM_THREADS", "MKL_DYNAMIC")
 
 def _sha16(path):
     try:
