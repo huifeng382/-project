@@ -92,6 +92,18 @@ def run(root):
 
 AB_MARK = '=== 两列并排 A/B'
 DETAIL_MARK = '=== 每候选集明细'
+STAMP_END = '=== 戳结束 ==='
+
+
+def strip_stamp(out):
+    """剥掉开头的「运行配置戳」。
+
+    戳里有时间、分析根目录、CSV mtime、ckpt sha —— 天然逐次不同，与本测试要验的
+    「第二列不得污染主口径」无关。**任何逐字节比较分析器输出的测试都必须先过这一刀**，
+    否则只换一下临时目录就会误报（2026-09-15 加戳时正是这样挂的）。
+    """
+    i = out.find(STAMP_END)
+    return out[i + len(STAMP_END):] if i >= 0 else out
 
 
 def split_ab(out):
@@ -114,7 +126,7 @@ def paired(ab, judge):
 
 def head_meta(out):
     """主口径头部两个数字行（候选集数 / 成功行）。"""
-    return out.split(DETAIL_MARK)[0]
+    return strip_stamp(out).split(DETAIL_MARK)[0]
 
 
 def main():
@@ -123,7 +135,7 @@ def main():
     write_tree(roots['old'], None)
     write_tree(roots['rev'], 'rev_nan')
     write_tree(roots['oracle'], 'oracle')
-    out = {m: run(roots[m]) for m in ('old', 'rev', 'oracle')}
+    out = {m: strip_stamp(run(roots[m])) for m in ('old', 'rev', 'oracle')}
 
     h_old, ab_old, d_old = split_ab(out['old'])
     h_rev, ab_rev, d_rev = split_ab(out['rev'])

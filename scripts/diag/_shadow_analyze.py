@@ -9,7 +9,7 @@
 用法（server 端）：
   ~/venv/bin/python3 scripts/diag/_shadow_analyze.py [--min-cands 4]
 """
-import argparse, glob, os, re, statistics, sys
+import argparse, glob, hashlib, os, re, shutil, statistics, subprocess, sys, time
 import numpy as np
 
 CSV_RE = re.compile(
@@ -49,8 +49,10 @@ def per_window_metrics(rows, key="gnn"):
         return None
     gnn = np.array([r[key] for r in rows], dtype=np.float64)
     true = np.array([r["true"] for r in rows], dtype=np.float64)
-    order_g = np.argsort(gnn)
-    order_t = np.argsort(true)
+    # kind="stable"：并列时按输入下标（= 调用方已按 eval_idx 定序的行序）打破，不能用默认
+    # quicksort —— 它不保证并列的相对次序，会让结果依赖 CSV 行序（见 main 里 rows.sort 的说明）。
+    order_g = np.argsort(gnn, kind="stable")
+    order_t = np.argsort(true, kind="stable")
     top3_g = set(order_g[: min(3, n)].tolist())
     top3_t = set(order_t[: min(3, n)].tolist())
     top2_g = set(order_g[: min(2, n)].tolist())
@@ -83,12 +85,89 @@ def per_window_metrics(rows, key="gnn"):
             "recall2_len": recall2_len, "recall3_len": recall3_len,
             "regret_2stage": regret_2stage}
 
+# —— 运行配置戳 ——
+# 2026-09-15 起：sweep_ep250(10.51%) 与 repA(10.86%) 差 0.35pp，事后翻结果文件无法回答
+# 「这两趟到底哪一项设置不同」——ckpt、SIM_OPTIONS、TL_MAX_ITERS、XYCE_CACHE、Xyce 版本、
+# 脚本版本，一个都没记。排查只能靠重跑 + 猜。这里把每一项都写进结果文件。
+# 原则：只记「事后能拿来回放的量」，不记推断。
+ENV_KEYS = ("SIM_OPTIONS", "SIM_TRAN", "TL_MAX_ITERS", "XYCE_CACHE", "GNN_HOST",
+            "GNN_PORT", "GNN_PORT2", "USE_IDS_AVG_APPROX", "IDSGNN_CKPT")
+
+def _sha16(path):
+    try:
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                h.update(chunk)
+        return h.hexdigest()[:16]
+    except (OSError, TypeError):
+        return "NA"
+
+def _serve_cmdline():
+    """正在跑的 serve 进程完整命令行（第一行）；没有 serve 则 None。"""
+    try:
+        p = subprocess.run(["pgrep", "-af", "serve_htt[p].py"],
+                           capture_output=True, text=True, timeout=5)
+    except Exception:
+        return None
+    lines = [l for l in p.stdout.splitlines() if l.strip()]
+    return lines[0] if lines else None
+
+def _flag(cmd, name):
+    """从命令行取 --name VALUE；取不到返回 None。"""
+    if not cmd:
+        return None
+    parts = cmd.split()
+    for i, t in enumerate(parts[:-1]):
+        if t == name:
+            return parts[i + 1]
+    return None
+
+def run_stamp(root):
+    print("=== 运行配置戳 ===")
+    print(f"  时间        : {time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"  分析根目录  : {root}")
+    cmd = _serve_cmdline()
+    if cmd:
+        ck, sc, pt = _flag(cmd, "--ckpt"), _flag(cmd, "--scaler"), _flag(cmd, "--port")
+        print(f"  serve ckpt  : {ck}  sha1={_sha16(ck)}")
+        print(f"  serve scaler: {sc}  sha1={_sha16(sc)}")
+        print(f"  serve 端口  : {pt}")
+    else:
+        print("  serve       : (没有 serve 在跑 —— 本次服务的 ckpt 无法记录)")
+    print("  环境        : " + "  ".join(
+        f"{k}={os.environ.get(k, '(未设)')}" for k in ENV_KEYS))
+    xy = shutil.which("Xyce") or shutil.which("xyce")
+    print(f"  Xyce        : {os.path.realpath(xy) if xy else '(PATH 里找不到)'}")
+    repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    print("  脚本 sha1   : " + "  ".join(
+        f"{n}={_sha16(os.path.join(repo, 'scripts', 'diag', n))}"
+        for n in ("_shadow_analyze.py", "serve_http.py", "run_shadow_batch.sh")))
+    try:
+        rev = subprocess.run(["git", "-C", repo, "rev-parse", "--short", "HEAD"],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+        dirt = subprocess.run(["git", "-C", repo, "status", "--porcelain"],
+                              capture_output=True, text=True, timeout=5).stdout.strip()
+        print(f"  repo        : {rev or 'NA'}  ({'有未提交改动' if dirt else '干净'})")
+    except Exception:
+        print("  repo        : NA")
+    csvs = sorted(glob.glob(os.path.join(root, "*", "*", "gnn_shadow.csv")))
+    if csvs:
+        mt = [os.path.getmtime(c) for c in csvs]
+        fmt = lambda t: time.strftime("%m-%d %H:%M:%S", time.localtime(t))
+        print(f"  CSV 快照    : {len(csvs)} 个, mtime {fmt(min(mt))} ~ {fmt(max(mt))}")
+    else:
+        print("  CSV 快照    : 0 个（root 下没有 gnn_shadow.csv）")
+    print("=== 戳结束 ===")
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--min-cands", type=int, default=4, help="候选集最少候选数（10.3 要求 ≥4）")
     ap.add_argument("--root", default=os.path.expanduser("~/NetlistOpt/temp_sim_test/tl_opt_batch"),
                     help="批量输出根目录")
     args = ap.parse_args()
+
+    run_stamp(args.root)
 
     sets = []          # 全部候选集（≥min-cands）
     ab_sets = []       # 两列并排：**同一批行、同一候选集**上分别用两列各算一遍
@@ -117,6 +196,14 @@ def main():
             for r in rows:
                 seen.setdefault(r["eval"], r)
             rows = list(seen.values())
+            # 16.11.x：按 eval_idx 定序 —— 并列的打破**不能**依赖 CSV 行序。
+            # 行序不确定：CSV 由并行分片 append 写（见 parse_row 里「并发写 CSV 交错」），
+            # 而 gnn_pred 只写 7 位有效数字（gnn_shadow.rs 的 {:.6e}），第 8 位起的真实差异
+            # 被抹平 → 大量「伪并列」，argsort 只能按输入下标打破。
+            # 实测后果：同一个 ckpt 两次跑，level2/DEPTH_MIX w=7 那一集 0.00% ↔ 36.34% 翻转，
+            # 全局选择遗憾 10.51% ↔ 10.86% —— 差 0.343pp = 36.34/106，即所谓「0.35pp 噪声底」
+            # 的全部来源。定序后同一批行必得同一结果，与行序无关。
+            rows.sort(key=lambda r: r["eval"])
             if len(rows) < args.min_cands:
                 small_sets += 1
                 continue
