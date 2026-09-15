@@ -54,12 +54,16 @@ def split_by_expr(circuit_ids, id_to_expr=None, train_ratio=0.7, val_ratio=0.15,
 
 
 def _spearman(pred, true):
-    """秩相关（无 scipy 依赖）：ranks 的 Pearson 相关。"""
+    """秩相关（无 scipy 依赖）：ranks 的 Pearson 相关。
+    17.2.7：两次 argsort 都显式 kind='stable' —— 并列时按**组内行序**（groupby 键序，确定）
+    打破，与 Rust 侧 _shadow_analyze.per_window_metrics 的 argsort(kind="stable") 同一条规则。
+    默认 quicksort 不保证并列相对次序（结果可能随 numpy 版本/平台变），会让训练侧 recall@K
+    在与部署对读时多出一个本可避免的自由度。"""
     n = len(pred)
     if n < 2:
         return np.nan
-    rp = np.argsort(np.argsort(pred)).astype(float)
-    rt = np.argsort(np.argsort(true)).astype(float)
+    rp = np.argsort(np.argsort(pred, kind='stable'), kind='stable').astype(float)
+    rt = np.argsort(np.argsort(true, kind='stable'), kind='stable').astype(float)
     if rp.std() == 0 or rt.std() == 0:
         return np.nan
     return float(np.corrcoef(rp, rt)[0, 1])
@@ -107,8 +111,11 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
             captured.append((tr[worst] - tr[pick]) / rng * 100)   # 捕获率: 抓住最差→最优差距的%
             # recall@K：仅非平凡组(组内变体数 m >= K+1)才有意义，否则 top-K=全组恒命中
             m = len(tr)
-            ord_pred = np.argsort(pr)          # 预测最快→最慢
-            ord_true = np.argsort(tr)          # 真实最快→最慢
+            # 17.2.7：kind='stable' —— 并列时按组内行序（groupby 键序，确定）打破。
+            # 与 Rust 侧 _shadow_analyze.per_window_metrics 的 argsort(kind="stable") 同规则；
+            # 默认 quicksort 的并列次序未定义 → 两端对读时多一个无谓自由度（见 17.2.6/17.2.7）。
+            ord_pred = np.argsort(pr, kind='stable')   # 预测最快→最慢
+            ord_true = np.argsort(tr, kind='stable')   # 真实最快→最慢
             for K in recA:
                 if m >= K + 1:
                     topK = set(ord_pred[:K].tolist())

@@ -79,11 +79,33 @@ def per_window_metrics(rows, key="gnn"):
         sp = statistics.correlation(rg, rt)
     else:
         sp = None
+    # —— 并列/一致性诊断（17.2.7）——
+    # 1) 重复网表天花板：真值完全相等的候选数 —— 重复/对称结构会让 recall@3 天然 <100%，
+    #    这是「部署侧 recall 上限」的一部分，必须与模型的排序能力分开算。
+    # 2) 打破规则的影响面：预测第3小 == 第4小时，top-3 的归属完全由并列打破规则决定；
+    #    训练侧（utils.ranking_metrics）与 Rust 侧（本文件）已统一为 stable+组内行序。
+    # 3) 量纲混合守卫：同集内同时出现「秩」（~1..n）与「原始延迟」（~1e-11）→ 排序无意义。
+    #    按 tl_opt.rs 的 pre_rank→evaluate 同批结构不应发生；把它变成可断言的输出，而非口头约定。
+    dup_true = n - int(np.unique(true).size)
+    dup_g = n - int(np.unique(gnn).size)
+    tie_g_k3 = False
+    if n > 3:
+        _part = np.partition(gnn, 3)
+        tie_g_k3 = bool(_part[2] == _part[3])
+    _gpos = gnn[gnn > 0]
+    mixed = bool(_gpos.size and np.max(_gpos) / np.min(_gpos) > 1e6)
+    # 4) 兜底窗口识别：整集 gnn_pred 都是原始延迟（~1e-11，serve_http 在候选数<2 时走
+    #    predict_avg_delay），而非秩。集内排序**仍然有效**（单模型下与秩序单调等价），
+    #    但分辨率变粗：原始延迟写 {:.6e}，相对分辨率 ~1e-7，与 float32 的 1 ulp 同量级
+    #    → 近邻对会被记成真并列，top-k 归属转由打破规则决定。秩模式下不会（1/n 分辨率）。
+    raw_mode = bool(_gpos.size and np.max(_gpos) < 1e-3)
     return {"recall3": recall3, "regret": regret, "spearman": sp, "n": n,
             "spread_pct": spread_pct,
             "recall2_strict": recall2_strict, "recall3_strict": recall3_strict,
             "recall2_len": recall2_len, "recall3_len": recall3_len,
-            "regret_2stage": regret_2stage}
+            "regret_2stage": regret_2stage,
+            "dup_true": dup_true, "dup_g": dup_g, "tie_g_k3": tie_g_k3,
+            "mixed": mixed, "raw_mode": raw_mode}
 
 # —— 运行配置戳 ——
 # 2026-09-15 起：sweep_ep250(10.51%) 与 repA(10.86%) 差 0.35pp，事后翻结果文件无法回答
@@ -200,13 +222,19 @@ def main():
             for r in rows:
                 seen.setdefault(r["eval"], r)
             rows = list(seen.values())
-            # 16.11.x：按 eval_idx 定序 —— 并列的打破**不能**依赖 CSV 行序。
-            # 行序不确定：CSV 由并行分片 append 写（见 parse_row 里「并发写 CSV 交错」），
-            # 而 gnn_pred 只写 7 位有效数字（gnn_shadow.rs 的 {:.6e}），第 8 位起的真实差异
-            # 被抹平 → 大量「伪并列」，argsort 只能按输入下标打破。
-            # 实测后果：同一个 ckpt 两次跑，level2/DEPTH_MIX w=7 那一集 0.00% ↔ 36.34% 翻转，
-            # 全局选择遗憾 10.51% ↔ 10.86% —— 差 0.343pp = 36.34/106，即所谓「0.35pp 噪声底」
-            # 的全部来源。定序后同一批行必得同一结果，与行序无关。
+            # 按 eval_idx 定序：并列的打破**不能**依赖 CSV 行序（CSV 由并行分片 append 写，
+            # 见 parse_row 里「并发写 CSV 交错」；行序不确定）。
+            #
+            # 17.2.7 更正旧注：旧注说「gnn_pred 只写 7 位有效数字 → 大量伪并列」——**该机制已不存在**。
+            # gnn_pred 写的是 `/rank` 返回的 avg_delay 字段，而 serve.predict_rank_batch 往里放的是
+            # **候选集内的平均秩**（competition ranking，小整数/半整数），7 位有效数字可精确表示，
+            # 不存在截断伪并列。只有原始延迟（~1e-11）才会被 {:.6e} 截断，而那条路径只在预排序
+            # 缓存未命中时逐候选兜底（gnn_shadow.rs evaluate），且 pre_rank→evaluate 是同一批
+            # prepared（tl_opt.rs Pass2/Pass3）→ **集内要么全秩、要么全原始延迟，不会混**。
+            # 那次 0.00% ↔ 36.34% 翻转的真正源头后来定在 float32 边序抖动
+            # （graph_builder.parse_netlist 的 list(set(edges))），17.2.4 已用 sorted(set(edges))
+            # 定序（证据与验收见 scripts/diag/serve.py:307-313 与 _t_serve_repro.sh）。
+            # 这里的定序保留为**廉价确定性保险**，不是那次翻转的修复。
             rows.sort(key=lambda r: r["eval"])
             if len(rows) < args.min_cands:
                 small_sets += 1
@@ -286,6 +314,30 @@ def main():
               f"选择遗憾(GNN自选): {statistics.mean(hrg)*100:6.2f}%   Spearman: {statistics.mean(hsp):.3f} (n={len(hsp)})")
     else:
         print("\n（无跨度>10% 的候选集）")
+
+    # —— 并列/一致性诊断（17.2.7）——
+    # 目的：把「并列打破规则的影响面」「重复网表天花板」「量纲混合」三件事变成数字，
+    # 这样「训练侧 recall 与部署侧 recall 能不能对读」就不用靠推理，直接看这三行。
+    n_dup = sum(1 for s in sets if s["dup_true"] > 0)
+    n_tie = sum(1 for s in sets if s["tie_g_k3"])
+    n_mix = sum(1 for s in sets if s["mixed"])
+    n_raw = sum(1 for s in sets if s["raw_mode"])
+    n_dupg = sum(1 for s in sets if s["dup_g"] > 0)
+    print(f"\n=== 并列/一致性诊断（17.2.7）===")
+    print(f"  重复网表集（真值内有完全相等候选 → recall@3 天然 <100%）: {n_dup}/{len(sets)} 集")
+    print(f"  预测第3小==第4小（top-3 归属由并列规则决定）:            {n_tie}/{len(sets)} 集")
+    print(f"  预测有重复值（并列打破规则的影响面，全集口径）:          {n_dupg}/{len(sets)} 集")
+    print(f"  量纲混合守卫（同集混「秩」与「原始延迟」→ 排序无意义）:   {n_mix}/{len(sets)} 集 "
+          f"{'✅ 无' if n_mix == 0 else '❌ 有 → 该集排序不可信，先查 serve 预排序缓存命中'}")
+    print(f"  兜底窗口（整集 gnn_pred 都是原始延迟，非秩）:             {n_raw}/{len(sets)} 集 "
+          f"{'✅ 无（全走秩聚合）' if n_raw == 0 else '⚠ 该批 serve 预排序整窗未命中；集内排序仍有效，但分数分辨率受 CSV 的 7 位有效数字限制'}")
+    if hi:
+        h_dup = sum(1 for s in hi if s["dup_true"] > 0)
+        h_tie = sum(1 for s in hi if s["tie_g_k3"])
+        h_mix = sum(1 for s in hi if s["mixed"])
+        h_raw = sum(1 for s in hi if s["raw_mode"])
+        print(f"  （跨度>10% 子集 {len(hi)} 集: 重复网表 {h_dup}   第3==第4 {h_tie}   "
+              f"量纲混合 {h_mix}   兜底窗口 {h_raw}）")
 
     # —— 两列并排 A/B（仅当 CSV 带 gnn_pred2 列时出现）——
     if ab_sets:

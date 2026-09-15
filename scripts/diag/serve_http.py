@@ -8,7 +8,13 @@
   POST /rank
     body: {"candidates": [{"id": "...", "netlist": "...",
                            "input_pins": [...], "output_pins": [...]}, ...]}
-    resp: {"ranked": [{"id": "...", "avg_delay": 3.2e-11}, ...]}  # 按 avg_delay 升序
+    resp: {"ranked": [{"id": "...", "avg_delay": <score>}, ...]}  # 按 score 升序（小=快=好）
+      ⚠ 字段名 `avg_delay` 是历史遗留，**里面的数不是延迟**（17.2.7 更正）：
+        · 候选数 ≥2 → `predict_rank_batch` 的**候选集内平均秩**（competition ranking，小整数/半整数）
+        · 候选数 <2 → `predict_avg_delay` 的**原始预测延迟**（~1e-11）
+      两种量纲不可混排；Rust shadow 的 gnn_pred 列就是这个字段。
+      单候选兜底只在窗口预排序整窗未命中时发生（gnn_shadow.rs evaluate），且
+      pre_rank→evaluate 同批（tl_opt.rs Pass2/Pass3）→ 集内不会混。分析器有量纲混合守卫。
 
 Rust（本地）调用示例：curl -X POST http://<orca-ip>:8000/rank -H 'Content-Type: application/json' -d @candidates.json
 """
