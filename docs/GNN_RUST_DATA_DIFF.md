@@ -979,6 +979,64 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 5. **「量纲混合」为何现在不会发生**：兜底路径返回**原始延迟**、命中路径返回**秩**，但 `tl_opt.rs` Pass2 `pre_rank` 与 Pass3 `evaluate` 用**同一批 `prepared`** → 一个窗口要么全命中要么全兜底，**集内不混**；单模型下兜底窗口按原始延迟排序与按秩排序等价 → 该集 recall/regret 仍有效（仅分辨率受 CSV 7 位有效数字限）。诊断位把该推理钉成可断言输出。
 6. **验证**：`scripts/diag/_t_shadow_analyze_2col.py` 双列回归通过；另用构造数据（并列/兜底/混合/重复四类）确认五个诊断位逐个按预期触发（探针脚本跑完即删，未入库）。
 
+### 13.8 serve 输入退化定位：晶体管数 + 门数，load 打平（17.3.4，2026-09-16）
+
+**动机**：§10.7/§13.1 只做到"serve 与训练的特征失配存在"，没量化过**每一处失配各值多少**。本节用一次 13 变体消融把它拆开，并给出退化量的正确口径（修正本节旧探针的错误口径）。
+
+**方法**：`scripts/diag/_serve_input_ablation.py`（17.3.2/17.3.3 交付，跑在 `~/abl-run` 链接工作树，钉 `56b2fdd`）。同一份 `midpoint_ep250.pt`、同一 scaler、同一份 `test_df`，逐行重建 serve 侧输入 → 前向 → 用训练侧 `ranking_metrics` 口径读数。**548 组 / 346 组 hi_spread / 111,364 行 / 13 变体 / 前向 988s。**
+
+**闸门（先过再读）**：`base` 变体（= 训练侧全真输入）对本臂已存的 `test_predictions.npz` 逐位比对 —— **中位相对差 0.000e+00、p95 2.252e-06、max 6.564e-06 → ✅ 复刻成立**（float32 npz，阈值 1e-6）。即 `base` 的绝对值可与该臂历史数字直接对读，下表 Δ 才有意义。
+
+#### 13.8.1 三处退化的定义（代码级）
+
+| # | 量 | 训练侧（口径真值） | serve 侧（现状） |
+|---|---|---|---|
+| ① | `circuit_sig` | `[#X_ 网表行数, transistor_count, #input_pins]`（`data_loader.py:314-325`，逐电路算） | `[num_nodes, 0.0, len(pins)]`（`serve.py:281`）—— **两项都错**：[0] 是图节点数≠`X_` 行数（可复算，见 ①② 分解）；[1] 恒 0 |
+| ② | `struct_prior` | `[transistor_count, #{g∈ct: 'SC_AND'∈g ∧ 'SC_AND_'∉g}, #{g∈ct: 'SC_INV_WIRE'∈g}]`，`ct=cell_types_json`（`data_loader.py:710-719`，`USE_STRUCT_PRIOR=True` @ `config.py:107`） | **整个传 `None`**（`serve.py:286`）→ `model.py:110` 的 `if struct_prior is not None` 为假 → 结构残差整块静默跳过 |
+| ③ | 动态 `load` | 逐行 `pin_load_json`（中位 1.2e-15） | 常量 `LOAD_F=1e-15`（`serve.py:117 load = global_load`） |
+
+**①② 的放大器**：`sig_encoder`/`struct_encoder` 都是**未归一化**的裸 `Linear(3, hidden//4)`（`model.py:39-54`），量级 44–132 → **错量级比缺值伤得多**（见 13.8.3 的 recon 行）。
+
+#### 13.8.2 全量读数（548 组；recall 两口径都给）
+
+| 变体 | 选择遗憾 mean | Spearman | R2 严\|宽 | R3 严\|宽 | hi_spread 遗憾 | Δ遗憾 |
+|---|---|---|---|---|---|---|
+| `base`（全真输入） | **3.79%** | 0.397 | 56.6\|67.3 | 63.9\|83.4 | 5.17% | — |
+| `serve`（现状三处全退化） | 5.86% | 0.159 | 42.5\|53.8 | 47.8\|69.3 | 7.98% | **+2.06pp** |
+| `loadconst`（只改 load=常量） | 3.70% | 0.395 | 55.5\|69.0 | 64.1\|82.3 | — | **−0.09pp** |
+| `csig0`（只 `csig[1]`=0） | — | — | — | — | — | +0.75pp |
+| `csig_nn`（只 `csig[0]`=num_nodes） | — | — | — | — | — | +0.22pp |
+| `csig_serve`（`csig` 两项都按 serve） | — | — | — | — | — | +0.75pp |
+| `noprior`（只 `struct_prior`=None） | — | — | — | — | — | +0.68pp |
+| `serve_noload`（serve 但 load 用真值） | — | — | — | — | — | +1.69pp |
+| `serve_fixTC_prior`（真 csig + 真 prior，**load 仍常量**） | **3.70%** | — | — | — | — | **−0.09pp** |
+| `serve_fixTC_recon`（csig/prior 用**网表复算**的 tc） | — | — | — | — | — | +2.23pp |
+| `serve_fix_recon`（csig/prior/load 全用复算值） | — | — | — | — | — | +8.60pp |
+
+`serve` 相对 `base` 的其余分项：**Spearman −0.238、R2严 −14.05pp、R2宽 −13.5pp、hi_spread +2.80pp、hiR3严 −16.76pp。**
+
+内部自洽性（同配置必须同数）：`base` ≡ `csig0_fixTC`、`loadconst` ≡ `serve_fixTC_prior` —— 两组逐项相同 ✅。
+
+#### 13.8.3 读数
+
+1. **退化几乎全部由单一量 `transistor_count` 造成**，它喂两个地方：`csig[1]`（`data_loader.py:322`）与 `prior[0]`（`data_loader.py:716`）。**`serve_fixTC_prior` = −0.09pp（与 `base` 打平）= 完全恢复** —— 真 csig + 真 prior 一给，2.06pp 全回来。单因子分解：`csig` 两项合起来 +0.75pp（其中 `csig[0]` 单独 +0.22、`csig[1]` 单独 +0.75 → **次可加**，两项重叠）、`prior=None` 单独 +0.68pp，两项相加 1.43pp **< 总 2.06pp**，差的 ~0.63pp 来自交互 —— 即 `struct_prior` 残差只在 `csig` 也对时才完全启用（`model.py:49-54` 两条支路同源进残差）。
+2. **`csig[0]` 是独立的小项且 serve 可复算**：训练口径就是**网表 `X_` 行数**（`data_loader.py:318` 的 `n_gates`），serve 只要数行即可，值 **+0.22pp**，不需要 `transistor_count`、不需要 Rust 改动 → **可以先单独上**。
+3. **`load` 是打平，不需要动**：从 `base` 侧单独改 load 是 **−0.09pp**（略好）；从 `serve` 侧单独把 load 换回真值是 **+1.69 → 相对 serve 改善 0.37pp**。**两个方向不一致，且都在 ≤0.37pp** → 判为并列，不做工程。机制上本应如此：`(LOAD_F − mean)/scale = −0.15`，**在训练分布的一个标准差内**。`arrival` 两侧都是死特征（scaler `mean 0`/`scale_=1.0`，`arrival_time_*` 列根本不存在），同样不用管。
+4. **⚠ 近似值比缺失更糟（`serve_fixTC_recon` = +2.23pp，比不修的 `serve` 还差）**：网表复算的"晶体管数"相对真值**中位相对误差 95.6%**（n=111,364）。因为 ①②两条支路都是未归一化的裸 `Linear`，喂一个量级错的数比喂 0 / 跳过**更伤**。→ **在拿到真值之前，`struct_prior` 必须保持 `None`，不要用任何估计值填。**
+5. **旧探针的口径错误（本节修正，勿再引用）**：17.3.2/17.3.3 的探针把 `transistor_count` 当成"`sc_expansion.json` 里 ASAP7 展开的 Σ `n_t`"去复算 → 得到 95.6% 误差并一度怀疑数据。**正确口径是 SC 网络（Join/Inv/Bridge/And/Or）的 `M_` 实例总数、含实例级去重**，Rust 侧就在 `NetlistOpt/src/utils/transistor_count.rs:69 count_transistors_instance_on_egraph`（语义见 `tests/transistor_count.rs:21-52`：`(join a b)`→2、`(! (join a b))`→4、`(+ a b)`→2、`(bridge×5)`→5），与 `DATA_SPEC_V2.md:65` 的定义一致。**判据**：数据侧 `tc / 顶层 X_ 门数` 中位 **7.33（batch_v2_full）/ 4.12（batch_v2_m4）**，而 ASAP7 展开口径同一行是 `92/6 = 15.3` —— **差 3~5 倍**，数据集用的绝不是 ASAP7 口径。且 1317/3822 个 `(expr, tc)` 组合在 **nx 不同时 tc 相同** → 该量不是门数的函数，与去重感知的结构计数相符。
+6. **可复算的两项已逐位核对**：`set(cell_types_json) == set(网表唯一 cell 名)` **100.0%**（n=8679 口径同源）；用训练原样字符串模式在网表唯一 cell 名上复算 `prior[1]/[2]` → **100.0% 相等、corr 1.000**（且 ~92% 为 0）。→ **这两项 serve 端可直接复算，无需 Rust 配合。**
+7. **⚠ 方法论：n<100 组的消融只能验管道 / 做二值判定，不能给因子排序。** 20 组 smoke 曾给出 `loadconst +1.54pp`（"load 是主因"）与 `csig_nn +0.00pp`，全量后反转成 **−0.09pp** 与 **+0.22pp**。当时已有反向信号（`serve_noload` 比 `serve` 差，而 `base→loadconst` 说相反）**被我标注但没据此行动** —— 方向自相矛盾本身就是样本量不足的信号。二值判定（如"网表复算值是否等于真值"）不受此限，因为它不排序。
+
+#### 13.8.4 落地（对应 §11 清单外，按用户指定纳入）
+
+根因是 **Rust→serve 的 payload 少了一个字段**，而 Rust 侧**本来就在算它**：`tl_opt.rs:214-217` 的 `FullCircuitTlEvaluator::evaluate` 从 `module.to_recexpr()` **同时**算出 `transistor_count` 与 `avg_delay`（= 训练标签 `y`），两者同在一个 `TlEvalMetrics` 里。`gnn_shadow.rs:22-33` 的 `GnnCandidate` 只发了 `id/netlist/input_pins/output_pins/gate_logics`。
+
+- **Rust**：`utils/transistor_count.rs` 加 pub 包装 → `gnn_shadow.rs` 的 `GnnCandidate` 加 `transistor_count: Option<u64>`，在 `module_to_candidate` 里填（一处覆盖 `pre_rank` 批量与 `evaluate` 兜底两路）；算失败给 `None`（**不是 0**）。
+- **Python**：`serve_http.py:54` 透传；`serve.py:281` 的 `csig[0]` 改数网表 `X_` 行数、`csig[1]` 用收到的 tc；`serve.py:286` 有 tc 才传 `struct_prior`，`prior[1]/[2]` 按 13.8.3-6 复算。
+- **向后兼容、可解耦上线**：payload 无该字段 → `None` → `csig[1]=0`/`prior=None` = 今天行为。**Python 先上（含白拿的 +0.22pp），Rust 后上。**
+- **预期**：恢复到 `serve_fixTC_prior` 的 **−0.09pp**。
+- **残余风险 + 闸门**：生成器（外部工程，只以二进制提交数据，见 `V2_DATA_FULL_DELIVERY.md`）写出的 `transistor_count` 是否**字面等于**上述例程输出，本仓库读不到其代码，属**强证据推断**。间接证据：`tests/transistor_count.rs:105 aligns_with_fixed_point_joinlike_on_singleton_egraph` 说明提取器 cost 与该例程同口径，而生成器走的就是提取器；§12.1 那张表已把两批数字按同口径横向比过。**闸门**：serve 记录收到的 `(netlist, tc)`，离线与 `batch_v2_io`/`batch_v2_m4` 的 `gate_level_netlist` 精确匹配（这两批即由该套 testbench `.tl` 家族生成）后与 parquet 的 `transistor_count` 对读。
+
 ---
 
 ## 十四、内容数据支持审计（2026-09-03，逐节核对）
