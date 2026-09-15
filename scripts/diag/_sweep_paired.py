@@ -14,6 +14,14 @@
   **有区分度的集**（五 epoch 不全等）上做——全等的集对排序不提供任何信息，
   留着只稀释样本、把 MDD 撑大，还会让人误以为"分辨率不够"。
 
+⚠ 17.3.0 三次修正（读数方向）：v2 的 `更优/打平/更差` 三列算的是**挑战者 e
+  更好**的占比，表头却挂在 `best vs e` 行上（读作 best 更好）→ **越低/越高
+  两种方向都反**。同时"均值差"符号跟着判据方向变，比较时得先想清楚哪边是
+  正。本版统一为：
+    · `更优/更差` 一律 **best 视角**；
+    · `均值差` **翻正** —— 「均值差 > 0」恒等于「best 更优」，与越低/越高无关。
+  新增自检 5 专门覆盖「越高越好」分支（此前无任何测试走到该分支）。
+
 输入：`_shadow_ckpt_sweep.sh` 产出的 `~/sweep_<TAG>_ep<N>.out`（一个 ckpt 一份）。
       解析其中的「每候选集明细」段（_shadow_analyze.py:391-397）。
 
@@ -148,11 +156,11 @@ def report(files):
         ts = set(tied)
         ks = [k for k in ks_all if k not in ts]
         print(f"\n--- 判据：{name}（{'越低越好' if lower else '越高越好'}）---")
-        print(f"  平局结构：总 {len(ks_all)} 集；五 epoch 全等 {len(tied)} 集 "
+        print(f"  平局结构：总 {len(ks_all)} 集；{len(order)} epoch 全等 {len(tied)} 集 "
               f"({len(tied)/len(ks_all):.0%}，对排序无信息) → **有效集 {len(ks)}**")
         if not ks:
             print(f"  ⚠ 全部集在所有 epoch 上完全相同 → 该判据对本批数据无区分度，跳过")
-            summary.append((name, '(无区分度)', 0.0, 0, len(ks_all)))
+            summary.append((name, '(无区分度)', 0.0, 0, 0, len(ks_all)))
             tied_report.append((name, len(tied), len(ks_all)))
             continue
         v = {e: [get(table[e][k]) for k in ks] for e in order}
@@ -180,35 +188,50 @@ def report(files):
         print(f"  有效集内并列最优 {ntie} 集；均值最优={best_m}，中位最优={best_d}"
               + ("  ⚠ 两者不一致 → 分布重尾，均值被少数集主导" if best_m != best_d else ""))
 
+        # 17.2.8：本表一律**从 best_m 视角**报。d = e - best_m，故
+        #   越低越好 → best 更优 ⇔ d>0 ；越高越好 → best 更优 ⇔ d<0。
+        # 首版把 fav 写成"e 更好"，标签却是 best，两列反了（读数陷阱）。
+        # 均值差同时**翻正**：翻正后 「均值差>0 恒等于 best_m 更优」，与越低/越高无关。
         print(f"  {'对比':>16s}{'均值差':>10s}{'SE':>8s}{'t':>7s}{'更优':>7s}{'打平':>7s}{'更差':>7s}{'MDD':>8s}")
-        unres = []
+        unres, resol = [], []
         for e in order:
             if e == best_m:
                 continue
             st = paired(v[e], v[best_m])
             if st is None:
                 continue
-            fav = st['lt'] if lower else st['gt']      # best_m 更好的集占比
-            opp = st['gt'] if lower else st['lt']
-            print(f"  {best_m + ' vs ' + e:>16s}{st['md']:>10.3f}{st['se']:>8.3f}"
-                  f"{st['t']:>7.2f}{fav:>6.0%}{st['eq']:>7.0%}{opp:>7.0%}{mdd(st['se']):>8.3f}")
-            if abs(st['md']) <= mdd(st['se']):
-                unres.append((f"{best_m} vs {e}", abs(st['md']), mdd(st['se'])))
+            if lower:
+                better, worse = st['gt'], st['lt']
+            else:
+                better, worse = st['lt'], st['gt']
+            md = st['md'] if lower else -st['md']      # 翻正：>0 即 best_m 更优
+            t = md / st['se'] if st['se'] > 0 else float('nan')
+            ts = '-' if st['se'] == 0 else f"{t:.2f}"
+            print(f"  {best_m + ' vs ' + e:>16s}{md:>10.3f}{st['se']:>8.3f}"
+                  f"{ts:>7s}{better:>6.0%}{st['eq']:>7.0%}{worse:>7.0%}{mdd(st['se']):>8.3f}")
+            if abs(md) <= mdd(st['se']):
+                unres.append((f"{best_m} vs {e}", abs(md), mdd(st['se'])))
+            else:
+                resol.append((f"{best_m} vs {e}", md, mdd(st['se'])))
         if unres:
-            print(f"  ⚠ 观测差 ≤ MDD → 不可分辨（≠打平）：")
+            print(f"  ⚠ 不可分辨（观测差 ≤ MDD，≠打平）：")
             for nm, d0, m0 in unres:
                 why = ("有效集内差恒为 0" if m0 == 0 else "样本量不足以分辨")
                 print(f"      {nm}: 观测差 {d0:.3f} ≤ MDD {m0:.3f}   [{why}]")
-        else:
-            print(f"  ✅ 全部 ≥ MDD → 该判据下 {best_m} 与其余可分")
+        if resol:
+            print(f"  ✅ **可分辨**（这才是真结论，别被上面那堆 ⚠ 淹没）：")
+            for nm, d0, m0 in resol:
+                print(f"      {nm}: 均值差 {d0:+.3f} > MDD {m0:.3f}  → {best_m} 更优")
+        if not unres and not resol:
+            print(f"  （无有效对比）")
         summary.append((name, best_m, win[best_m] / max(1, sum(win.values())), len(unres),
-                        len(ks_all)))
+                        len(resol), len(ks_all)))
         tied_report.append((name, len(tied), len(ks_all)))
 
     print("\n=== 结论摘要 ===")
-    print(f"  {'判据':<26}{'均值最优':>10}{'严格最优占比':>14}{'不可分辨数':>12}")
-    for name, b, share, nr, ntot in summary:
-        print(f"  {name:<26}{b:>10}{share:>13.0%}{nr:>12}")
+    print(f"  {'判据':<26}{'均值最优':>10}{'严格最优占比':>14}{'不可分辨':>10}{'可分辨':>8}")
+    for name, b, share, nr, nres, ntot in summary:
+        print(f"  {name:<26}{b:>10}{share:>13.0%}{nr:>10}{nres:>8}")
     print("\n  平局结构（平局多 = 该判据分辨率低，不是样本量问题）：")
     for name, nt, ntot in tied_report:
         print(f"    {name:<26} 全等 {nt:>3d}/{ntot:<4d} = {nt/max(1,ntot):>4.0%}")
@@ -216,14 +239,16 @@ def report(files):
 
 
 def _emit(path, keys, rows):
+    """rows[k] = (n, regret, 2stage, r3, r2, sp)。r3/r2 同时充当严格与宽松两列。"""
     with open(path, 'w', encoding='utf-8') as f:
         f.write("=== 每候选集明细（按遗憾升序；#1∈前k=严格, 前k∩真前k=宽松）===\n")
         for k in keys:
-            n, rg, st, r3, r2 = rows[k]
+            n, rg, st, r3, r2, sp = rows[k]
+            sps = f"{sp:.2f}" if sp is not None else "-"
             f.write(f"  {k[0]:<45s} w={k[1]:3d} n={n:2d} "
                     f"#1∈前2={'Y' if r2 else 'n'} 前2∩真={'Y' if r2 else 'n'} "
                     f"#1∈前3={'Y' if r3 else 'n'} 前3∩真={'Y' if r3 else 'n'} "
-                    f"regret={rg:7.2f}% 2stage={st:6.2f}% sp=0.50\n")
+                    f"regret={rg:7.2f}% 2stage={st:6.2f}% sp={sps}\n")
 
 
 def selftest():
@@ -239,21 +264,25 @@ def selftest():
                   {k: fn(j, i) for j, k in enumerate(keys)})
         return [os.path.join(d, f"{tag}_ep{ep}.out") for ep in (50, 100)]
 
-    # 1) 一致赢家：每个集 ep100 都低 1.0
-    f1 = build('consistent', lambda j, i: (6, 10.0 - i, 0.0, True, True))
+    # 1) 一致赢家：每个集 ep100 都低 1.0（越低越好 → 顺带验方向）
+    f1 = build('consistent', lambda j, i: (6, 10.0 - i, 0.0, True, True, 0.50))
     # 2) 掷硬币：偶数集 ep50 好、奇数集 ep100 好，幅度相同
     f2 = build('coin', lambda j, i: (6, 5.0 + (0.0 if (i == 0) == (j % 2 == 0) else 2.0),
-                                     0.0, True, True))
+                                     0.0, True, True, 0.50))
     # 3) 配对失效：第二个 epoch 的 n 不同
-    f3 = build('broken', lambda j, i: (6 if i == 0 else 5, 5.0, 0.0, True, True))
+    f3 = build('broken', lambda j, i: (6 if i == 0 else 5, 5.0, 0.0, True, True, 0.50))
     # 4) 平局主导：20 集里 14 集两 epoch 相等；3 集 ep100 好 1.0；3 集 ep50 好 1.0
     #    期望：全等 14/20 = 70%，有效 6，严格最优 **各 3**，均值差 0 → 不可分辨
     f4 = build('tied', lambda j, i: (
         6,
         (9.0 if j < 14 else (8.0 if i == 1 else 9.0)) if j < 17 else (8.0 if i == 0 else 9.0),
-        0.0, True, True))
+        0.0, True, True, 0.50))
+    # 5) 越高越好方向（首版两列反了的那条分支，否则无人走）：
+    #    ep100 在全部 20 集上 r3=True、r2=True、sp=0.80；ep50 全 False / 0.20
+    #    期望：严格k3 / 宽松k2 / Spearman 三条都 **可分辨**，且一律报「ep100 更优」
+    f5 = build('higher', lambda j, i: (6, 5.0, 0.0, i == 1, i == 1, 0.20 + 0.60 * i))
 
-    print("### 自检 1：一致赢家（应 ✅ 可分、严格最优 20/0）")
+    print("### 自检 1：一致赢家（应 ✅ 可分、严格最优 20/0、均值差 +1.000）")
     r = report(f1)
     print("\n### 自检 2：掷硬币（应 ⚠ 不可分辨、更优 50%）")
     r |= report(f2)
@@ -261,6 +290,8 @@ def selftest():
     r |= report(f3)
     print("\n### 自检 4：平局主导（应报 全等 70%、有效 6、严格最优 3/3、不可分辨）")
     r |= report(f4)
+    print("\n### 自检 5：越高越好方向（应 ✅ 可分且报 ep100 更优，别报成 ep50）")
+    r |= report(f5)
     return r
 
 
