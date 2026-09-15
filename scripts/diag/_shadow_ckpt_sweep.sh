@@ -7,6 +7,16 @@
 #   本脚本把该臂每个 ckpt 的部署口径指标都测出来 → 看 epoch-部署质量曲线的形状。
 # 成本：每趟约 2min（候选集与真值列全走 XYCE_CACHE，几乎不耗 Xyce）。
 #
+# ⚠ 分辨率（2026-09-15 实测并定因）：同一 ckpt 连测四次 = 10.51 / 10.66 / 10.86 / 10.86%。
+#   定因：gnn_pred 只写 7 位有效数字（gnn_shadow.rs 的 {:.6e}）→ 第 8 位起的真实差异被抹平成
+#   「伪并列」；分析器原先按 CSV 行序打破并列，而行序由并行分片 append 决定 → argmin 翻转。
+#   那 0.35pp 就是 level2/DEPTH_MIX w=7 一集在 0.00% ↔ 36.34% 之间翻：36.34/106 = 0.343pp。
+#   已修（分析器按 eval_idx 定序 + argsort kind="stable"）→ 结果与 CSV 行序无关。
+#   **17.2.2 之前产的 .out 都带这个不确定性**，上限 = 单集最大遗憾/106 ≈ 0.38pp。
+#   所以旧数据：小于 0.3pp 的差当打平，1.5pp 以上才是真差。17.2.2 之后无此问题，
+#   但 gnn_pred 仍只存 7 位，并列只能按 eval_idx 打破（不是模型的真实偏好）——
+#   要拿回分辨率得把 {:.6e} 放到 {:.12e}。
+#
 # 用法：bash ~/-project/scripts/diag/_shadow_ckpt_sweep.sh ARM_DIR ARM_TAG [EPOCHS...]
 #   bash ~/-project/scripts/diag/_shadow_ckpt_sweep.sh ~/project-107-v2nowave42b v2nowave42b 50 100 150 200 250
 #   省略 EPOCHS 则默认 50 100 150 200 250
@@ -67,17 +77,25 @@ for CK in "${EPOCHS[@]}"; do
 
   cp "$HOME/shadow_analyze.out" "$OUT"
   echo "=== ep${CK} 完成 → $OUT ==="
-  grep -E '候选集数|前k名中出现实际第1名|选择遗憾（|两阶段最终遗憾（|Spearman:' "$OUT" | sed 's/^/    /'
+  # 笼统匹配 `前k名中出现实际` 一次覆盖严格与宽松两行（宽松是必需项，别只给严格）
+  grep -E '候选集数|前k名中出现实际|选择遗憾（|两阶段最终遗憾（|Spearman:' "$OUT" | sed 's/^/    /'
 done
 
 # ---- 3) 汇总：epoch-部署质量曲线 ----
+# 严格与宽松两个 recall 口径都是必需项（只给严格算漏），表头用 ASCII 以免多字节对不齐。
 echo
-echo "############ $ARM_TAG 汇总（选择遗憾，越低越好）############"
+echo "############ $ARM_TAG 汇总（选择遗憾，越低越好；<0.3pp 视为打平）############"
+pick() { grep -m1 "$1" "$f" | sed "$2"; }
+printf '%-7s %-9s %-9s %-9s %-9s %-9s %s\n' ckpt regret strict_k2 strict_k3 loose_k2 loose_k3 spearman
 for CK in "${EPOCHS[@]}"; do
   f="$HOME/sweep_${ARM_TAG}_ep${CK}.out"
   if [ ! -f "$f" ]; then printf 'ep%-5s 未产出\n' "$CK"; continue; fi
-  R=$(grep -E '选择遗憾（' "$f" | head -1 | sed 's/.*: *//; s/ *(达标.*//')
-  S=$(grep -E 'Spearman:' "$f" | head -1 | sed 's/.*Spearman: *//; s/ *(次判据.*//')
-  printf 'ep%-5s 选择遗憾 %-8s Spearman %s\n' "$CK" "$R" "$S"
+  R=$(pick '选择遗憾（' 's/.*: *//; s/ *(达标.*//')
+  S=$(pick 'Spearman:' 's/.*Spearman: *//; s/ *(次判据.*//')
+  S2=$(pick '前k名中出现实际第1名' 's/.*k=2 *//; s/ *k=3.*//')
+  S3=$(pick '前k名中出现实际第1名' 's/.*k=3 *//')
+  L2=$(pick '前k名中出现实际前k之一' 's/.*k=2 *//; s/ *k=3.*//')
+  L3=$(pick '前k名中出现实际前k之一' 's/.*k=3 *//')
+  printf 'ep%-5s %-9s %-9s %-9s %-9s %-9s %s\n' "$CK" "$R" "$S2" "$S3" "$L2" "$L3" "$S"
 done
 echo "############ $ARM_TAG 扫完 ############"
