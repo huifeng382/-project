@@ -152,13 +152,28 @@ ps -p <pid> -o pid,stat,%cpu,etime    # Sl 存活
 ```
 - python 无 `-u` 时 stdout 重定向到文件是块缓冲 → **log 空正常**，别等 log 出字。若想看启动日志用 `python3 -u` 或另开窗口 tail。
 
+### 6.4b Step 3b — 双端点 A/B：一趟 shadow 并排记录两个模型（17.1.7 / 内层 15.9.3）
+
+> 前提：Rust 侧已装双端点版 `gnn_shadow.rs`（新增 env `GNN_PORT2` / `GNN_HOST2`）。**能省一趟的全部依据 = GNN 在 shadow 里是纯观察者**：`evaluate` 返回的始终是 inner 的 SPICE 真值，候选集与真值列全由 SPICE 决定 → **搜到的轨迹与 serve 挂哪个模型无关**，故一次 pass 就能并排记录两个模型的预测，两列天然同分母（这是 A/B 干净配对的前提，不是巧合）。
+
+- **端口 → 模型的映射纯属外部约定**，Rust 不知道也不关心：**模型1 恒为 `GNN_PORT`(8000)，模型2 恒为 `GNN_PORT2`(8001)**。记录时必须写清哪个模型挂哪个端口，否则数字没法解读。
+- 起第二个 serve = 照 §6.3 换端口 + 换 ckpt/env，两者都按 §6.4 判端口在听。
+- `run_shadow_batch.sh` 内部**硬编码 `GNN_PORT=8000`、且不设 `GNN_PORT2`** → 只需在父 shell `export GNN_PORT2=8001`，12 个分片全部继承。
+- ⚠ **别忘 export，且它不会报错**：忘了则 CSV 行尾没有 `gnn_pred2=`，解析脚本走"无第二列"分支、**不输出 A/B 节**（与旧版输出逐字节相同）——看起来像"跑了但没结果"。
+- ⚠ **脚本的 serve 存活检查有漏洞**：`run_shadow_batch.sh:21` 的 `pgrep -f 'serve_htt[p]'` 只确认"**有** serve 在跑"，**不校验端口** → 8001 没起来、或起在了别的端口，脚本不会拦，只会让第二列整列缺失/NaN。**跑前自己按端口逐个确认**：`ss -ltnp | grep -E ':(8000|8001)'`。
+
 ### 6.5 Step 4 — 跑 shadow（46 电路，NetlistOpt 内）
 ```bash
 bash ~/-project/scripts/diag/run_shadow_batch.sh   # 内部:rm 旧 CSV → 并行分片 → cargo test tl_opt_shadow_batch
 # 另开窗口看进度：
 tail -f ~/shadow_analyze.out
 ```
-- shadow CSV 路径：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors）。**跑前 run_shadow 会整体清空该目录**（CSV append 会混旧行，勿手动残留）。
+- shadow CSV 路径：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors[，gnn_pred2=…]）。**跑前 run_shadow 会整体清空该目录**（CSV append 会混旧行，勿手动残留）。⚠ 该清理**只在脚本内**——直接手敲 `cargo test` 会绕过它，追加写进上一趟的旧行，第二列会出现"前一半没有、后一半有"的半列假象（2026-09-15 实际踩到过；`docs/GNN_CODING_LESSONS.md` §7.2 有记）。
+- ⚠ **三个跨 run 不变量**（破坏则 A/B 与历史口径都不可比）：
+  - **① 不要删 `~/NetlistOpt/temp_sim_cache/`** —— 那是 `XYCE_CACHE` 的内容寻址延迟缓存，根在 `CARGO_MANIFEST_DIR/temp_sim_cache`，**不在** `temp_sim_test/` 下，故 `run_shadow_batch.sh` 的 `rm -rf temp_sim_test/tl_opt_batch` **不会**误清它。缓存命中会跳过 Xyce（2026-09-15 那趟全程 Xyce 进程数 0），删了就白跑。
+  - **② 两趟之间不要升级 Xyce** —— 缓存键 = tb 文件 + 每个 `.include` 的 DUT/model 文件哈希（`compute_deck_hash`），**不含 Xyce 版本** → 升级后旧缓存照样命中，会**静默**把两个版本的延迟真值混进同一张表。
+  - **③ `SIM_OPTIONS` / `TL_MAX_ITERS` 两趟保持完全一致**。
+- ⚠ **模式 3 的 NaN 会改变分母**：候选集要求"GNN 与 SPICE 都成功"（`true`/`gnn` 非 None）且 ≥4 候选；第二列 NaN 的行会被从 A/B 里剔掉 → **某些集可能因第二列 NaN 而落出 A/B**（脚本在 A/B 节头显式报出落掉的集数，并警告两节分母不同，跨节比指标要留神）。模式 3 每次 `/rank` 都要现场跑一遍 idsavg GNN，`GnnClient` 超时 15s，12 分片并发下是超时的主要嫌疑。**跑完先看第二列 NaN 计数是否为 0**；非 0 则 A/B 的集数与主口径对不上。
 
 ### 6.6 Step 5 — 判收尾：首行时间戳被替换，不 grep 关键词
 ```bash
@@ -168,24 +183,26 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 - 完成标志：首行时间戳刷新 + 后面跟着本次聚合结果（recall/遗憾/Spearman 表）。
 
 ### 6.7 Step 6 — 对齐口径 + 记录 + 恢复 serve（本地）
-- 读结果：`reports/_shadow_bench_final.txt`（服务器）+ `~/shadow_analyze.out`。**口径固定 = 106 集 / 5390 行 / 8 失败**（pipeline 窗口级 ≥4 候选计数），别拿 PROJECT_LOG 训练侧 714/548 集混着比。
+- 读结果：`reports/_shadow_bench_final.txt`（服务器）+ `~/shadow_analyze.out`。**口径固定 = 106 集 / 5390 行 / 8 失败**（pipeline 窗口级 ≥4 候选计数），别拿 PROJECT_LOG 训练侧 714/548 集混着比。**全表总行 = 5398**（5390 成功 + 8 失败），m4 族 8 趟逐项相同 —— 这个数正是"轨迹与模型无关"的实证，也用来快速自检：拿到 5398 就说明候选集没被改动过。
 - 同口径基准（m4三兄弟 Rust，DIFF §13.2/13.3）：纯拓扑 **nowave 遗憾 10.87%**（serve 交付基线）；iag GBDT15 严格@3 44.3% / 遗憾 12.19%；iaa ⚠ 15.21%。**无 ids 列(in=45)的模型与此对比才干净**；带 ids 列(in=46) serve 端本身就净伤害 —— ⚠ 该结论来自**近似**列（iag GBDT15 / iaa 线性，两个都是 serve 端净伤害的近似），**不能外推到模式 3（GNN 现场列）**：模式 3 的那一列本身是准的（R²≈0.79），它测的是"GNN ids 特征入 delay"在部署口径下的效果，是一个独立问题（17.1.5 Phase B 训练侧已判负，Rust 复验是为了确认部署口径同结论）。
 - 记 PROJECT_LOG（Rust 表行）+ 分析结论 → DIFF + 同步 I7 + 版本化 commit；push 仅按要求。
 - **恢复 serve**：若非交付路线的模型验完，按 Step 2 换回 v2nowave42m4（`--ckpt ~/project-107-v2nowave42m4/outputs/midpoint_ep250.pt`，不带 env）。
 
 ### 6.8 分析脚本 / 存档位置
 - 分析脚本在 `~/-project/scripts/diag/`（`_` 前缀，与本地 scripts/diag/ 双向同步）；关键结果存档 `reports/_shadow_bench_final.txt`。
+- **`_shadow_analyze.py`（17.1.7 起支持双列）**：CSV 里**没有** `gnn_pred2=` 时，输出与旧版**逐字节相同**；有则文末多一节「两列并排 A/B」—— 同一候选集、同一批行上分别用两列各算一遍指标 + 逐集配对胜负（严格同分母）。第一列恒为 `gnn_pred`(8000)，第二列 `gnn_pred2`(8001)。取 A/B 结果时的命令同 §6.5 的收尾命令，只是**必须先把 17.1.7 拉下来**（`cd ~/-project && git pull`），否则跑的还是旧脚本、A/B 节不会出现。
+- **双列解析的本地回归测试 = `scripts/diag/_t_shadow_analyze_2col.py`**（跑在本地，**不需要服务器**）：造三棵同数据树 —— 旧格式 / 第二列 `2-pred`（排序反转）并埋 NaN / 第二列 = 真值（oracle）—— 断言 ①旧格式无 A/B 节且主口径与明细逐字节不变；②NaN 集只从 A/B 剔除、计数如实上报；③用另一份 numpy 实现独立复算每集遗憾与配对胜负并对账；④oracle 树模型2 遗憾恒 0、严格 k=3 = 100%。
 
 ## 7. Git 同步现状（⚠ 三处代码源不同步）
 
 | 源 | HEAD | 说明 |
 |---|---|---|
-| 本地 project（本机） | 16.11.32（已 push GitHub） | 最新；docs/setup_exp.sh/src 均在此 |
-| GitHub `10.3.3-fix-earlystop` | 16.11.32 | 训练代码源（服务器 setup_exp.sh clone 用它） |
+| 本地 project（本机） | 17.1.7（已 push GitHub） | 最新；docs/setup_exp.sh/src 均在此 |
+| GitHub `10.3.3-fix-earlystop` | 17.1.7 | 训练代码源（服务器 setup_exp.sh clone 用它） |
 | 服务器 `~/-project` | 16.10.0 + 本地改动 | **分析工作区，落后**；setup_exp.sh 是手动上传的最新版（16.11.32 两个新变体已在）；数据源 data/ 全。**17.0.0 起：新分析脚本改走 GitHub 分支 git 拉取，不再 scp 单文件**（见下行规则） |
 
 - 规则：**改训练代码 → 本地提交 push GitHub → 新 run clone 生效**；**分析脚本/新能力（含 17.0.0 起的 diag 模型脚本）→ 一律随本地 commit 进 GitHub 分支，服务器用 git 获取（`git clone -b 10.3.3-fix-earlystop …` 或 `git pull`），不再 ssh_upload/scp 单文件同步**（2026-09-04，用户定；§4 16.2.1 路径推广到分析脚本）；改 setup_exp.sh → 顺手 `ssh_upload` 到服务器 `~/-project/`（仅脚本层即时项，不 push 也可）。
-- NetlistOpt（Rust）：本地与服务器各自独立，服务器源码曾落后 → 整体 `tar` 同步过；改动 Rust 需手动同步服务器（无 git 远端）。
+- NetlistOpt（Rust）：本地与服务器各自独立，服务器源码曾落后 → 整体 `tar` 同步过；改动 Rust 需手动同步服务器（**无 git 远端**，内层 HEAD 现为 `15.9.3`）。⚠ 本地**编译不了**（rustup 只装了 `x86_64-pc-windows-msvc`，无 VS toolchain / gcc / clang；Git Bash 的 coreutils `link.exe` 还会冒充链接器报 `link: extra operand`）→ **服务器 `cargo build --release --tests` 是唯一编译关**，本地只做语法/逻辑自检。
 
 ## 8. 数据 / 缓存要点
 
