@@ -4,9 +4,11 @@
 serve.py 喂给模型的三处输入与训练侧不一致，且三处都是**静默**的（serve 不报错、_smoke_v2.py
 用的是真实 dataset 对象所以永远测不出）：
 
-  ① circuit_sig[1]（晶体管数）
-       训练：src/data_loader.py:320-325  [n_gates, static_df.transistor_count, #input_pins]
+  ① circuit_sig（三项里两项都不对）
+       训练：src/data_loader.py:320-325  [n_gates(网表 X_ 行数), static_df.transistor_count, #input_pins]
        serve：scripts/diag/serve.py:281  [num_nodes, **0.0 硬编码**, len(pins)]
+       → **[0] 也退化**：num_nodes ≠ #X_（图里还有 INPUT_PIN/OUTPUT_PIN/UNKNOWN_GATE 节点）；
+         [0] 是**网表可复算**的（数 X_ 行），[1] 是生成器元数据（见 [probe]）
   ② struct_prior
        训练：data_loader.py:710-719  [transistor_count, #SC_AND, #SC_INV_WIRE]（USE_STRUCT_PRIOR=True）
        serve：serve.py:286 传 None → src/model.py:110 `if struct_prior is not None` 为 False
@@ -18,8 +20,10 @@ serve.py 喂给模型的三处输入与训练侧不一致，且三处都是**静
 ①② 都进**未归一化**的 MLP（src/model.py:39-54 的 sig_encoder / struct_encoder 直接 Linear(3,·)），
 量级 52~316；③ 进的是已 scaler 归一化的连续块。
 
-本脚本：在同一批测试电路上，用同一个 checkpoint，**只改这三处输入**，量出各自代价与可修部分的收益。
+本脚本：在同一批测试电路上，用同一个 checkpoint，**只改这几处输入**，量出各自代价与可修部分的收益。
 口径与训练/部署一致：preds = 10**out（线性），targets = DELAY，ranking_metrics(..., avg_delay=True)。
+⚠ 指标分两档：`regret/recall/top1` 走 avg_delay（**尺度敏感**），`spearman` 只吃秩 → 会看到
+  「load 常数化只伤尺度不伤秩、csig/prior 反而不伤尺度伤秩」这类分裂，两个口径都要看。
 所有 x 的修改只动「动态 7 维里 load 那一列」和「图级 csig / prior 两个张量」，其余（含 gate_states、
 logic、vector、静态块、edge_index）逐字节保持 dataset 给出的值 → 差值可干净归因。
 
@@ -144,11 +148,18 @@ def _cells_of(netlist):
     return out
 
 
+def _corr(a, b):
+    """安全相关系数（常量数组返回 nan 而不是崩）。"""
+    return float(np.corrcoef(a, b)[0, 1]) if a.size and b.size and a.std() > 0 and b.std() > 0 else float('nan')
+
+
 def probe_prior_tc(static_parquets, n_sample=200):
-    """回答两个决定「能不能在 serve 侧修」的前置问题：
+    """回答决定「能不能在 serve 侧修」的几个前置问题：
       (1) cell_types_json 是「唯一类型表」还是「逐实例表」→ 决定训练侧 #SC_AND / #SC_INV_WIRE 的口径；
-      (2) sc_expansion.json 对 V2 生成器 cell 名的覆盖率 → 决定 Σ n_t（= 晶体管数）能不能从网表复算。
-    serve 侧两个候选修法都建立在「网表里已经有足够信息」之上，这里先把这个前提验掉。"""
+      (2) set(cell_types_json) 是否等于网表 X_ 唯一 cell 名 → 决定先验 [1][2] 能否逐字复算；
+      (3) sc_expansion.json 覆盖率 + transistor_count/Σn_t **比值分布** → 决定 csig[1] 与先验 [0]
+          能否从网表复算（比值窄 = 固定倍率，一次乘法即可）。
+    serve 侧的候选修法都建立在「网表里已经有足够信息」之上，这里先把这个前提验掉。"""
     sc = gb._load_sc_expansion()
     st = pd.concat([pd.read_parquet(p) for p in static_parquets], ignore_index=True)
     for c in ['candidate', 'candidate_id']:
@@ -159,11 +170,13 @@ def probe_prior_tc(static_parquets, n_sample=200):
     if len(st) > n_sample:
         st = st.iloc[np.linspace(0, len(st) - 1, n_sample).astype(int)].reset_index(drop=True)
 
-    ok_ct_uniq = ok_ct_full = 0
-    covs, tc_err_all, tc_err_uniq = [], [], []
-    d_and, d_inv, d_and_lc, d_inv_lc = [], [], [], []
+    ok_ct_uniq = ok_ct_full = ok_set_eq = 0
+    covs, tc_err_all, tc_err_uniq, ratios = [], [], [], []
+    d_and, d_inv, p_and, p_inv = [], [], [], []
+    examples = []
     for _, r in st.iterrows():
         cells = _cells_of(r.get('gate_level_netlist', ''))
+        uc = set(cells)
         try:
             ct = json.loads(r['cell_types_json']) if isinstance(r['cell_types_json'], str) else r['cell_types_json']
         except Exception:
@@ -174,17 +187,28 @@ def probe_prior_tc(static_parquets, n_sample=200):
                 ok_ct_uniq += 1
             if len(ct) == len(cells):
                 ok_ct_full += 1
-        covs.append(sum(1 for c in set(cells) if c in sc) / max(len(set(cells)), 1))
+            if set(ct) == uc:
+                ok_set_eq += 1
+        covs.append(sum(1 for c in uc if c in sc) / max(len(uc), 1))
         tc_meta = float(r.get('transistor_count', 0) or 0)
+        tc_a = sum(float(gb.gate_struct(c)['n_t']) for c in cells)
         if tc_meta > 0:
-            tc_a = sum(float(gb.gate_struct(c)['n_t']) for c in cells)
-            tc_u = sum(float(gb.gate_struct(c)['n_t']) for c in set(cells))
+            tc_u = sum(float(gb.gate_struct(c)['n_t']) for c in uc)
             tc_err_all.append(abs(tc_a - tc_meta) / tc_meta)
             tc_err_uniq.append(abs(tc_u - tc_meta) / tc_meta)
+            if tc_a > 0:
+                ratios.append(tc_meta / tc_a)
+        # 训练侧口径（在 cell_types_json 上数）vs serve 侧可复算口径（在网表唯一 cell 名上数**同样的字符串模式**）
         d_and.append(sum(1 for g in ct if 'SC_AND' in str(g) and 'SC_AND_' not in str(g)))
         d_inv.append(sum(1 for g in ct if 'SC_INV_WIRE' in str(g)))
-        d_and_lc.append(sum(1 for c in cells if gb.gate_struct(c)['logic'] == 'AND'))
-        d_inv_lc.append(sum(1 for c in cells if gb.gate_struct(c)['logic'] in ('INV', 'BUF')))
+        p_and.append(sum(1 for g in uc if 'SC_AND' in str(g) and 'SC_AND_' not in str(g)))
+        p_inv.append(sum(1 for g in uc if 'SC_INV_WIRE' in str(g)))
+        if len(examples) < 3:
+            from collections import Counter
+            _cc = Counter(cells)
+            examples.append((str(r.get('circuit_id', '?')), tc_meta, tc_a, len(cells),
+                             [(str(k), float(gb.gate_struct(k)['n_t']), int(v))
+                              for k, v in _cc.most_common(6)]))
 
     n = len(st)
     print('\n' + '-' * 118)
@@ -200,18 +224,36 @@ def probe_prior_tc(static_parquets, n_sample=200):
               f'误差<1% 的占比 {np.mean([e<0.01 for e in tc_err_all])*100:.1f}%')
         print(f'  Σ n_t（唯一类型）vs transistor_count: 中位相对误差 {np.median(tc_err_uniq)*100:.1f}%  '
               f'误差<1% 的占比 {np.mean([e<0.01 for e in tc_err_uniq])*100:.1f}%')
-    da, di, dal, dil = (np.array(x, float) for x in (d_and, d_inv, d_and_lc, d_inv_lc))
-    print(f'  #SC_AND 训练口径中位 {np.median(da):.1f} ; 逻辑类=AND 复算中位 {np.median(dal):.1f} ; '
-          f'完全相等占比 {np.mean(da == dal)*100:.1f}%  相关 {np.corrcoef(da, dal)[0,1] if da.std() and dal.std() else float("nan"):.3f}')
-    print(f'  #SC_INV_WIRE 训练口径中位 {np.median(di):.1f} ; 逻辑类∈(INV,BUF) 复算中位 {np.median(dil):.1f} ; '
-          f'完全相等占比 {np.mean(di == dil)*100:.1f}%  相关 {np.corrcoef(di, dil)[0,1] if di.std() and dil.std() else float("nan"):.3f}')
+    if ratios:
+        er = np.array(ratios)
+        q1, med, q3 = np.percentile(er, [25, 50, 75])
+        print(f'  **transistor_count / Σ n_t(实例) 比值**: 中位 {med:.4f}  IQR [{q1:.4f}, {q3:.4f}]  '
+              f'落在中位±1% 的占比 {np.mean(np.abs(er / med - 1) < 0.01) * 100:.1f}%')
+        print(f'    （IQR 窄 ⇒ 元数据晶体管数只是 Σ n_t 的固定倍率 → serve 侧一次乘法即可**精确**复算；'
+              f'IQR 宽 ⇒ 必须 Rust 传值或改表）')
+    print(f'  set(cell_types_json) == set(网表 X_ 唯一 cell 名) 的占比 {ok_set_eq/n*100:.1f}%  '
+          f'→ 先验 [1][2] 两项在 serve 侧可{"逐字复算" if ok_set_eq == n else "**部分**复算"}')
+    da, di, pa, pi = (np.array(x, float) for x in (d_and, d_inv, p_and, p_inv))
+    for lab, tr, rc in (('#SC_AND', da, pa), ('#SC_INV_WIRE', di, pi)):
+        print(f'  网表复算 {lab}（唯一 cell 名·同字符串模式）: 与训练完全相等 {np.mean(tr == rc)*100:.1f}%  '
+              f'相关 {_corr(tr, rc):.3f}  训练侧非零电路占比 {np.mean(tr > 0)*100:.1f}%  '
+              f'复算非零占比 {np.mean(rc > 0)*100:.1f}%')
+    for cid, tcm, tca, nx, cc in examples:
+        print(f'  ex {cid}: 元数据tc={tcm:.0f}  Σn_t={tca:.0f}  比值={tcm/max(tca,1):.3f}  #X_={nx}  '
+              f'cell(名,n_t,次数)={cc}')
     print('-' * 118 + '\n')
 
 
-def verify_npz(npz_path, targets_full):
+def verify_npz(npz_path, targets_full, cids_full=None):
     """免费闸门：arm 目录里的 test_predictions.npz 存的是该 arm 自己 test_dataset 行序的 targets。
-    与本脚本重建的全量 test_df 逐位比对 → 一次性验掉「批次集合 / 清洗过滤 / MIN_GROUP_SIZE / split_seed /
-    行序」这一整串假设。通过 = 绝对指标可与该 arm 的历史数字对读；不通过 = 只有配对差值有效。"""
+    与本脚本重建的全量 test_df 比对，一次性验掉「批次集合 / 清洗过滤 / MIN_GROUP_SIZE / split_seed / 行序」。
+
+    ⚠ 判据分两档，别混：
+      · **集合等值**（排序后逐位）= 决定性判据。ranking_metrics 只依赖 (组键, pred, target) 的**多重集**，
+        与行序无关 → 集合相等即可与历史绝对数字对读。
+      · 原序逐位 = 更强的一档，行序也对齐。
+    ⚠ 容差必须 float32 安全：npz 存的是 float32（111364×2×4B≈891KB 已核对），
+      而本脚本的 targets 是 float64；rtol=1e-9 会**误报**成"不同"。用 rtol=1e-6（> float32 eps 1.2e-7）。"""
     if not npz_path or not os.path.exists(npz_path):
         print(f'[gate] 未找到 npz（{npz_path}）→ 跳过切分自证；绝对数按「重建切分」理解')
         return None
@@ -221,7 +263,7 @@ def verify_npz(npz_path, targets_full):
         print(f'[gate] npz 读取失败 ({e}) → 跳过')
         return None
     tg = d['targets'] if 'targets' in d.files else None
-    print(f'[gate] npz: preds={d["preds"].shape}  '
+    print(f'[gate] npz: preds={d["preds"].shape}({d["preds"].dtype})  '
           f'targets={None if tg is None else tg.shape}  本脚本重建全量 test 行数={len(targets_full)}')
     if tg is None:
         return d
@@ -229,10 +271,25 @@ def verify_npz(npz_path, targets_full):
         print(f'[gate] ❌ 行数不一致（npz {len(tg)} vs 重建 {len(targets_full)}）→ 切分/批次/过滤与训练不一致；'
               f'变体间的**配对差值仍有效**，但绝对指标不可与该 arm 历史数字对读')
         return d
-    k = min(5000, len(tg))
-    same = bool(np.allclose(np.asarray(tg[:k], dtype=np.float64), targets_full[:k], rtol=1e-9, atol=0.0))
-    print(f'[gate] {"✅" if same else "❌"} 前 {k} 行 targets 逐位比对{"相同" if same else "不同"} '
-          f'→ 切分与行序{"可复现（绝对指标可与历史对读）" if same else "不可复现"}')
+    tol = dict(rtol=1e-6, atol=0.0)
+    tgf = np.asarray(tg, dtype=np.float64)
+    same_order = bool(np.allclose(tgf, targets_full, **tol))
+    rel = np.abs(tgf - targets_full) / np.maximum(np.abs(targets_full), 1e-30)
+    set_eq = bool(np.allclose(np.sort(tgf), np.sort(targets_full), **tol))
+    print(f'[gate] {"✅" if set_eq else "❌"} 集合等值（排序后逐位，float32 容差 rtol=1e-6）'
+          f'{"—— 行集合与训练完全一致 ⇒ 指标可直接与历史对读" if set_eq else "—— 行集合都不同，先查批次/过滤/seed"}')
+    print(f'[gate] {"✅" if same_order else "❌"} 原序逐位（本序 max 相对差 {np.nanmax(rel):.2e}，'
+          f'≈1e-7 级别 = 仅 float32 舍入，不是数据不一致）')
+    if set_eq and not same_order and cids_full is not None:
+        for nm, pm in (('circuit_id 升序分组', np.argsort(pd.factorize(cids_full, sort=True)[0], kind='stable')),
+                       ('circuit_id 首现序分组', np.argsort(pd.factorize(cids_full, sort=False)[0], kind='stable'))):
+            if np.allclose(tgf, np.asarray(targets_full)[pm], **tol):
+                print(f'[gate]   → ✅ 命中重排假设：{nm}（行序差异仅来自分组顺序，集合与指标完全一致）')
+                break
+        else:
+            nd = int((~np.isclose(tgf, targets_full, **tol)).sum())
+            print(f'[gate]   → 未命中两种候选重排；不等行 {nd}/{len(tg)}，'
+                  f'前几处 idx={np.nonzero(~np.isclose(tgf, targets_full, **tol))[0][:5].tolist()}')
     return d
 
 
@@ -246,9 +303,11 @@ def make_recon(static_df, cache):
         except Exception:
             nl = ''
         cells = _cells_of(nl)
+        uc = set(cells)
         tc = sum(float(gb.gate_struct(c)['n_t']) for c in cells)
-        andr = sum(1 for c in cells if gb.gate_struct(c)['logic'] == 'AND')
-        invr = sum(1 for c in cells if gb.gate_struct(c)['logic'] in ('INV', 'BUF'))
+        # 逐字复算训练侧公式（data_loader.py:717-718）——只是把 cell_types_json 换成网表唯一 cell 名
+        andr = sum(1 for g in uc if 'SC_AND' in str(g) and 'SC_AND_' not in str(g))
+        invr = sum(1 for g in uc if 'SC_INV_WIRE' in str(g))
         cache[cid] = (tc, float(andr), float(invr))
         return cache[cid]
     return _f
@@ -264,6 +323,8 @@ def make_variants():
         ('base',              '训练口径：真 load + 真 csig + 真 prior',                 False, 'true',  'true'),
         ('serve',             'serve 现状：load=1e-15 + csig[1]=0 + prior=None',        True,  'serve', 'none'),
         ('csig0',             '只 csig[1]=0',                                           False, 'zero1', 'true'),
+        ('csig_nn',           '只 csig[0]=num_nodes（serve 的 [0] 口径，可复算）',       False, 'nn',    'true'),
+        ('csig_serve',        '只 csig 两项都用 serve 口径（[0]=num_nodes、[1]=0）',    False, 'serve', 'true'),
         ('csig0_fixTC',       'csig[1]=0 → 真晶体管数（oracle，量 csig 单项代价）',      False, 'true',  'true'),
         ('noprior',           '只 prior=None',                                          False, 'true',  'none'),
         ('loadconst',         '只 load=1e-15 常数',                                     True,  'true',  'true'),
@@ -325,7 +386,8 @@ def main():
         npz_path = os.path.join(os.path.dirname(os.path.abspath(args.ckpt[0])), 'test_predictions.npz')
     elif npz_path == 'none':
         npz_path = ''
-    _npz = verify_npz(npz_path, test_df['DELAY'].to_numpy(dtype=np.float64))
+    _npz = verify_npz(npz_path, test_df['DELAY'].to_numpy(dtype=np.float64),
+                      test_df['circuit_id'].astype(str).to_numpy())
     if args.max_exprs and n_expr_full > args.max_exprs:
         exprs = sorted(test_df['expr'].astype(str).unique())
         stride = len(exprs) / float(args.max_exprs)
@@ -363,7 +425,7 @@ def main():
     preds = {v[0]: np.full(n, np.nan) for v in variants}
     true_csigs = np.zeros((n, 3))
     serve_csigs = np.zeros((n, 3))
-    diag = {'n_nodes_ne_gates': 0, 'dyn_node_frac': [], 'n_gates_missing': 0}
+    diag = {'n_nodes_ne_gates': 0, 'dyn_node_frac': [], 'n_gates_missing': 0, 'n_csig0_eq': 0}
     _ngate_cache = {}
     recon_f = make_recon(ds.static_df, {})
     n_rec_rows = 0
@@ -410,6 +472,7 @@ def main():
         n_gates_netlist = _ngate_cache[cid]
         if N != n_gates_netlist:
             diag['n_nodes_ne_gates'] += 1
+        diag['n_csig0_eq'] += int(int(csig_true[0, 0].item()) == n_gates_netlist)
         if float(csig_true[0, 1].item()) <= 0.0:
             diag['n_gates_missing'] += 1
 
@@ -426,6 +489,9 @@ def main():
                 csig = csig_srv
             elif csig_mode == 'zero1':
                 csig = torch.cat([csig_true[:, :1], torch.zeros(1, 1, device=device), csig_true[:, 2:]],
+                                 dim=1)
+            elif csig_mode == 'nn':      # 只把 [0] 换成 serve 的 num_nodes（[1][2] 保持训练真值）
+                csig = torch.cat([torch.full((1, 1), float(N), device=device), csig_true[:, 1:]],
                                  dim=1)
             elif csig_mode == 'recon':
                 csig = csig_rec
@@ -451,10 +517,14 @@ def main():
     print(f'[abl] 前向完成: {n} 行 x {len(variants)} 变体, {time.time()-t0:.0f}s')
     print(f'[abl] 诊断: num_nodes != 网表 X_ 行数的电路 = {diag["n_nodes_ne_gates"]}/{n} 行; '
           f'真 transistor_count <= 0 的行 = {diag["n_gates_missing"]}')
-    print(f'[abl] 真 csig[0] (网表门数) 分位: '
+    print(f'[abl] 真 csig[0] (网表 X_ 行数) 分位: '
           f'{np.percentile(true_csigs[:,0],[5,50,95]).round(1).tolist()}  '
-          f'serve csig[0] (num_nodes) 分位: '
-          f'{np.percentile(serve_csigs[:,0],[5,50,95]).round(1).tolist()}')
+          f'== 本脚本从 static_df 数的 #X_ 的占比 {diag["n_csig0_eq"]/n*100:.1f}%（应为 100%，自证静态表同源）')
+    print(f'[abl] serve csig[0] (num_nodes) 分位: '
+          f'{np.percentile(serve_csigs[:,0],[5,50,95]).round(1).tolist()}  '
+          f'差值 num_nodes-#X_ 分位: '
+          f'{(np.percentile(serve_csigs[:,0]-true_csigs[:,0],[5,50,95])).round(1).tolist()}  '
+          f'（[0] 也在退化；#X_ 是网表可复算的 → serve 侧可修）')
     print(f'[abl] 真 csig[1] (transistor_count) 分位: '
           f'{np.percentile(true_csigs[:,1],[5,50,95]).round(1).tolist()}  '
           f'(serve 恒为 0.0)')
