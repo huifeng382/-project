@@ -36,6 +36,15 @@
   (true_delay, transistors) 的原始文本 → 与模型无关，换 ckpt 不改变判同结果。
   ⚠ 该块**只计数，不改上面任何指标**（去重重算另立版本）。
 
+交付口径对照 + 输入污染检查（17.3.11）：
+  跨集重复度暴露了一件事：714 是按**批**等权，而批被重复提议主导（一份实测快照里
+  level2/DEPTH_MIX 一家占 538/714，却只有 26 个互异的池）→「平均批」不是部署总体。
+  故新增「交付口径对照」块，把 ① 全部批等权 / ② 按候选池去重 / ③ 按电路宏平均 /
+  ④ 排除最大电路 四种口径并排。**脚本只给数，交付报哪个由口径决定，不自作主张。**
+  另新增「输入污染检查」：暴露原本**静默**的 eval 去重丢弃行数，并给出
+  「同一 eval_idx 却对应两个不同 true_delay」的处数 —— 后者 >0 即 append 叠行（见
+  OPERATIONS:177 记的那次事故）的硬证据，届时本快照所有数字须重估。
+
 用法（server 端）：
   ~/venv/bin/python3 scripts/diag/_shadow_analyze.py [--min-cands 4] [--group-by batch|window]
 """
@@ -209,6 +218,16 @@ def _flag(cmd, name):
             return parts[i + 1]
     return None
 
+def _pad(s, w):
+    """按**显示宽度**右侧补空格（CJK 记 2 列）—— 口径标签是中英混排，
+    直接用 f"{s:<w}" 会因双宽字符而错位。
+
+    ⚠ 补到 max(w, d+1)：**超宽时也至少留 1 个空格**。否则标签一旦长过列宽
+    （如 ④ 行的电路名带 gnn_shadow.csv 后缀，49 列 > 32）就与下一列**首字符粘连**，
+    读出来是 "…DEPTH_MIX/gnn_shadow.csv1"、且按空白切列会切错。"""
+    d = sum(2 if ord(c) > 0x2E80 else 1 for c in s)
+    return s + " " * max(1, w - d)
+
 def run_stamp(root):
     print("=== 运行配置戳 ===")
     print(f"  时间        : {time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -274,6 +293,10 @@ def main():
     ok_rows = 0; fail_rows = 0
     c2_rows = 0                       # 文本上带第二列的行数
     ab_dropped_sets = 0               # 主口径合格、但因第二列 NaN 落掉的集
+    # 17.3.11 输入污染检查（见文末「输入污染检查」块）
+    dedup_dropped = 0                 # 同一 (it,w) 分组内因 eval_idx 重复被丢的行（原本静默）
+    eval_dup_rows = 0                 # 同电路内 eval_idx 出现多次的「多余行数」
+    eval_conflict = 0                 # 同一 eval_idx 对应多于一个 true_delay 的处数（叠行硬证据）
     # 17.3.9: 分组键 —— batch = (iter, window_try) = 一次 pre_rank 的批（部署真口径）；
     #   window = 历史口径，池化跨轮的批，仅供复现旧数。见文件头「统计单位」。
     def _group_key(r):
@@ -282,6 +305,8 @@ def main():
     for csvp in sorted(glob.glob(os.path.join(args.root, "*", "*", "gnn_shadow.csv"))):
         circ = os.path.relpath(csvp, args.root)
         by_key = {}
+        ev_count = {}      # 17.3.11: eval_idx -> 出现次数（本电路内）
+        ev_true = {}       # 17.3.11: eval_idx -> 见过的 true_delay 文本集合
         with open(csvp) as f:
             for line in f:
                 r = parse_row(line)
@@ -293,13 +318,18 @@ def main():
                 ok_rows += 1
                 if r["c2"]:
                     c2_rows += 1
+                ev_count[r["eval"]] = ev_count.get(r["eval"], 0) + 1
+                ev_true.setdefault(r["eval"], set()).add(r["ttxt"])
                 by_key.setdefault(_group_key(r), []).append(r)
+        eval_dup_rows += sum(ev_count.values()) - len(ev_count)
+        eval_conflict += sum(1 for v in ev_true.values() if len(v) > 1)
         for key, rows in by_key.items():
             it_idx, w = key
             # 同 window 内按 eval_idx 去重（同一候选可能被缓存复用？以 eval_idx 唯一为准）
             seen = {}
             for r in rows:
                 seen.setdefault(r["eval"], r)
+            dedup_dropped += len(rows) - len(seen)
             rows = list(seen.values())
             # 按 eval_idx 定序：并列的打破**不能**依赖 CSV 行序（CSV 由并行分片 append 写，
             # 见 parse_row 里「并发写 CSV 交错」；行序不确定）。
@@ -364,6 +394,25 @@ def main():
         print(f"  （batch 口径下小集天然多：多数批只提 1~3 个候选 → 不足 {args.min_cands} 个的被滤掉；"
               f"它们正是「候选太少、无需 GNN 粗筛」的那部分，不构成 recall 的分母）")
     print(f"候选数分布: min={min(n_cands)} med={statistics.median(n_cands):.0f} max={max(n_cands)}")
+
+    # —— 输入污染检查（17.3.11）——
+    # 动机：OPERATIONS:177 记过 append 事故 —— 手敲 cargo test 绕过脚本内的清理，把上一趟的旧行
+    #   追加进同一个 gnn_shadow.csv。若真发生，本快照就不是单趟数据，所有读数都要重估。
+    # 三个数：① 原本**静默**的 eval 去重丢弃（同一 (it,w) 内 eval_idx 重复）；
+    #   ② 同一 eval_idx 落在不同 (it,w) 的重复行；③ 同一 eval_idx 却对应两个不同 true_delay
+    #   —— 同一次评估不可能有两个真值，故 ③>0 即叠行的硬证据。
+    # ⚠ 本块按**电路自比**（每个 CSV 内比）：若实际上 eval_idx 是跨电路全局唯一的，则跨电路的
+    #   重复不会被这里发现。这里不预设它们的关系，只报测到的。
+    print("\n=== 输入污染检查（17.3.11，按电路自比）===")
+    print(f"  分组内 eval 去重丢弃行（原本静默）: {dedup_dropped} "
+          f"{'✅' if dedup_dropped == 0 else '⚠ 同一 (it,w) 里有重复 eval_idx'}")
+    print(f"  同电路 eval_idx 跨分组重复行:       {eval_dup_rows - dedup_dropped} "
+          f"{'✅' if eval_dup_rows == dedup_dropped else '⚠ 同一 eval_idx 落在不同 (it,w)'}")
+    print(f"  同一 eval_idx 真值冲突:             {eval_conflict} 处 "
+          f"{'✅ 每个 eval 只对应一个真值' if eval_conflict == 0 else '❌ 同一次评估有两个真值 → 两趟的行叠在一起，本快照所有数字须重估'}")
+    if dedup_dropped == 0 and eval_dup_rows == 0 and eval_conflict == 0:
+        print("  → ✅ 三项全 0：未见 append 叠行迹象，下面的读数按「单趟数据」解释")
+
     print(f"\n=== recall 判断标准（k=2/3 双口径，粗筛最重要指标）===")
     print(f"  前k名中出现实际第1名（严格）:  k=2 {statistics.mean(r2s)*100:6.1f}%   k=3 {statistics.mean(r3s)*100:6.1f}%")
     print(f"  前k名中出现实际前k之一（宽松）: k=2 {statistics.mean(r2l)*100:6.1f}%   k=3 {statistics.mean(r3l)*100:6.1f}%")
@@ -485,6 +534,69 @@ def main():
               "需按电路做 block 重采样，或先按 sig 去重再统计")
     else:
         print("  ✅ 无跨集重复：候选池层面互异（独立集数 = 集数）")
+
+    # —— 交付口径对照（17.3.11）——
+    # 上面已证：714 个集是按**批**等权，而批被重复提议主导（一个电路可占 75%）。
+    #   于是「平均批」不等于「部署时面对的总体」。本块把四种口径并排，值本身不判断对错，
+    #   判断留给使用者 —— 交付数报哪个是口径决定，脚本不自作主张。
+    #   ② 按候选池去重：同电路同 sig 只留一个 → 去掉重复观测的加倍计权
+    #   ③ 按电路宏平均：先电路内平均、再跨电路平均 → 每个电路等权，消除「谁的批多谁说话」
+    #   ④ 排除最大电路：即把「一家独大」整个拿掉，看剩下的是否同向
+    def _agg(ss, macro=False):
+        """返回 (严格k2, 严格k3, 宽松k2, 宽松k3, 选择遗憾, 两阶段遗憾)。
+        macro=True：先按电路求均值，再跨电路求均值（每电路等权）。
+
+        ⚠ 空口径返回全 nan，**不是** StatisticsError：④ 是「排除最大电路」，若快照里
+        只有那一个电路（`--root` 指到单电路目录、或小快照），排除后就没东西可平均。
+        真快照（46 个电路）不会触发，但为了脚本可本地/小样本试跑，这里必须挡住 ——
+        否则前面几百行数字都算对了，最后一行却崩掉。"""
+        if macro:
+            g = {}
+            for s in ss:
+                g.setdefault(s["circuit"], []).append(s)
+            units = list(g.values())
+        else:
+            units = [ss]
+        units = [u for u in units if u]
+        if not units:
+            return (float("nan"),) * 6
+        return tuple(statistics.mean(statistics.mean(x[k] for x in u) for u in units)
+                     for k in ("recall2_strict", "recall3_strict", "recall2_len",
+                               "recall3_len", "regret", "regret_2stage"))
+
+    _seen_sig = set()
+    dedup_sets = []
+    for s in sets:
+        k = (s["circuit"], s["sig"])
+        if k in _seen_sig:
+            continue
+        _seen_sig.add(k)
+        dedup_sets.append(s)
+    _dom_circ = max(by_circ, key=lambda c: len(by_circ[c]))
+    # 显示名 = 目录部分（去掉 gnn_shadow.csv），且分隔符统一成 / ——
+    # circuit 键是 os.path.relpath 的结果，Windows 下是 \ 分隔：硬写 split("/") 会整个失配，
+    # 把含文件名的 49 列长串塞进 32 列的标签位。用 os.sep 才跨平台一致。
+    _dom_name = os.path.dirname(_dom_circ).replace(os.sep, "/") or _dom_circ
+    _spec = (
+        ("① 全部批（现状，等权）", sets, False, len(sets)),
+        ("② 按候选池去重（同电路同 sig）", dedup_sets, False, len(dedup_sets)),
+        ("③ 按电路宏平均（每电路等权）", sets, True, len(by_circ)),
+        (f"④ 排除最大电路 {_dom_name}", [s for s in sets if s["circuit"] != _dom_circ],
+         False, len(sets) - len(by_circ[_dom_circ])),
+    )
+    print("\n=== 交付口径对照（17.3.11，同一份快照）===")
+    print("  " + _pad("口径", 32) + _pad("单位数", 8) + _pad("严格k2", 9) + _pad("严格k3", 9)
+          + _pad("宽松k2", 9) + _pad("宽松k3", 9) + _pad("选择遗憾", 11) + "两阶段遗憾")
+    for label, ss, macro, n_units in _spec:
+        a2, a3, b2, b3, rg, st = _agg(ss, macro)
+        print("  " + _pad(label, 32) + _pad(str(n_units), 8)
+              + _pad(f"{a2*100:.1f}%", 9) + _pad(f"{a3*100:.1f}%", 9)
+              + _pad(f"{b2*100:.1f}%", 9) + _pad(f"{b3*100:.1f}%", 9)
+              + _pad(f"{rg*100:.2f}%", 11) + f"{st*100:.2f}%")
+    print("  ⚠ ① 度量的是「平均批」，而批被重复提议主导（见上一块）→ 不是部署总体；"
+          "③ 度量的是「平均电路」，部署面对的是电路。两者差多少，就是「重复提议」的定价。")
+    print("  ⚠ 宽松 k3 在 n=4 的集上**定义性饱和**（真前3 与预测前3 各占 4 选 3，必然相交 → 恒 100%）"
+          "→ 该列含白送分；严格列不受此影响。")
 
     # —— 两列并排 A/B（仅当 CSV 带 gnn_pred2 列时出现）——
     if ab_sets:
