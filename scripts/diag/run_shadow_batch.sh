@@ -9,10 +9,17 @@
 #   17.3.16：原为 rm -rf —— 等于每跑一趟就毁掉上一趟的原始数据。后果是「五点重扫」
 #   变成「第五趟删掉第四趟」，且历史各 ckpt 的配对分析永久不可得（2026-09-16 只能靠
 #   ~/sweep_*.out 里残留的 106 行明细倒推）。改为 mv 到 ~/shadow_archive/<TAG>_<时间戳>/。
-#   TAG 默认取当前 serve 的 ckpt 名（--ckpt 的 basename 去 .pt），可用 SHADOW_TAG 覆盖。
 #   归档目录保留 <root>/<level>/<stem>/gnn_shadow.csv 原布局 → **本身就是合法 --root**，
 #   可事后直接 `_shadow_analyze.py --root ~/shadow_archive/<TAG>_<时间戳>`。
 #   存档不自动清理，占盘自己看情况删（CSV 很小，单趟 MB 级）。
+#
+#   17.3.17：修 17.3.16 的**错标**。17.3.16 在本轮开头归档上一轮的树，却用**本轮 serve 的
+#   ckpt** 给归档命名 → 每份存档都错一格（跑 ep150 时归档出的目录叫 ep150，里面其实是
+#   0916 那趟的数据）。错得还很像对的，正是 I15 那类「来源不可信」。现改为：
+#     ① 本轮开始时把**本轮**的身份写进 temp_sim_test/tl_opt_batch/RUN_INFO.txt；
+#     ② 归档时读**被归档树自己**的 RUN_INFO 来命名 —— 标签随数据走，不靠猜；
+#     ③ 读不到就写 unknown（`ARCHIVE_TAG` 可手工指定，例如给当前这棵无 RUN_INFO 的老树）；
+#     ④ 归档后若树内本来没有 RUN_INFO，补一份说明「ckpt 未知」，而不是填本轮的 ckpt。
 #
 # 前置：GNN serve 已运行（
 #   nohup ~/venv/bin/python3 ~/-project/scripts/diag/serve_http.py \
@@ -33,14 +40,16 @@ fi
 
 cd "$NL"
 
-# 1) 归档旧 CSV（防污染——append 模式，旧行混入会让分析结果错；但不再销毁）
+# 1) 归档旧树（防污染——append 模式，旧行混入会让分析结果错；但不再销毁）
+#    标签取**被归档树自己**的 RUN_INFO（那描述的是产出这棵树的上一轮），读不到就 unknown。
+#    ⚠ 绝不拿本轮 serve 的 ckpt 命名旧树 —— 那是错标，会重演 I15 那类「来源不可信」。
 ARCHIVE_ROOT="$HOME/shadow_archive"
-if [ -e temp_sim_test/tl_opt_batch ]; then
-  # TAG：优先 SHADOW_TAG，否则取 serve 的 --ckpt basename（去掉 .pt），再否则 run
-  SERVE_ARGS=$(ps -o args= -p "$(pgrep -f 'serve_htt[p]' | head -1)" 2>/dev/null | head -1 || true)
-  CKPT=$(printf '%s\n' "${SERVE_ARGS:-}" | sed -n 's/.*--ckpt[= ][ ]*\([^ ]*\).*/\1/p' | head -1)
-  TAG=$(basename "${CKPT:-run}" .pt); [ -n "$TAG" ] || TAG=run
-  [ -n "${SHADOW_TAG:-}" ] && TAG="$SHADOW_TAG"
+SERVE_ARGS=$(ps -o args= -p "$(pgrep -f 'serve_htt[p]' 2>/dev/null | head -1)" 2>/dev/null | head -1 || true)
+CKPT=$(printf '%s\n' "${SERVE_ARGS:-}" | sed -n 's/.*--ckpt[= ][ ]*\([^ ]*\).*/\1/p' | head -1)
+OLD_CKPT=$(sed -n 's/^本轮 serve ckpt *: *//p' temp_sim_test/tl_opt_batch/RUN_INFO.txt 2>/dev/null | head -1)
+if [ -d temp_sim_test/tl_opt_batch ]; then
+  TAG=${ARCHIVE_TAG:-$(basename "${OLD_CKPT:-unknown}" .pt)}; [ -n "$TAG" ] || TAG=unknown
+  if [ -n "$OLD_CKPT" ]; then SRC=树内RUN_INFO; else SRC=兜底; fi
   TS=$(date +%Y%m%d_%H%M%S)
   DEST="$ARCHIVE_ROOT/${TAG}_$TS"
   mkdir -p "$ARCHIVE_ROOT"
@@ -50,19 +59,25 @@ if [ -e temp_sim_test/tl_opt_batch ]; then
     echo "ERROR: 归档失败（$DEST）—— 拒绝对未清理的旧 CSV 继续跑（append 会混趟）"
     exit 1
   fi
-  {
-    echo "时间       : $(date +%F\ %T)"
-    echo "TAG        : $TAG"
-    echo "源目录     : $NL/temp_sim_test/tl_opt_batch"
-    echo "serve 进程 : ${SERVE_ARGS:-未取到}"
-    echo "serve ckpt : ${CKPT:-未识别}"
-    echo "repo rev   : $(cd ~/-project 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo 未知)"
-    echo "repo dirty : $(cd ~/-project 2>/dev/null && git status --porcelain 2>/dev/null | wc -l || echo '?') 个改动"
-  } > "$DEST/RUN_INFO.txt"
-  echo "[$(date +%F\ %T)] 已归档旧 CSV → $DEST（附 RUN_INFO.txt）"
+  if [ ! -f "$DEST/RUN_INFO.txt" ]; then
+    printf '本轮 serve ckpt : unknown\n（归档时树内没有 RUN_INFO —— 这棵树的 ckpt 未知；目录标签 %s 来自 ARCHIVE_TAG 或 unknown，不可当已证来源）\n' "$TAG" > "$DEST/RUN_INFO.txt"
+  fi
+  echo "[$(date +%F\ %T)] 已归档旧树 → $DEST  (标签=$TAG 来源=$SRC)"
 else
-  echo "[$(date +%F\ %T)] 无旧 CSV 目录，跳过归档（首跑）"
+  echo "[$(date +%F\ %T)] 无旧树，跳过归档（首跑）"
 fi
+
+# 1b) 写**本轮** RUN_INFO —— 随这棵树进归档，供下一轮正确命名（先建目录，分片只管往里写子目录）
+mkdir -p temp_sim_test/tl_opt_batch
+{
+  echo "时间            : $(date +%F\ %T)"
+  echo "源目录          : $NL/temp_sim_test/tl_opt_batch"
+  echo "本轮 serve 进程 : ${SERVE_ARGS:-未取到}"
+  echo "本轮 serve ckpt : ${CKPT:-未识别}"
+  echo "repo rev        : $(cd ~/-project 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo 未知)"
+  echo "repo dirty      : $(cd ~/-project 2>/dev/null && git status --porcelain 2>/dev/null | wc -l || echo '?') 个改动"
+} > temp_sim_test/tl_opt_batch/RUN_INFO.txt
+echo "[$(date +%F\ %T)] 本轮 RUN_INFO 已写入（ckpt=${CKPT:-未识别}）"
 
 # 2) 并行分片：level0-3 各一个进程；level4 按电路逐个进程（大电路最慢，全并行）
 for l in 0 1 2 3; do
