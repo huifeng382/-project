@@ -769,6 +769,9 @@ def main():
     val_err_history = []
     val_loss_history = []
     train_loss_history = []
+    # 17.3.8：两阶段捕获率（val 上，逐 epoch）—— best_model 选点 / 早停守卫 / 日志共用
+    val_dyn = val_dataset.dynamic_df.reset_index(drop=True)
+    cap2_best, cap2_best_ep, cap2_guard_warned = -float('inf'), 0, False
     plateau_triggered = False
     last_lr = LEARNING_RATE
     lr_decayed = False
@@ -798,10 +801,23 @@ def main():
     for epoch in range(start_epoch, EPOCHS):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, delta=HUBER_DELTA,
                                      teacher_preds=_kd_teacher)
-        val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
+        val_loss, val_rel_err, v_preds, v_targets = evaluate(model, val_loader, device)
+
+        # 17.3.8：复用上面这次 val 前向的预测算两阶段捕获率（**不额外前向**；实测单次
+        # 0.09~1.25s，取决于每组的变体数 V，整趟 300 epoch 累计 <6 分钟，可忽略）。
+        # 失败一律按 NaN 处理，绝不因为一个诊断量中断已跑了几小时的训练。
+        val_cap2 = float('nan')
+        try:
+            _mn = min(len(val_dyn), len(v_preds))
+            val_cap2 = ranking_metrics(val_dyn.iloc[:_mn], v_preds[:_mn], v_targets[:_mn],
+                                       avg_delay=USE_V2).get('capture2_pct', float('nan'))
+        except Exception as _e:
+            print(f"  [cap2] 计算失败（不中断训练，按 NaN 处理）: {_e}")
+        if np.isfinite(val_cap2) and val_cap2 > cap2_best:
+            cap2_best, cap2_best_ep = val_cap2, epoch + 1
 
         current_lr = optimizer.param_groups[0]['lr']
-        print(f"Epoch {epoch+1:03d} | LR: {current_lr:.2e} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Rel Err: {val_rel_err:.2f}%")
+        print(f"Epoch {epoch+1:03d} | LR: {current_lr:.2e} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f} | Val Rel Err: {val_rel_err:.2f}% | Cap2: {val_cap2:6.2f}%")
 
         if scheduler is not None:
             if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -821,8 +837,13 @@ def main():
         # 报告指标：始终追踪最小 val_rel_err
         if val_rel_err < best_val_rel:
             best_val_rel = val_rel_err
-        # 保存 checkpoint：按 BEST_MODEL_METRIC 选点（默认 val_rel_err；可选 val_loss / smoothed_rel_err）
-        if BEST_MODEL_METRIC == 'val_loss':
+        # 保存 checkpoint：按 config.BEST_MODEL_METRIC 选点（当前 capture2；可选
+        # smoothed_rel_err / val_loss / val_rel_err —— 见 config.py 的 17.3.8 注释）
+        if BEST_MODEL_METRIC == 'capture2':
+            # 取负 → 沿用下面 sel<best_sel 的「越小越好」。非有限时记 inf → 该 epoch 不落盘：
+            # **绝不用 NaN 去比大小**（NaN 比较恒 False，会让 best_model.pt 一个 epoch 都不写）
+            sel = -val_cap2 if np.isfinite(val_cap2) else float('inf')
+        elif BEST_MODEL_METRIC == 'val_loss':
             sel = val_loss
         elif BEST_MODEL_METRIC == 'smoothed_rel_err':
             sel = float(np.mean(val_err_history[-BEST_SMOOTH_WINDOW:]))
@@ -831,7 +852,9 @@ def main():
         if sel < best_sel:
             best_sel = sel
             torch.save(model.state_dict(), os.path.join(OUTPUT_DIR, 'best_model.pt'))
-            print(f"  >>> New best model saved ({BEST_MODEL_METRIC}={sel:.4f}, ValRelErr={val_rel_err:.2f}%)")
+            _sel_repr = (f"capture2={-sel:.2f}%" if BEST_MODEL_METRIC == 'capture2'
+                         else f"{BEST_MODEL_METRIC}={sel:.4f}")
+            print(f"  >>> New best model saved ({_sel_repr}, ValRelErr={val_rel_err:.2f}%)")
 
         # 中途快照（不影响训练 RNG，只写文件）
         if SAVE_MIDPOINTS and (epoch + 1) % MIDPOINT_INTERVAL == 0:
@@ -882,13 +905,30 @@ def main():
                               f"only improved {improved:.1f} pts in last {QUICK_WINDOW} epochs")
                         break
 
+            # ---- 17.3.8 早停守卫：val_loss 已平台，但 capture2 仍在刷新 → 先不停 ----
+            # 位置：放在两个早停出口**之前**，两个出口都要过这一关（否则守卫会被另一个绕过）。
+            # 硬上限用 patience_counter 表达：它随 val_loss 不改善而单调增长，故
+            # patience_counter < PATIENCE + CAP2_GUARD_MAX_EXTRA 就是「最多再多跑 MAX_EXTRA 个
+            # epoch」，不需要额外的计数器。
+            cap2_guard_blocks = (
+                EARLYSTOP_CAP2_GUARD
+                and np.isfinite(val_cap2)
+                and (epoch + 1 - cap2_best_ep) < CAP2_GUARD_PATIENCE
+                and patience_counter < PATIENCE + CAP2_GUARD_MAX_EXTRA
+            )
+            if cap2_guard_blocks and not cap2_guard_warned:
+                cap2_guard_warned = True
+                print(f"  [早停守卫] val_loss 已平台，但 capture2 于 ep{cap2_best_ep} 仍刷新"
+                      f"（{cap2_best:.2f}%）→ 继续训练，最多再延 {CAP2_GUARD_MAX_EXTRA} epoch")
+
             # ---- 智能早停：LR 已衰减 + train 还在降 + val_loss 也停止下降 → 真过拟合 ----
             # plateau_counter>=PLATEAU_WINDOW 已保证 val_loss 连续 PLATEAU_WINDOW 个 epoch 无新低，
             # 不再看噪声大的 val_rel_err。
             if (plateau_counter >= PLATEAU_WINDOW
                     and epoch + 1 >= PLATEAU_MIN_EPOCHS
                     and lr_decayed
-                    and not plateau_triggered):
+                    and not plateau_triggered
+                    and not cap2_guard_blocks):
                 recent_train = train_loss_history[-PLATEAU_WINDOW:]
                 prev_start = max(0, len(train_loss_history) - 2 * PLATEAU_WINDOW)
                 prev_train = train_loss_history[prev_start:len(train_loss_history) - PLATEAU_WINDOW]
@@ -903,16 +943,25 @@ def main():
                           f"but val_loss stalled {plateau_counter} epochs (best_val_loss={best_val_loss:.4f}), stop.")
                     break
 
-            if patience_counter >= PATIENCE:
+            if patience_counter >= PATIENCE and not cap2_guard_blocks:
                 print(f"Early stopping (val_loss 连续 {PATIENCE} epoch 无改善)")
                 break
 
     # 排序选点优先；fallback 回原 best_model
     rp = os.path.join(OUTPUT_DIR, 'best_rank_model.pt')
+    _bm = os.path.join(OUTPUT_DIR, 'best_model.pt')
     if BEST_RANK_METRIC != 'none' and os.path.exists(rp):
         model.load_state_dict(torch.load(rp))
     else:
-        model.load_state_dict(torch.load(os.path.join(OUTPUT_DIR, 'best_model.pt')))
+        if not os.path.exists(_bm):
+            # 17.3.8 兜底：BEST_MODEL_METRIC='capture2' 时若整趟 capture2 都非有限（例如 val 上
+            # 无 m>=4 的组，或服务器上的 src/utils.py 还没带上 capture2_pct 这个 key），sel 恒为
+            # inf → 一个 epoch 都没落盘 → 原先这里 torch.load 会直接崩，把已训完的权重全废掉。
+            # 明确报出来 + 用当前权重兜住，让整趟 run 的产物（midpoint/SUMMARY）仍可用。
+            torch.save(model.state_dict(), _bm)
+            print(f"  ⚠ best_model.pt 缺失（BEST_MODEL_METRIC={BEST_MODEL_METRIC} 全程无有效值）"
+                  f" → 已用当前 epoch 权重兜底落盘；选点请以 midpoint 为准")
+        model.load_state_dict(torch.load(_bm))
     val_loss, val_rel_err, _, _ = evaluate(model, val_loader, device)
     print(f"Best model on Val: Loss = {val_loss:.4f} | Rel Err = {val_rel_err:.2f}%")
     test_loss, test_rel_err, preds, targets = evaluate(model, test_loader, device)
@@ -965,7 +1014,8 @@ def main():
     #   决策的数据；一旦用它挑 epoch，它就不再是测试集，报出的数变成「N 个候选里最好的那个
     #   在 test 上的成绩」，系统性偏乐观，偏量约等于 epoch 间噪声（实测臂内 1.6~2.7pp，
     #   是臂间差异 0.46pp 的数倍），足以把臂的名次排反。val 本就在承担选点职责
-    #   （best_model.pt 按 val_rel_err、早停按 val_loss），多一项用途不新增污染；且 val 与
+    #   （best_model.pt 按 config.BEST_MODEL_METRIC，当前为 smoothed_rel_err；早停按 val_loss），
+    #   多一项用途不新增污染；且 val 与
     #   test 同为 15% 的 expr 组、规模基本相同，判据噪声不变。选中的 ep 仍**在 test 上报数**
     #   （本块末尾那次 evaluate 不动）→ test 从此才是诚实的成绩单。
     #   分数公式本次**不改**（判据换成两阶段捕获率另出一版，两件事各自可单独验证）。

@@ -27,9 +27,13 @@ RANDOM_SEED = 42
 SPLIT_SEED = 42            # 只控制 train/val/test 切分（固定→测试集不变，可集成）
 TRAIN_SEED = int(os.environ.get('TRAIN_SEED', '42'))   # 只控制模型初始化+训练shuffle（变它→不同模型，同切分）
 
-# best_model 选点指标：val_rel_err / val_loss / smoothed_rel_err(滑动平均去噪)
-# 12.x 实测 smoothed_rel_err(bmsm) 排序全指标最好、无短板 → 设为默认
-BEST_MODEL_METRIC = 'smoothed_rel_err'
+# best_model 选点指标：capture2 / smoothed_rel_err / val_loss / val_rel_err
+# 12.x 实测 smoothed_rel_err(bmsm) 排序全指标最好、无短板 → 曾为默认
+# 17.3.8：改用 capture2（两阶段捕获率，val 上取最大）。理由：它直接对应部署口径
+#   「GNN 出前3 → SPICE 精排 → 取前3内真最优」，且分母是「可改进空间」→ 随 spread 归一、
+#   跨组可比。smoothed_rel_err 属回归误差型（预测准不准），而部署只消费组内变体次序，
+#   两者不是一回事（实测该 score/smoothed 序与 Rust 部署序可反序）。
+BEST_MODEL_METRIC = 'capture2'
 BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 
 # 组内成对排序损失（直接优化「分辨同组变体谁更快」，尤其小幅差异）
@@ -39,6 +43,16 @@ RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序
+
+# 17.3.8 早停守卫：val_loss 平台先到、而 capture2 仍在刷新时，先不停（**只许延后，不许提前**）。
+# 语义是「给早停**增加**一个条件」而非放宽：原 val_loss 条件仍须成立，只是额外要求 capture2
+#   也已平台。动机：早停不改变走过的路，但改变「路有多长」→ 改变候选集（midpoint_ep*.pt 的范围）。
+#   若捕获率的最优点恰好落在最后一个可用中点上，旧的 val_loss 早停就是把它砍掉了。
+# ⚠ 默认 False：42m4(停 ep310)/42b(停 ep269) 的**旧判据**最优点都在中点区间内部，「被截断」
+#   目前没有证据。先做只读复算看清 val 上逐中点的 capture2 曲线，再决定要不要打开这个开关。
+EARLYSTOP_CAP2_GUARD = False   # True = 早停须 val_loss 与 capture2 双平台
+CAP2_GUARD_PATIENCE = 100      # capture2 连续多少 epoch 未刷新最大值算平台（≈2 个 midpoint 间隔）
+CAP2_GUARD_MAX_EXTRA = 200     # 守卫最多额外延长多少 epoch（硬上限，防噪声微升把 run 拖到 EPOCHS）
 
 HUBER_DELTA = 0.3   # 可调整，建议从 0.2 开始尝试
 
