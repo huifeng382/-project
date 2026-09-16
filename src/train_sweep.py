@@ -704,7 +704,8 @@ def main():
     eval_only = os.environ.get('EVAL_ONLY', '')
     if eval_only:
         import glob as _gb
-        test_dyn = test_dataset.dynamic_df.reset_index(drop=True)
+        # 选点数据用 **val**（不是 test）：理由见下方训练内 midpoint 块顶部的 17.3.7 注释。
+        sel_dyn = val_dataset.dynamic_df.reset_index(drop=True)
         if eval_only == 'midpoint':
             mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
             assert mid_files, f"[eval-only] 未找到 midpoint 文件于 {OUTPUT_DIR}"
@@ -715,20 +716,28 @@ def main():
                 except Exception:
                     continue
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
-                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
-                mn = min(len(test_dyn), len(mp_preds))
-                mhi = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2).get('hi_spread', {})
+                _, _, mp_preds, mp_targets = evaluate(model, val_loader, device)
+                mn = min(len(sel_dyn), len(mp_preds))
+                mrk = ranking_metrics(sel_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2)
+                # 选点量 = 两阶段捕获率，取**全组**均值（不是 hi_spread 子集）。详见训练内 midpoint 块注释。
+                score = mrk.get('capture2_pct', float('nan'))
+                mhi = mrk.get('hi_spread', {})
                 mrec = mhi.get('recall_at_k', {})
                 mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
                 mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
-                # 粗筛定位（15.3.x）：recall 是最重要指标 → 选点分数由 recall@3 主导（原 regret 主导）
-                score = (mr3 * 100 * 1.0 + mr2 * 100 * 0.5 + mhi.get('spearman', 0.0) * 0.3
-                         + (-mhi.get('regret_pct', 100.0)) * 0.2 + mhi.get('captured_pct', 0.0) * 0.1)
-                print(f"[eval-only] ep{ep_num}: regret={mhi.get('regret_pct', 100.0):.2f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
-                if score > best_score:
+                # 其余量仅作诊断打印（不再进 score），便于与历史日志逐列对读
+                print(f"[eval-only] ep{ep_num}(val): cap2={score:6.2f}%  "
+                      f"| 诊断: regret={mhi.get('regret_pct', 100.0):.2f}% "
+                      f"sp={mhi.get('spearman', 0.0):.3f} r2={mr2*100:.1f}% r3={mr3*100:.1f}%")
+                # NaN = 该 epoch 在 val 上没有任何 m>=4 的组（不可统计）→ 不参与选点
+                if not np.isnan(score) and score > best_score:
                     best_score, best_ep = score, ep_num
+            if best_ep is None:
+                # 这条路径是显式的诊断性重生成（会覆写 test_predictions.npz）→ 直接失败，
+                # 绝不带着错误 ckpt 落盘 npz
+                raise RuntimeError("[eval-only] 所有 midpoint 在 val 上的 capture2 均为 NaN（无 m>=4 组）→ 无法选点")
             ckpt = os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt')
-            print(f"[eval-only] best midpoint ep{best_ep} (score={best_score:.2f})")
+            print(f"[eval-only] best midpoint ep{best_ep} (capture2={best_score:.2f}%, 选于 val)")
         elif eval_only == 'best':
             ckpt = os.path.join(OUTPUT_DIR, 'best_model.pt')
         else:
@@ -952,21 +961,39 @@ def main():
                 print(f"  {label}: n={mask.sum():,}  mean_err={np.mean(err):.1f}%")
 
     # ---------- 中途快照回溯（训练已完成，不影响 RNG）----------
+    # 17.3.7：选点在 **val** 上做（原来在 test 上）。理由——test 是整条链上唯一没参与过任何
+    #   决策的数据；一旦用它挑 epoch，它就不再是测试集，报出的数变成「N 个候选里最好的那个
+    #   在 test 上的成绩」，系统性偏乐观，偏量约等于 epoch 间噪声（实测臂内 1.6~2.7pp，
+    #   是臂间差异 0.46pp 的数倍），足以把臂的名次排反。val 本就在承担选点职责
+    #   （best_model.pt 按 val_rel_err、早停按 val_loss），多一项用途不新增污染；且 val 与
+    #   test 同为 15% 的 expr 组、规模基本相同，判据噪声不变。选中的 ep 仍**在 test 上报数**
+    #   （本块末尾那次 evaluate 不动）→ test 从此才是诚实的成绩单。
+    #   分数公式本次**不改**（判据换成两阶段捕获率另出一版，两件事各自可单独验证）。
     orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
     mid_epoch = None
     if SAVE_MIDPOINTS:
         import glob as _gb
         mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
         if mid_files:
-            print("\n------- Midpoint Comparison (weighted score) -------")
+            # 注意：不能用外层的 test_dyn —— 它下面还要给 SUMMARY/per-corner/per-batch 用
+            sel_dyn = val_dataset.dynamic_df.reset_index(drop=True)
+            print("\n------- Midpoint Comparison (weighted score, 选于 val) -------")
             best_ep, best_score = None, -float('inf')
             for mf in mid_files:
                 try: ep_num=int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
                 except: continue
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
-                _, _, mp_preds, mp_targets = evaluate(model, test_loader, device)
-                mn = min(len(test_dyn), len(mp_preds))
-                mrk = ranking_metrics(test_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2)
+                _, _, mp_preds, mp_targets = evaluate(model, val_loader, device)
+                mn = min(len(sel_dyn), len(mp_preds))
+                mrk = ranking_metrics(sel_dyn.iloc[:mn], mp_preds[:mn], mp_targets[:mn], avg_delay=USE_V2)
+                # 选点量 = 两阶段捕获率，取**全组**均值（不是 hi_spread 子集）。
+                # 17.3.7 换判据：原 score（100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap，recall@3 主导）
+                #   弃用 —— 实测该 score 序与 Rust 部署序 Spearman = −1（42b 五点完全反序）；
+                #   且 recall@3 是离散量、hi_spread 分档本是「遗憾未按 spread 归一」时代的补丁。
+                # 两阶段捕获率 = (真最差 − 前3内真最优) / (真最差 − 真最优)：分母 = 可改进空间
+                #   → 随 spread 归一、跨组可比，且逐字对应预留管线「GNN 前3 → SPICE 精排 → 取前3内真最优」。
+                # ⚠ 与两阶段遗憾单调对应：regret_2stage = (1 − capture2) × spread → 勿两者并用。
+                score = mrk.get('capture2_pct', float('nan'))
                 mhi = mrk.get('hi_spread', {})
                 mr = mhi.get('regret_pct', 100.0)
                 ms = mhi.get('spearman', 0.0)
@@ -974,13 +1001,19 @@ def main():
                 mrec = mhi.get('recall_at_k', {})
                 mr2 = mrec.get(2, {}).get('strict', {}).get('hit_pct', 0.0)
                 mr3 = mrec.get(3, {}).get('strict', {}).get('hit_pct', 0.0)
-                # 粗筛定位（15.3.x）：recall 最重要 → recall@3 主导选点（原 regret 主导）
-                score = (mr3 * 100 * 1.0) + (mr2 * 100 * 0.5) + (ms * 0.3) + (-mr * 0.2) + (mc * 0.1)
-                print(f"  ep{ep_num:>4d}: regret={mr:.2f}% sp={ms:.3f} cap={mc:.1f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}% score={score:.2f}")
-                if score > best_score:
+                # 其余量仅作诊断打印（不再进 score），便于与历史日志逐列对读
+                print(f"  ep{ep_num:>4d}: cap2={score:6.2f}%  | 诊断: regret={mr:.2f}% sp={ms:.3f} "
+                      f"cap={mc:.1f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}%")
+                # NaN = 该 epoch 在 val 上没有任何 m>=4 的组（不可统计）→ 不参与选点
+                if not np.isnan(score) and score > best_score:
                     best_score, best_ep = score, ep_num
-            if best_ep is not None:
-                print(f"  >>> Best midpoint: ep{best_ep} (score={best_score:.2f})")
+            if best_ep is None:
+                # 全部 epoch 不可统计 → 明确喊出来，不要静默退回（历史踩过「SUMMARY 显示 midpoint
+                # 而 npz 存的是 best_model.pt」的不一致，别让它以新形式重演）。此处不抛异常：
+                # 模型已训完、checkpoint 均已落盘，抛了会连带丢掉 SUMMARY。
+                print("  ⚠ 所有 midpoint 的 val capture2 均为 NaN（无 m>=4 组）→ 未选点，沿用 best_model.pt")
+            else:
+                print(f"  >>> Best midpoint: ep{best_ep} (capture2={best_score:.2f}%, 选于 val)")
                 mid_epoch = best_ep
                 model.load_state_dict(torch.load(
                     os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),
