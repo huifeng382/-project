@@ -4,13 +4,38 @@
   eval_idx=N, iter=I, window=W, gnn_pred=..., true_delay=...[, transistors=...][, gnn_pred2=...]
 第二列 gnn_pred2 由 Rust 侧 env GNN_PORT2 启用（同一次 run 并排记录第二个模型）；
 **缺列时本脚本输出与旧版完全一致**，多出的是文末「两列并排 A/B」一节。
-统计单位：每个 (电路, window) 的候选集（GNN 与 SPICE 都成功的候选 ≥4 才算）。
+
+统计单位（17.3.9 起默认 = --group-by batch）：
+  每个 (电路, iter, window_try) 的候选集 —— **即 tl_opt.rs 的 pre_rank 收到的那一批**。
+  为什么这是唯一正确的口径（三处源码证据）：
+  ① gnn_pred 是**批内平均秩**而非延迟：serve.py predict_rank_batch 在 n>=2 时做
+     competition ranking（1-based、并列取平均秩），n==1 时才写原始延迟（~1e-11），
+     两者塞进同一个 avg_delay 字段 → 跨批的 gnn_pred **不在同一把尺子上**。
+  ② GNN 的「集合」= pre_rank 收到的 mods = 某一个 (轮次, 窗口) 的全部候选：
+     tl_opt.rs Pass2 `evaluator.pre_rank(&mods, eval_idx)`，mods 来自 prepared，而
+     prepared 在 Pass3 被 `for .. in prepared` 移动消费 → 每个窗口迭代重建。
+  ③ CSV 的 window 列 = window_try_idx（gnn_shadow.rs 的 format 串），是
+     0..neighbor_retries 的**重试计数器、每轮从 0 重数**；iter 列 = total_iters
+     （tl_opt.rs 的 `while total_iters < max_iters`）。两者都是计数器 →
+     同一个 (电路, window_try) 必然横跨多轮。
+
+  旧口径 --group-by window = 每个 (电路, window_try) 的池化集【仅用于复现 17.3.9 之前的数】。
+  它把 ~6.7 个批池在一起，而每批恰有一个候选秩=1.0 → 池化后大量候选并列在 1.0；
+  per_window_metrics 用 argsort(kind="stable")、且行序已按 eval_idx 升序定序 →
+  「GNN 前3」实为**最早那 3 批各自的第 1 名**，故其 recall/遗憾不是部署性能。
+  同理，本文件各条守卫（量纲混合 / 兜底窗口 / 并列影响面）都预设「集 = 一次 pre_rank 的批」，
+  池化会破坏该前提 → window 模式下这几行读数不可信（脚本会在该处显式警告）。
 
 用法（server 端）：
-  ~/venv/bin/python3 scripts/diag/_shadow_analyze.py [--min-cands 4]
+  ~/venv/bin/python3 scripts/diag/_shadow_analyze.py [--min-cands 4] [--group-by batch|window]
 """
 import argparse, glob, hashlib, os, re, shutil, statistics, subprocess, sys, time
 import numpy as np
+
+# 17.3.9 附带：本文件有 ✅/❌/⚠ 等非 GBK 字符，Windows 下（默认 GBK）必然 UnicodeEncodeError。
+# 服务器（Linux/UTF-8）是 no-op，输出不变；加它是为了让本脚本**能本地跑**（本地即可验证口径）。
+sys.stdout.reconfigure(encoding="utf-8")
+sys.stderr.reconfigure(encoding="utf-8")
 
 CSV_RE = re.compile(
     r"eval_idx=(\d+), iter=(\d+), window=(\d+), gnn_pred=([0-9.eE+-]+|nan), "
@@ -208,9 +233,22 @@ def main():
     ap.add_argument("--min-cands", type=int, default=4, help="候选集最少候选数（10.3 要求 ≥4）")
     ap.add_argument("--root", default=os.path.expanduser("~/NetlistOpt/temp_sim_test/tl_opt_batch"),
                     help="批量输出根目录")
+    # 17.3.9: 分组键。默认 batch = 部署真口径（见文件头「统计单位」三条源码证据）。
+    ap.add_argument("--group-by", choices=("batch", "window"), default="batch",
+                    help="候选集分组键：batch=(电路,iter,window_try)=pre_rank 的单批（部署真口径，默认）；"
+                         "window=(电路,window_try)=跨轮池化（仅用于复现 17.3.9 之前的数）")
+    ap.add_argument("--detail-max", type=int, default=30,
+                    help="文末逐集明细最多列几集（按遗憾降序，列最差的；0=全列）")
     args = ap.parse_args()
 
     run_stamp(args.root)
+    print(f"候选集分组键: --group-by {args.group_by}  " + (
+        "(电路, iter, window_try) = 一次 pre_rank 的批【部署真口径】"
+        if args.group_by == "batch" else
+        "(电路, window_try) = 跨轮池化【历史口径，仅供复现 17.3.9 之前的数】"))
+    if args.group_by == "window":
+        print("  ⚠ 历史口径把 ~6.7 个批池在一起，而 gnn_pred 是批内秩、跨批不可比 →"
+              "「GNN 前3」实为最早 3 批各自的第 1 名；下面的数不是部署性能。")
 
     sets = []          # 全部候选集（≥min-cands）
     ab_sets = []       # 两列并排：**同一批行、同一候选集**上分别用两列各算一遍
@@ -218,9 +256,14 @@ def main():
     ok_rows = 0; fail_rows = 0
     c2_rows = 0                       # 文本上带第二列的行数
     ab_dropped_sets = 0               # 主口径合格、但因第二列 NaN 落掉的集
+    # 17.3.9: 分组键 —— batch = (iter, window_try) = 一次 pre_rank 的批（部署真口径）；
+    #   window = 历史口径，池化跨轮的批，仅供复现旧数。见文件头「统计单位」。
+    def _group_key(r):
+        return (r["iter"], r["window"]) if args.group_by == "batch" else (None, r["window"])
+
     for csvp in sorted(glob.glob(os.path.join(args.root, "*", "*", "gnn_shadow.csv"))):
         circ = os.path.relpath(csvp, args.root)
-        by_window = {}
+        by_key = {}
         with open(csvp) as f:
             for line in f:
                 r = parse_row(line)
@@ -232,8 +275,9 @@ def main():
                 ok_rows += 1
                 if r["c2"]:
                     c2_rows += 1
-                by_window.setdefault(r["window"], []).append(r)
-        for w, rows in by_window.items():
+                by_key.setdefault(_group_key(r), []).append(r)
+        for key, rows in by_key.items():
+            it_idx, w = key
             # 同 window 内按 eval_idx 去重（同一候选可能被缓存复用？以 eval_idx 唯一为准）
             seen = {}
             for r in rows:
@@ -259,7 +303,7 @@ def main():
             m = per_window_metrics(rows)
             if m is None:
                 continue
-            m["circuit"] = circ; m["window"] = w
+            m["circuit"] = circ; m["window"] = w; m["iter"] = it_idx
             sets.append(m)
             # —— 第二列：只用**两列都非 NaN**的行，两个模型跑在同一行集上 ——
             # 这样 A/B 是严格同分母的配对比较；被 NaN 挤掉的集单独计数上报，不静默消失。
@@ -274,7 +318,7 @@ def main():
                     ab_dropped_sets += 1
                     continue
                 for mm in (a, b):
-                    mm["circuit"] = circ; mm["window"] = w
+                    mm["circuit"] = circ; mm["window"] = w; mm["iter"] = it_idx
                 ab_sets.append((a, b))
 
     if not sets:
@@ -292,7 +336,11 @@ def main():
     r2st = [s["regret_2stage"] for s in sets]
     c2s = [s["capture2"] for s in sets if not np.isnan(s["capture2"])]
 
-    print(f"候选集数（≥{args.min_cands} 候选）: {len(sets)}   成功行={ok_rows} 失败行={fail_rows} 小集={small_sets}")
+    print(f"候选集数（≥{args.min_cands} 候选）: {len(sets)}   成功行={ok_rows} 失败行={fail_rows} 小集={small_sets}"
+          f"   [--group-by {args.group_by}]")
+    if args.group_by == "batch":
+        print(f"  （batch 口径下小集天然多：多数批只提 1~3 个候选 → 不足 {args.min_cands} 个的被滤掉；"
+              f"它们正是「候选太少、无需 GNN 粗筛」的那部分，不构成 recall 的分母）")
     print(f"候选数分布: min={min(n_cands)} med={statistics.median(n_cands):.0f} max={max(n_cands)}")
     print(f"\n=== recall 判断标准（k=2/3 双口径，粗筛最重要指标）===")
     print(f"  前k名中出现实际第1名（严格）:  k=2 {statistics.mean(r2s)*100:6.1f}%   k=3 {statistics.mean(r3s)*100:6.1f}%")
@@ -356,6 +404,11 @@ def main():
           f"{'✅ 无' if n_mix == 0 else '❌ 有 → 该集排序不可信，先查 serve 预排序缓存命中'}")
     print(f"  兜底窗口（整集 gnn_pred 都是原始延迟，非秩）:             {n_raw}/{len(sets)} 集 "
           f"{'✅ 无（全走秩聚合）' if n_raw == 0 else '⚠ 该批 serve 预排序整窗未命中；集内排序仍有效，但分数分辨率受 CSV 的 7 位有效数字限制'}")
+    if args.group_by == "window":
+        print("  ⚠ 以上并列/一致性诊断在 --group-by window（跨轮池化）下**前提被破坏**："
+              "各条守卫都假定「集 = 一次 pre_rank 的批」（见 per_window_metrics 里「量纲混合守卫」"
+              "「兜底窗口识别」两段原注，以及 main 里 rows.sort 那段「pre_rank→evaluate 是同一批 prepared」），"
+              "池化把不同批的秩与 n==1 批的原始延迟混进同一集 → 读数仅作对照，不作判据。")
     if hi:
         h_dup = sum(1 for s in hi if s["dup_true"] > 0)
         h_tie = sum(1 for s in hi if s["tie_g_k3"])
@@ -413,11 +466,17 @@ def main():
         print("  ↑ 两模型的 true_delay 列完全相同（GNN 是纯观察者，仿真轨迹与模型无关），"
               "故这里比的是**同一批候选上的排序质量**，差异只来自模型本身")
 
-    # 明细：按遗憾排序列出每集
-    print("\n=== 每候选集明细（按遗憾升序；#1∈前k=严格, 前k∩真前k=宽松）===")
-    for s in sorted(sets, key=lambda x: x["regret"]):
+    # 明细：按遗憾**降序**列出每集（17.3.9：batch 口径下集数可达数百，故默认只列最差的几集）
+    srt = sorted(sets, key=lambda x: -x["regret"])
+    shown = srt if (args.detail_max <= 0 or len(srt) <= args.detail_max) else srt[:args.detail_max]
+    print("\n=== 每候选集明细（按遗憾降序；#1∈前k=严格, 前k∩真前k=宽松）===")
+    if len(shown) < len(srt):
+        print(f"  （只列遗憾最大的 {len(shown)}/{len(srt)} 集；--detail-max 0 可列全部）")
+    for s in shown:
         sps = f"{s['spearman']:.2f}" if s["spearman"] is not None else "-"
-        print(f"  {s['circuit']:45s} w={s['window']:3d} n={s['n']:2d} "
+        wid = (f"it={s['iter']:3d} w={s['window']:2d}" if s["iter"] is not None
+               else f"w={s['window']:2d}       ")
+        print(f"  {s['circuit']:45s} {wid} n={s['n']:2d} "
               f"#1∈前2={'Y' if s['recall2_strict'] else 'n'} 前2∩真={ 'Y' if s['recall2_len'] else 'n'} "
               f"#1∈前3={'Y' if s['recall3_strict'] else 'n'} 前3∩真={ 'Y' if s['recall3_len'] else 'n'} "
               f"regret={s['regret']*100:7.2f}% 2stage={s['regret_2stage']*100:6.2f}% "
