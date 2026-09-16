@@ -89,6 +89,8 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
     wc = df.groupby(['_expr', 'corner', 'circuit_id']).agg(
         pred=('_pred', _agg), true=('_true', _agg)).reset_index()
     sps, regrets, top1s, spreads, captured = [], [], [], [], []
+    # 两阶段捕获率（统一口径，见下方 group 循环内注释）：spread 归一 + 对应「前3→精排」管线
+    cap2 = []
     recA = {2: [], 3: []}; recB = {2: [], 3: []}   # recall@K: A=真#1进前K, B=前K有真前K之一(只统计非平凡组 size>=K+1)
     bins = [(0.0, 0.02), (0.02, 0.05), (0.05, 0.10), (0.10, np.inf)]
     labels = ['<2%', '2-5%', '5-10%', '>10%']
@@ -124,6 +126,20 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
                 else:
                     recA[K].append(float('nan'))
                     recB[K].append(float('nan'))
+            # —— 两阶段捕获率（部署口径统一量）——
+            # 语义：GNN 排序出前3 → SPICE 精排 → 取前3内真最优，看它拿回了「可改进空间」的几成。
+            #   分子 = tr[worst] - min(tr[前3])，即「距最差还差多少」；
+            #   分母 = tr[worst] - tr[best]   = 该组可改进的总空间。
+            # 为什么不用 regret：regret 以 tr[best] 为分母（相对最优的百分比），**不随 spread 归一**
+            #   → spread 5% 的组里 2% 遗憾意味着几乎全丢，spread 50% 的组里 2% 则微不足道，
+            #     逐组取均值时被 spread 分布直接扭曲（跨组不可比）。本量以「可改进空间」为分母，天然免疫。
+            #   这也是下面 hi_spread(spread>10%) 分档存在的根因——分档是不归一时代的补丁。
+            # 非平凡性：组内候选数 m<=3 时「前3」= 全组 → 分子分母同为最差-最优 → 恒 100%，
+            #   故与 recall@3 同采 m>=4 才算（m<4 记 NaN，由 _m() 过滤）。
+            if m >= 4:
+                cap2.append((tr[worst] - tr[ord_pred[:3]].min()) / rng * 100)
+            else:
+                cap2.append(float('nan'))
         # 成对分辨（按真实相对差分档）
         m = len(tr)
         for i in range(m):
@@ -143,6 +159,7 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
     # spread 分档（>10% 高差异组 vs 其余）：模型在这两组上的排序能力是否不同
     hi_sps, hi_reg, hi_t1, hi_cap = [], [], [], []
     lo_sps, lo_reg, lo_t1, lo_cap = [], [], [], []
+    hi_cap2, lo_cap2 = [], []
     hi_recA = {2: [], 3: []}; hi_recB = {2: [], 3: []}
     lo_recA = {2: [], 3: []}; lo_recB = {2: [], 3: []}
     for i in range(len(spreads)):
@@ -152,6 +169,7 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
         (hi_reg if hi else lo_reg).append(regrets[i] if i < len(regrets) else float('nan'))
         (hi_t1 if hi else lo_t1).append(top1s[i] if i < len(top1s) else float('nan'))
         (hi_cap if hi else lo_cap).append(captured[i] if i < len(captured) else float('nan'))
+        (hi_cap2 if hi else lo_cap2).append(cap2[i] if i < len(cap2) else float('nan'))
         for K in recA:
             if not np.isnan(recA[K][i]):
                 (hi_recA[K] if hi else lo_recA[K]).append(recA[K][i])
@@ -175,10 +193,13 @@ def ranking_metrics(test_dyn, preds, targets, avg_delay=False):
         'top1_acc': float(np.mean(top1s)) if top1s else float('nan'),
         'spread_pct': float(np.median(spreads)) if spreads else float('nan'),
         'captured_pct': float(np.mean(captured)) if captured else float('nan'),
+        # 注意用 _m() 而非 np.mean：m<4 的组记的是 NaN，必须过滤（同理 hi_spread 那份）
+        'capture2_pct': _m(cap2),
         'pair_acc': pair_acc,
         'recall_at_k': _recall(recA, recB),
         'hi_spread': {'n': len(hi_sps), 'spearman': _m(hi_sps), 'regret_pct': _m(hi_reg),
                       'top1_acc': _m(hi_t1), 'captured_pct': _m(hi_cap),
+                      'capture2_pct': _m(hi_cap2),
                       'recall_at_k': _recall(hi_recA, hi_recB)},
     }
 

@@ -69,9 +69,25 @@ def per_window_metrics(rows, key="gnn"):
     # 宽松（预测前k 含 实际前k 之一，出现一个就算）：k=2、k=3
     recall2_len = 1.0 if (top2_g & top2_t) else 0.0
     recall3_len = 1.0 if (top3_g & top3_t) else 0.0
+    # ⚠ 域依赖（与训练侧的已知差异，2026-09-16 核对）：训练侧 utils.ranking_metrics 的 recall@K
+    #   带「非平凡组 m >= K+1 才算」约束（否则 top-K=全组、恒命中，记 NaN）；**本函数没有这条**。
+    #   它靠 main 里 `len(rows) < args.min_cands`（默认 4）在聚合前把小集滤掉来保证与训练侧同域 ——
+    #   也就是说「本函数的 recall 能与训练侧对读」是**管线不变量**，不是函数自身性质。
+    #   若有人用 --min-cands 2/3 跑，n<=3 的集会被记成必命中、把读数抬高。
+    #   （本文件新增的 capture2 不依赖此约定：它自带 n>=4 守卫，见 per_window_metrics 内注释。）
     # 两阶段最终遗憾：GNN 前3 → SPICE 精排 → 选前3内真最优（真#1 在则 = 0）
     top3_true_best = true[order_g[: min(3, n)]].min()
     regret_2stage = (top3_true_best - true_best) / true_best
+    # 两阶段捕获率（**与训练侧 src/utils.py 的 cap2 同一公式，两侧统一口径**）：
+    #   (真最差 − 前3内真最优) / (真最差 − 真最优)
+    # 分母是「可改进空间」而不是真最优 → **随 spread 归一**，跨集可比。regret 以真最优为分母，
+    # 不具此性质：spread 5% 的集里 2% 遗憾 = 几乎全丢，spread 50% 的集里 2% 则微不足道，
+    # 逐集取均值会被 spread 分布直接扭曲。本量量的就是「该拿的拿到了几成」。
+    # 非平凡性：n<=3 时「前3」= 全集 → 恒 100%，故与 recall@3 同采 n>=4 才算（否则记 NaN）。
+    # ⚠ 标度：本侧记**分数**(0~1)以配合下面 {:.1%}/{:.2%} 格式；训练侧同式记**百分数**。
+    _cap2_rng = true[order_t[-1]] - true_best
+    capture2 = (((true[order_t[-1]] - top3_true_best) / _cap2_rng)
+                if (n >= 4 and _cap2_rng > 0) else float("nan"))
     # Spearman（n>=3 才可靠，n=2 时退化为 ±1，不统计）
     if n >= 3:
         rg = np.empty(n); rt = np.empty(n)
@@ -104,6 +120,7 @@ def per_window_metrics(rows, key="gnn"):
             "recall2_strict": recall2_strict, "recall3_strict": recall3_strict,
             "recall2_len": recall2_len, "recall3_len": recall3_len,
             "regret_2stage": regret_2stage,
+            "capture2": capture2,
             "dup_true": dup_true, "dup_g": dup_g, "tie_g_k3": tie_g_k3,
             "mixed": mixed, "raw_mode": raw_mode}
 
@@ -273,6 +290,7 @@ def main():
     r2l = [s["recall2_len"] for s in sets]
     r3l = [s["recall3_len"] for s in sets]
     r2st = [s["regret_2stage"] for s in sets]
+    c2s = [s["capture2"] for s in sets if not np.isnan(s["capture2"])]
 
     print(f"候选集数（≥{args.min_cands} 候选）: {len(sets)}   成功行={ok_rows} 失败行={fail_rows} 小集={small_sets}")
     print(f"候选数分布: min={min(n_cands)} med={statistics.median(n_cands):.0f} max={max(n_cands)}")
@@ -284,6 +302,9 @@ def main():
           f"中位 {statistics.median(rg)*100:.2f}%")
     print(f"  两阶段最终遗憾（前3→SPICE精排）: {statistics.mean(r2st)*100:6.2f}%   "
           f"中位 {statistics.median(r2st)*100:.2f}%")
+    if c2s:
+        print(f"  两阶段捕获率（前3→精排，spread 归一，越高越好）: {statistics.mean(c2s)*100:6.2f}%   "
+              f"中位 {statistics.median(c2s)*100:.2f}%  (n={len(c2s)}/{len(sets)} 集，需 n>=4 候选)")
     if sp:
         print(f"  Spearman:       {statistics.mean(sp):6.3f}   (次判据 ≥0.6)   "
               f"中位 {statistics.median(sp):.3f}  (n={len(sp)} 集)")
@@ -307,11 +328,15 @@ def main():
         hr2l = [s["recall2_len"] for s in hi]
         hr3l = [s["recall3_len"] for s in hi]
         hr2st = [s["regret_2stage"] for s in hi]
+        hc2 = [s["capture2"] for s in hi if not np.isnan(s["capture2"])]
         print(f"\n=== 跨度>10% 子集（{len(hi)}/{len(sets)} 集，对齐 V2 hi_spread）===")
         print(f"  严格(实际第1∈预测前k):  k=2 {statistics.mean(hr2s)*100:6.1f}%   k=3 {statistics.mean(hr3s)*100:6.1f}%")
         print(f"  宽松(前k含实际前k之一): k=2 {statistics.mean(hr2l)*100:6.1f}%   k=3 {statistics.mean(hr3l)*100:6.1f}%")
         print(f"  两阶段最终遗憾: {statistics.mean(hr2st)*100:6.2f}%   "
               f"选择遗憾(GNN自选): {statistics.mean(hrg)*100:6.2f}%   Spearman: {statistics.mean(hsp):.3f} (n={len(hsp)})")
+        if hc2:
+            print(f"  两阶段捕获率: {statistics.mean(hc2)*100:6.2f}%   "
+                  f"中位 {statistics.median(hc2)*100:.2f}%  (n={len(hc2)}/{len(hi)} 集)")
     else:
         print("\n（无跨度>10% 的候选集）")
 
@@ -375,6 +400,7 @@ def main():
         line("宽松 k=3", "recall3_len", "{:.1%}", lower=False)
         line("选择遗憾（越低越好）", "regret", "{:.2%}", lower=True)
         line("两阶段最终遗憾", "regret_2stage", "{:.2%}", lower=True)
+        line("两阶段捕获率（越高越好）", "capture2", "{:.1%}", lower=False)
         line("Spearman（越高越好）", "spearman", "{:.3f}", lower=False)
         ab_hi = [(a, b) for a, b in ab_sets if a["spread_pct"] > 10.0]
         if ab_hi:
@@ -394,7 +420,8 @@ def main():
         print(f"  {s['circuit']:45s} w={s['window']:3d} n={s['n']:2d} "
               f"#1∈前2={'Y' if s['recall2_strict'] else 'n'} 前2∩真={ 'Y' if s['recall2_len'] else 'n'} "
               f"#1∈前3={'Y' if s['recall3_strict'] else 'n'} 前3∩真={ 'Y' if s['recall3_len'] else 'n'} "
-              f"regret={s['regret']*100:7.2f}% 2stage={s['regret_2stage']*100:6.2f}% sp={sps}")
+              f"regret={s['regret']*100:7.2f}% 2stage={s['regret_2stage']*100:6.2f}% "
+              f"cap2={s['capture2']*100:6.2f}% sp={sps}")
 
 if __name__ == "__main__":
     main()
