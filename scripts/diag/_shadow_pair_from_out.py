@@ -154,6 +154,79 @@ def boot_ci(d, n_boot=20000, seed=0):
     return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
 
 
+# —— n 分层 ——
+# 为什么必须分层：① 口径是**逐集等权**，一个 n=272 的巨池和一个 n=4 的小集同权；
+# 而 严格@3 的随机基线是 3/n（n=4 → 75%，n=272 → 1.1%），把两者混在一个均值里
+# 等于拿不同难度的题算同一个分数。真正可跨集比的是**超出随机基线的部分**。
+BAND_EDGES = [5, 10, 30, 100]
+
+
+def band_labels():
+    labs = [f"n<={BAND_EDGES[0]}"]
+    labs += [f"{a + 1}-{b}" for a, b in zip(BAND_EDGES, BAND_EDGES[1:])]
+    labs.append(f"n>{BAND_EDGES[-1]}")
+    return labs
+
+
+def band_idx(n):
+    for i, e in enumerate(BAND_EDGES):
+        if n <= e:
+            return i
+    return len(BAND_EDGES)
+
+
+def strat(common, ref, tgt):
+    """n 分层 + 候选加权口径 + Δ 集中度。② 的教训：只看均值会被少数集骗。"""
+    N = len(common)
+    ns = np.array([ref[k]['n'] for k in common], float)
+    ar = np.array([ref[k]['regret'] for k in common])
+    br = np.array([tgt[k]['regret'] for k in common])
+    dd = br - ar
+
+    print(f"\n  ── n 分层：Δ 对总均值的**贡献**分解（{N} 集；各带贡献之和 = 上面的 Δ 均值）──")
+    print(f"  {'带':>8} {'集数':>5} {'A遗憾':>8} {'B遗憾':>8} {'Δ带内':>8} {'Δ贡献':>8}"
+          f" {'A严格':>7} {'基线':>6} {'A超出':>7} {'B严格':>7} {'B超出':>7} {'净翻转':>6}")
+    tot = 0.0
+    for i, lab in enumerate(band_labels()):
+        ks = [k for k in common if band_idx(ref[k]['n']) == i]
+        if not ks:
+            continue
+        bar = np.mean([ref[k]['regret'] for k in ks])
+        bbr = np.mean([tgt[k]['regret'] for k in ks])
+        contrib = sum(tgt[k]['regret'] - ref[k]['regret'] for k in ks) / N
+        tot += contrib
+        base = np.mean([base_strict3(ref[k]['n']) for k in ks])
+        a3 = np.mean([ref[k]['s3'] for k in ks])
+        b3 = np.mean([tgt[k]['s3'] for k in ks])
+        net = (sum(1 for k in ks if tgt[k]['s3'] and not ref[k]['s3'])
+               - sum(1 for k in ks if ref[k]['s3'] and not tgt[k]['s3']))
+        print(f"  {lab:>8} {len(ks):5d} {bar:8.3%} {bbr:8.3%} {bbr - bar:+8.3%} {contrib:+8.3%}"
+              f" {a3:7.2%} {base:6.2%} {a3 - base:+7.2%} {b3:7.2%} {b3 - base:+7.2%} {net:+6d}")
+    print(f"  {'合计':>8} {N:5d} {'':>8} {'':>8} {'':>8} {tot:+8.3%}   ← 应等于 Δ 均值")
+    print("  ⚠ 「A超出/B超出」= 该带 严格@3 减去该带**按 n 加权的随机基线**（n≤4 → 75%）。"
+          "raw 严格@3 跨带不可比，超出量才可比。")
+
+    print(f"\n  ── n 加权口径（大候选池权重更高；① 口径是逐集等权）──")
+    print(f"  逐集等权:   A {ar.mean():7.3%}  B {br.mean():7.3%}  Δ {dd.mean():+7.3%}")
+    print(f"  按候选加权: A {(ar * ns).sum() / ns.sum():7.3%}  B {(br * ns).sum() / ns.sum():7.3%}"
+          f"  Δ {((br - ar) * ns).sum() / ns.sum():+7.3%}")
+    for thr in (100, 30):
+        m = ns <= thr
+        if 0 < m.sum() < N:
+            print(f"  剔除 n>{thr:3d}（去掉 {N - m.sum()} 集，剩 {m.sum()}）: "
+                  f"A {ar[m].mean():7.3%}  B {br[m].mean():7.3%}  Δ {dd[m].mean():+7.3%}")
+
+    tot_abs = np.abs(dd).sum()
+    order = np.argsort(-np.abs(dd))
+    print(f"\n  ── Δ 集中度：多少集扛起了整个 Δ（|Δ| 合计 {tot_abs / N:.3%}）──")
+    for k in (1, 3, 5, 10, 20):
+        if k < N and tot_abs > 0:
+            print(f"  前 {k:2d} 集占 |Δ| 的 {np.abs(dd[order[:k]]).sum() / tot_abs:6.1%}"
+                  f"   去掉它们后 Δ 均值 = {np.delete(dd, order[:k]).mean():+7.3%}"
+                  f"   （{N - k} 集）")
+    print("  ⚠ 若「去掉前 5 集」后 Δ 就趋 0，则这个 Δ 是**少数集**的现象，不是普遍位移 —— 不可当作选点依据。")
+
+
 def nhist(recs, label):
     ns = sorted(r['n'] for r in recs.values())
     print(f"\n=== n 直方图（{label}，{len(ns)} 集）===")
@@ -171,7 +244,7 @@ def nhist(recs, label):
           "上面这个加权基线已把它的贡献算进去")
 
 
-def compare(ref_path, tgt_path, topk):
+def compare(ref_path, tgt_path, topk, do_strat=False):
     m_ref, ref = parse(ref_path)
     m_tgt, tgt = parse(tgt_path)
     nr, nt = len(ref), len(tgt)
@@ -219,6 +292,7 @@ def compare(ref_path, tgt_path, topk):
     print(f"  ⚠ 逐集遗憾按 0.01% 打印 → 低于该粒度的真实差看不出（会记成打平）")
 
     # —— 严格 / 宽松 recall（逐集 0/1 翻转）——
+    BASE_FN = {'s3': base_strict3, 'l3': base_loose3}
     for k, tag in (('s3', '严格@3'), ('l3', '宽松@3'), ('s2', '严格@2'), ('l2', '宽松@2')):
         a = [ref[x][k] for x in common]
         b = [tgt[x][k] for x in common]
@@ -229,6 +303,11 @@ def compare(ref_path, tgt_path, topk):
         print(f"  逐集翻转: B 由不中→中 {up} 集 / 由中→不中 {dn} 集"
               f"   净 {up - dn:+d} 集 = {(up - dn) / len(common):+.2%}"
               f"   （McNemar 精确双侧 p = {binom_two_sided(up, dn):.4f}）")
+        if k in BASE_FN:
+            # raw 值受 n 构成支配（3/n 基线随 n 剧变）→ 必须同时给"超出随机基线"的量
+            bs = np.mean([BASE_FN[k](ref[x]['n']) for x in common])
+            print(f"  随机基线（按本批 n 加权）= {bs:6.2%}   → A 超出机会 {np.mean(a) - bs:+.2%}"
+                  f"，B 超出机会 {np.mean(b) - bs:+.2%}   （Δ超出 = {(np.mean(b) - np.mean(a)):+.2%}）")
 
     # —— 两阶段 ——
     d2 = [tgt[k]['stage'] - ref[k]['stage'] for k in common]
@@ -237,6 +316,10 @@ def compare(ref_path, tgt_path, topk):
     print(f"  A {np.mean([ref[k]['stage'] for k in common]):7.3%}"
           f"   B {np.mean([tgt[k]['stage'] for k in common]):7.3%}"
           f"   Δ {np.mean(d2):+7.3%}  CI [{lo2:+.3%}, {hi2:+.3%}]")
+
+    # —— n 分层 / 加权 / 集中度（--strat）——
+    if do_strat:
+        strat(common, ref, tgt)
 
     # —— 差异最大的几集（便于定位是哪些电路在撬动）——
     if topk > 0:
@@ -254,6 +337,8 @@ def main():
     ap.add_argument("--against", nargs='+', default=[], help="对比档（B），可多个")
     ap.add_argument("--nhist", help="只打印该档的 n 直方图 + 按直方图加权的随机基线")
     ap.add_argument("--topk", type=int, default=5, help="列出 |Δ遗憾| 最大的几集（0 = 不列）")
+    ap.add_argument("--strat", action='store_true',
+                    help="加 n 分层表 + 候选加权口径 + Δ 集中度（判断 Δ 是普遍位移还是少数集现象）")
     args = ap.parse_args()
 
     if not args.ref and not args.nhist:
@@ -267,7 +352,7 @@ def main():
         nhist(recs, args.nhist.split('/')[-1])
     if args.ref:
         for t in args.against:
-            compare(args.ref, t, args.topk)
+            compare(args.ref, t, args.topk, args.strat)
 
 
 if __name__ == '__main__':
