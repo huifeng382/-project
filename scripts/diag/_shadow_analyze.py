@@ -26,10 +26,21 @@
   同理，本文件各条守卫（量纲混合 / 兜底窗口 / 并列影响面）都预设「集 = 一次 pre_rank 的批」，
   池化会破坏该前提 → window 模式下这几行读数不可信（脚本会在该处显式警告）。
 
+跨集重复度（17.3.10）：
+  batch 口径把集数从 106 抬到 714，但同一电路的不同 (iter, window_try) 会出现**逐字节相同**的
+  指标行（regret/cap2/spread 全等）→ 小子电路的搜索在几轮内走完候选空间、之后每轮重新提出
+  同一批网表（gnn_shadow.rs 的缓存键 = m.to_tl_text()，同网表 → 同预测；同网表 → 同 Xyce
+  结果 → 整行一致）。若成立，714 就不是 714 个独立样本：重复观测不带来信息、却加重权重，
+  并让「逐集配对检验」的独立性假设失效。
+  文末「跨集重复度」块给出 独立集数 / 重数分布 / 真包含子集。判同用**真值列**
+  (true_delay, transistors) 的原始文本 → 与模型无关，换 ckpt 不改变判同结果。
+  ⚠ 该块**只计数，不改上面任何指标**（去重重算另立版本）。
+
 用法（server 端）：
   ~/venv/bin/python3 scripts/diag/_shadow_analyze.py [--min-cands 4] [--group-by batch|window]
 """
 import argparse, glob, hashlib, os, re, shutil, statistics, subprocess, sys, time
+from collections import Counter
 import numpy as np
 
 # 17.3.9 附带：本文件有 ✅/❌/⚠ 等非 GBK 字符，Windows 下（默认 GBK）必然 UnicodeEncodeError。
@@ -43,6 +54,8 @@ CSV_RE = re.compile(
 )
 # 第二列单查（不并入 CSV_RE：旧 CSV 没有这一列，并入会让 CSV_RE 失配 → 全表读不出）
 CSV2_RE = re.compile(r"gnn_pred2=([0-9.eE+-]+|nan)")
+# 17.3.10: transistors 同样单查（同 CSV2_RE 的理由：旧 CSV 可能整列缺席）
+CSV_NT_RE = re.compile(r"transistors=(\d+)")
 
 def parse_row(line):
     m = CSV_RE.search(line)
@@ -53,6 +66,7 @@ def parse_row(line):
         g4 = m.group(4)
         m2 = CSV2_RE.search(line)
         g2 = m2.group(1) if m2 else None
+        m3 = CSV_NT_RE.search(line)
         return {
             "eval": int(m.group(1)),
             "iter": int(m.group(2)),
@@ -62,6 +76,10 @@ def parse_row(line):
             # c2 = 该行**文本上**带第二列（区分「没开 GNN_PORT2」与「开了但预测 NaN」）
             "c2": m2 is not None,
             "gnn2": None if (g2 is None or g2 == "nan") else float(g2),
+            # 17.3.10 跨集判同用：true_delay 的**原始文本**（逐字节判同，不经 float 往返）
+            # 与 transistors 文本。两者都取自真值列 → 判同结果不随 ckpt 变。
+            "ttxt": g5,
+            "nt": m3.group(1) if m3 else "",
         }
     except (ValueError, TypeError):
         return None   # 16.11.6: 损坏行（并发写 CSV 交错）跳过，不崩溃
@@ -304,6 +322,10 @@ def main():
             if m is None:
                 continue
             m["circuit"] = circ; m["window"] = w; m["iter"] = it_idx
+            # 17.3.10: 跨集判同指纹 = 该集 (true_delay, transistors) 的**多重集**（排序后元组）。
+            # 用多重集而非集合：候选被重复提出但少了一个时，n 不同 → 不该判同（那属「真包含子集」，
+            # 由下面的诊断单独数）。取自真值列 → 与模型无关。
+            m["sig"] = tuple(sorted((r["ttxt"], r["nt"]) for r in rows))
             sets.append(m)
             # —— 第二列：只用**两列都非 NaN**的行，两个模型跑在同一行集上 ——
             # 这样 A/B 是严格同分母的配对比较；被 NaN 挤掉的集单独计数上报，不静默消失。
@@ -416,6 +438,53 @@ def main():
         h_raw = sum(1 for s in hi if s["raw_mode"])
         print(f"  （跨度>10% 子集 {len(hi)} 集: 重复网表 {h_dup}   第3==第4 {h_tie}   "
               f"量纲混合 {h_mix}   兜底窗口 {h_raw}）")
+
+    # —— 跨集重复度（17.3.10）——
+    # 上面那行「重复网表集」数的是**集内**真值相等的候选（天花板）；本块数的是**跨集**：
+    # 同一电路的不同 (iter, window_try) 提出了**同一个候选池**。两者是不同的事，别混。
+    # 只计数，不改上面任何指标。
+    by_circ = {}
+    for s in sets:
+        by_circ.setdefault(s["circuit"], []).append(s)
+    n_uniq = 0                      # 互异候选池数
+    mult = Counter()                # 重数 -> 具有该重数的独立集数
+    worst = []                      # (重复集数, 电路, 总集数, 独立集数, 最大重数)
+    n_sub = 0                       # 真包含子集：小集是大集的多重子集（相关但不同池）
+    for circ, ss in by_circ.items():
+        c = Counter(s["sig"] for s in ss)
+        n_uniq += len(c)
+        for k in c.values():
+            mult[k] += 1
+        if len(ss) > len(c):
+            worst.append((len(ss) - len(c), circ, len(ss), len(c), max(c.values())))
+        # 多重集包含：Counter 相减为空 ⟺ ⊆；再要求候选数严格更少 → 真子集。
+        # 延迟是真值（连续量、CSV 写足有效位）→ 偶然命中的概率≈0，命中即真信号。
+        cnts = [(Counter(s["sig"]), s["n"]) for s in ss]
+        for i, (ci, ni) in enumerate(cnts):
+            for j, (cj, nj) in enumerate(cnts):
+                if i != j and ni < nj and not (ci - cj):
+                    n_sub += 1
+                    break
+    n_dup_sets = len(sets) - n_uniq
+    print(f"\n=== 跨集重复度（17.3.10，[--group-by {args.group_by}]）===")
+    print("  判同口径: 同电路内，集的 (true_delay, transistors) 多重集**逐字节**相同 → 同一候选池")
+    print(f"  独立集: {n_uniq}/{len(sets)}   重复集: {n_dup_sets}  "
+          f"（{n_dup_sets/len(sets)*100:.1f}% 的集是同一池的重复观测）")
+    print(f"  重数分布（重数×独立集数）: "
+          + "  ".join(f"{k}×{mult[k]}" for k in sorted(mult))
+          + f"   最大重数 {max(mult)}")
+    if worst:
+        print("  重复最多的电路（前 5，按重复集数降序）:")
+        for d, circ, tot, uq, mx in sorted(worst, reverse=True)[:5]:
+            print(f"    {circ:<45s} {tot:3d} 集 → {uq:3d} 独立（重复 {d}，最大重数 {mx}）")
+    print(f"  真包含子集（同电路内小集是大集的多重子集，**未**计入上面的去重）: {n_sub} 集")
+    if n_dup_sets or n_sub:
+        print("  ⚠ 含义：上表把每集等权平均 → 被重复提出的池会按重数**加倍计权**，"
+              "且这些集彼此不独立（同一批真值、同一批 gnn_pred）")
+        print("     → 「逐集配对检验 / 符号检验 / bootstrap」的独立性假设在 batch 口径下不成立；"
+              "需按电路做 block 重采样，或先按 sig 去重再统计")
+    else:
+        print("  ✅ 无跨集重复：候选池层面互异（独立集数 = 集数）")
 
     # —— 两列并排 A/B（仅当 CSV 带 gnn_pred2 列时出现）——
     if ab_sets:
