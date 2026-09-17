@@ -21,9 +21,13 @@
 #     ③ 读不到就写 unknown（`ARCHIVE_TAG` 可手工指定，例如给当前这棵无 RUN_INFO 的老树）；
 #     ④ 归档后若树内本来没有 RUN_INFO，补一份说明「ckpt 未知」，而不是填本轮的 ckpt。
 #
-# 前置：GNN serve 已运行（
-#   nohup ~/venv/bin/python3 ~/-project/scripts/diag/serve_http.py \
-#     --ckpt <model.pt> --scaler <scaler.pkl> --port 8000 & ）
+# 前置：GNN serve 已运行。**必须带下面这组 env**，理由见 shadow_campaign.sh 的 SERVE_ENV 注释：
+#   不带 → serve 的 OMP worker 在两批之间空转自旋，实测同一批候选 828% CPU vs 3.3% CPU（248×），
+#   纯浪费且会拖慢同机的 zhirui（16 路 Xyce）。这是等待策略、不改计算 → 位级中性、可安全默认开。
+#   cd ~/-project && GOMP_SPINCOUNT=0 OMP_WAIT_POLICY=PASSIVE KMP_BLOCKTIME=0 \
+#     nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
+#     --ckpt CKPT路径.pt --scaler SCALER路径.pkl --port 8000 &
+#   这一步留一份固定副本：~/NetlistOpt/serve_env.sh（内容即上面那行的 env 段）
 # 用法：bash ~/-project/scripts/diag/run_shadow_batch.sh
 # 结果：全部跑完自动执行 _shadow_analyze.py，输出到 ~/shadow_analyze.out
 
@@ -33,9 +37,18 @@ NL="$HOME/NetlistOpt"
 
 # 0) 检查 GNN serve（括号技巧防自匹配）
 if ! pgrep -f 'serve_htt[p]' >/dev/null; then
-  echo "ERROR: GNN serve 未运行。先启动："
-  echo "  nohup ~/venv/bin/python3 ~/-project/scripts/diag/serve_http.py --ckpt <model.pt> --scaler <scaler.pkl> --port 8000 &"
+  echo "ERROR: GNN serve 未运行。先启动（⚠ 必须带这组 env，否则 248× 空转）："
+  echo "  cd ~/-project && GOMP_SPINCOUNT=0 OMP_WAIT_POLICY=PASSIVE KMP_BLOCKTIME=0 \\"
+  echo "    nohup ~/venv/bin/python3 scripts/diag/serve_http.py --ckpt CKPT路径.pt --scaler SCALER路径.pkl --port 8000 &"
   exit 1
+fi
+# 0b) 空转自旋自检（17.4.0）：serve 在跑 ≠ serve 没在烧核。这条只告警不拦 ——
+#     有意做「带 env / 不带 env」对照实验时仍需放行，但必须让人看见。
+SPID=$(pgrep -f 'serve_htt[p]' | head -1)
+if [ -n "$SPID" ] && ! tr '\0' '\n' < "/proc/$SPID/environ" 2>/dev/null | grep -q '^GOMP_SPINCOUNT=0$'; then
+  echo "⚠⚠ 警告：serve(PID=$SPID) 未带 GOMP_SPINCOUNT=0 —— 它会在两批之间空转自旋。"
+  echo "    实测代价 828% CPU vs 3.3%（248×），且会加重与 zhirui 的内存带宽/LLC 争用。"
+  echo "    建议停掉重起（按上面的前置命令）。若你是有意做对照，忽略本条即可。"
 fi
 
 cd "$NL"
@@ -46,8 +59,15 @@ cd "$NL"
 ARCHIVE_ROOT="$HOME/shadow_archive"
 SERVE_ARGS=$(ps -o args= -p "$(pgrep -f 'serve_htt[p]' 2>/dev/null | head -1)" 2>/dev/null | head -1 || true)
 CKPT=$(printf '%s\n' "${SERVE_ARGS:-}" | sed -n 's/.*--ckpt[= ][ ]*\([^ ]*\).*/\1/p' | head -1)
+# ckpt 身份取**内容 sha1**（不是路径）。同一份权重可能被复制成多个文件名、同一个文件名也可能
+# 被覆盖重训 —— 只有 sha1 能回答「报的这个数挂的是不是这个文件」。与 serve 的 `_sha16` 同法。
+CKPT_SHA=$( [ -n "${CKPT:-}" ] && sha1sum "$CKPT" 2>/dev/null | cut -c1-16 )
 OLD_CKPT=$(sed -n 's/^本轮 serve ckpt *: *//p' temp_sim_test/tl_opt_batch/RUN_INFO.txt 2>/dev/null | head -1)
-if [ -d temp_sim_test/tl_opt_batch ]; then
+# 17.4.0：只归档**有数据**的树。空的（或只剩 RUN_INFO 的）树归档出来就是一份 junk
+# `unknown_<时间戳>` 存档 —— 看着像一趟数据，其实只证明「这个目录被 mkdir 过」。
+# 实测踩过（2026-09-17，见 #65）：一条 mkdir -p 命令就造出一份 1 文件的假存档。
+TREE_HAVE_CSV=$(ls -1 temp_sim_test/tl_opt_batch/*/*/gnn_shadow.csv 2>/dev/null | head -1)
+if [ -d temp_sim_test/tl_opt_batch ] && [ -n "$TREE_HAVE_CSV" ]; then
   TAG=${ARCHIVE_TAG:-$(basename "${OLD_CKPT:-unknown}" .pt)}; [ -n "$TAG" ] || TAG=unknown
   if [ -n "$OLD_CKPT" ]; then SRC=树内RUN_INFO; else SRC=兜底; fi
   TS=$(date +%Y%m%d_%H%M%S)
@@ -63,21 +83,43 @@ if [ -d temp_sim_test/tl_opt_batch ]; then
     printf '本轮 serve ckpt : unknown\n（归档时树内没有 RUN_INFO —— 这棵树的 ckpt 未知；目录标签 %s 来自 ARCHIVE_TAG 或 unknown，不可当已证来源）\n' "$TAG" > "$DEST/RUN_INFO.txt"
   fi
   echo "[$(date +%F\ %T)] 已归档旧树 → $DEST  (标签=$TAG 来源=$SRC)"
+elif [ -d temp_sim_test/tl_opt_batch ]; then
+  echo "[$(date +%F\ %T)] 旧树无 gnn_shadow.csv → 不是一趟数据，跳过归档（不造 junk unknown_* 存档）"
 else
   echo "[$(date +%F\ %T)] 无旧树，跳过归档（首跑）"
 fi
 
 # 1b) 写**本轮** RUN_INFO —— 随这棵树进归档，供下一轮正确命名（先建目录，分片只管往里写子目录）
+#     17.4.0 补：身份不能只记「文件名 / commit 号」。2026-09-17 追 74.4-vs-90.8 时发现，
+#     当时能记下的三样（ckpt 路径、repo rev、dirty 个数）**没有一样能唯一确定读数**：
+#       · ckpt 路径 ≠ 内容（同名可被覆盖重训）→ 已补 sha1；
+#       · `repo rev` 是 **commit**，服务器 ~/-project 停在 16.10.0 却 dirty 41 个文件、脚本
+#         是手工同步的新版 → rev 相同 ≠ 脚本相同；
+#       · **Rust 树 ~/NetlistOpt 服务器上没有 .git**，vintage 无任何记录，而 gnn_pred 的
+#         秩聚合就发生在它的 Rust 侧 → 这是本类争议里唯一无法排除的变量。
+#     故改为记**内容指纹**：dirty 指纹（git diff + status 一起哈希）、Rust 源码指纹
+#     （无 VCS 就哈希 src/ tests/ Cargo.toml 全文 + 相对路径）、serve 脚本 sha1
+#     （gnn_pred = 批内平均秩，由它的 predict_rank_batch 算出来）。
 mkdir -p temp_sim_test/tl_opt_batch
+REPO_DIRTY_FP=$(cd "$HOME/-project" 2>/dev/null && { git diff 2>/dev/null; git status --porcelain 2>/dev/null; } | sha1sum | cut -c1-12)
+RUST_FP=$(cd "$NL" 2>/dev/null && find src tests Cargo.toml -type f 2>/dev/null | LC_ALL=C sort \
+          | xargs -r sha1sum 2>/dev/null | sha1sum | cut -c1-12)
+RUST_REV=$(cd "$NL" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo 无VCS)
+SERVE_PY_FP=$(sha1sum "$HOME/-project/scripts/diag/serve_http.py" 2>/dev/null | cut -c1-12)
 {
   echo "时间            : $(date +%F\ %T)"
   echo "源目录          : $NL/temp_sim_test/tl_opt_batch"
   echo "本轮 serve 进程 : ${SERVE_ARGS:-未取到}"
   echo "本轮 serve ckpt : ${CKPT:-未识别}"
+  echo "本轮 ckpt sha1  : ${CKPT_SHA:-未识别}"
   echo "repo rev        : $(cd ~/-project 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || echo 未知)"
   echo "repo dirty      : $(cd ~/-project 2>/dev/null && git status --porcelain 2>/dev/null | wc -l || echo '?') 个改动"
+  echo "repo dirty 指纹 : ${REPO_DIRTY_FP:-未识别}  （git diff + status 的 sha1 前12位）"
+  echo "Rust rev        : ${RUST_REV}  （无 VCS 时此项无意义，看下一行）"
+  echo "Rust 源指纹     : ${RUST_FP:-未识别}  （src/ tests/ Cargo.toml 全文+路径的 sha1 前12位）"
+  echo "serve 脚本指纹  : ${SERVE_PY_FP:-未识别}  （scripts/diag/serve_http.py sha1 前12位）"
 } > temp_sim_test/tl_opt_batch/RUN_INFO.txt
-echo "[$(date +%F\ %T)] 本轮 RUN_INFO 已写入（ckpt=${CKPT:-未识别}）"
+echo "[$(date +%F\ %T)] 本轮 RUN_INFO 已写入（ckpt=${CKPT:-未识别} sha1=${CKPT_SHA:-未识别}）"
 
 # 2) 并行分片：level0-3 各一个进程；level4 按电路逐个进程（大电路最慢，全并行）
 for l in 0 1 2 3; do

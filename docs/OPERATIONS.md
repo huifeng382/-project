@@ -47,9 +47,9 @@ RESUME=1 bash setup_exp.sh <原变体名>
 | `struct*`（structlogic/rich/elec…） | STRUCT_MODE 消融 | 默认 logic_only |
 
 - 命名规则：变体名 = 特征/目标前缀 + seed；尾部 `m4` 仅是历史标识（数据默认已含 m4）。
-- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**serve 交付走此路线**；部署口径 = 714 集 batch，严格@3 **74.4%** / 宽松@3 97.6% / 选择遗憾 **7.23%** / 两阶段 1.66%，DIFF §15.2）；v2iaa42m4 = 线性近似（纯 huber，serve 净伤最大；原「Rust 记录 ⚠ 不可复现」**已销案 = 口径差**，DIFF §15.1）；v2iag42m4 = GBDT15（Test 23.00%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（已双端验，DIFF §13.5）；v2kdwave42iaa42 = wave 教师 KD 学生（**已验 Rust：名带 iaa 实 in=45 纯拓扑，双端不赢，DIFF §13.4**）。
+- **教师/学生关系（16.11 系）**：v2wave42m4 = wave 教师（Test 13.3% / 遗憾 0.65% / Spearman 0.688）；v2nowave42m4 = 纯拓扑无近似（**serve 交付走此路线**；部署口径 = 714 集 batch，严格@3 **90.8%** / 宽松@3 **97.9%** / 选择遗憾 **5.93%** / 两阶段 **0.63%**，DIFF §15.2；⚠ 旧记 74.4/97.6/7.23/1.66 **属错标树**，2026-09-17 已改判，见下 §6.7 与 PROJECT_LOG「74.4 错标定案」）；v2iaa42m4 = 线性近似（纯 huber，serve 净伤最大；原「Rust 记录 ⚠ 不可复现」**已销案 = 口径差**，DIFF §15.1）；v2iag42m4 = GBDT15（Test 23.00%——**最不伤的近似**，排序质量最高但 top1 落点输 nowave）；v2iaar42m4 = 线性+rank（已双端验，DIFF §13.5）；v2kdwave42iaa42 = wave 教师 KD 学生（**已验 Rust：名带 iaa 实 in=45 纯拓扑，双端不赢，DIFF §13.4**）。
 
-> ⚠ **下表/上文所有 Rust 数值凡出自 16.11–17.0 记录者，一律是 106 集 `window` 池化口径**（历史）。**2026-09-16 定案：部署真值 = 714 集 `batch` 口径**（`(circuit, iter, window_try)` = 一次 `pre_rank` 调用），换口径对严格@3 的增幅 **+26.5pp（iaa）～+39.5pp（nowave）——因臂而异** ⇒ **旧口径的跨臂排序不可外推**（臂内同口径比较仍有效）。选型/选点前请先按 batch 口径重测。详见 `GNN_RUST_DATA_DIFF.md` §15。
+> ⚠ **下表/上文所有 Rust 数值凡出自 16.11–17.0 记录者，一律是 106 集 `window` 池化口径**（历史）。**2026-09-16 定案：部署真值 = 714 集 `batch` 口径**（`(circuit, iter, window_try)` = 一次 `pre_rank` 调用），换口径对严格@3 的增幅 **+26.5pp（iaa）～+55.9pp（nowave，2026-09-17 改；旧记 +39.5 用了错标树的 74.4）——因臂而异** ⇒ **旧口径的跨臂排序不可外推**（臂内同口径比较仍有效）。选型/选点前请先按 batch 口径重测。详见 `GNN_RUST_DATA_DIFF.md` §15。
 
 ## 4. 关键开关（config.py，多数可 env 覆盖）
 
@@ -68,7 +68,7 @@ RESUME=1 bash setup_exp.sh <原变体名>
 
 ## 5. 当前状态（2026-09-06，17.0.13 记录后）
 
-> ⚠ **2026-09-16 口径标注（适用于本节所有 Rust 数值）**：本节各行的遗憾/严格@3 全部是 **106 集 `window` 池化口径**（历史）。**部署真值 = 714 集 `batch` 口径**；同 arm 只换口径严格@3 动 **+26.5~39.5pp 且因臂而异** ⇒ **本节的臂间排序不可外推到部署口径**（臂内同口径比较仍有效）。交付基线的部署口径权威数见 §6.7。详见 `GNN_RUST_DATA_DIFF.md` §15。
+> ⚠ **2026-09-16 口径标注（适用于本节所有 Rust 数值）**：本节各行的遗憾/严格@3 全部是 **106 集 `window` 池化口径**（历史）。**部署真值 = 714 集 `batch` 口径**；同 arm 只换口径严格@3 动 **+26.5~55.9pp 且因臂而异**（2026-09-17 改）⇒ **本节的臂间排序不可外推到部署口径**（臂内同口径比较仍有效）。交付基线的部署口径权威数见 §6.7。详见 `GNN_RUST_DATA_DIFF.md` §15。
 
 **rank 两空格 Rust shadow 已跑完（2026-09-06 21:22/21:31，17.0.13 记录；PROJECT_LOG 表行 + DIFF §13.6）**：
 - `~/project-107-v2nowaver42m4`（空格2 纯拓扑×rank）：Rust（serve midpoint_ep250、in=45 无 env）遗憾 **11.97%**（严格@3 34.9% / 宽松 57.5% / Sp 0.094）→ **> nowave 10.87% 全轴净伤害，纯拓扑×rank 槽位关闭（rank 目标线关）**
@@ -135,10 +135,22 @@ cd ~/-project && ~/venv/bin/python3 scripts/diag/check_idsgnn_serve_parity.py
 ### 6.3 Step 2 — 换 serve（停旧起新）
 ```bash
 pkill -f 'serve_htt[p].py'; sleep 1
-cd ~/-project && PYTHONHASHSEED=0 [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
+cd ~/-project && PYTHONHASHSEED=0 \
+  GOMP_SPINCOUNT=0 OMP_WAIT_POLICY=PASSIVE KMP_BLOCKTIME=0 \
+  [USE_IDS_AVG_APPROX=<按Step1> ]nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
   --ckpt ~/project-107-<V>/outputs/<ckpt>.pt \
   --scaler ~/project-107-<V>/outputs/scaler.pkl --port 8000 > serve_<V>.log 2>&1 &
 ```
+- **中间那三行是必带项（17.4.0 起）**：不带则 libgomp 让 worker 线程在**两个并行区之间空转自旋**
+  （默认 `GOMP_SPINCOUNT=300000` + active 策略），而 serve 的负载是每 (pin, 方向, 模型) 一次
+  forward + `.cpu()` 同步、一批候选几百个背靠背小并行区 ⇒ 线程池永不入睡。**实测同一批候选、
+  同一时刻：裸奔 828% CPU vs 加这三行 3.3% CPU = 248×**（ckpt 载入阶段 70 vs 3 CPU-s）。
+  这是**等待策略**，不改线程数、不改工作分解 ⇒ **位级中性**（A/B 两侧都打印 `Threads: 59`）；
+  与 `torch.set_num_threads` 完全不同，那个会改 float 归约顺序、重演 17.2.4 刚定序掉的边序抖动。
+  ⚠ **它不会消除与 zhirui（16 路 Xyce）的争用**：nice 19 下我们仍拿到 2.4 核 ⇒ CPU 时间从来不是
+  瓶颈 ⇒ 那 ~7% IPC 损失是内存带宽/LLC/SMT 的共享微架构效应，这组 env 不改变它。
+  `shadow_campaign.sh` 已把它写死为默认（`SHADOW_SERVE_ENV=''` 可回退做对照）；`run_shadow_batch.sh`
+  起步会检查在跑的 serve 有没有带 `GOMP_SPINCOUNT=0`，没带就高亮告警（只告警不拦）。
 - **`PYTHONHASHSEED=0` 是必带项（17.2.4 起）**：serve 的进程间数值抖动根因 = 边序随哈希种子变
   （`parse_netlist` 原 `list(set(edges))` → `edge_index` 行序 → float32 累加序 → 同一候选跨进程
   差 ~1e-7 相对 → 近并列候选互换名次 → 平均秩 ±0.5 → 选择遗憾两跑跨度 0.62pp）。根已由
@@ -178,12 +190,12 @@ bash ~/-project/scripts/diag/run_shadow_batch.sh   # 内部:rm 旧 CSV → 并�
 # 另开窗口看进度：
 tail -f ~/shadow_analyze.out
 ```
-- shadow CSV 路径：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors[，gnn_pred2=…]）。**跑前 run_shadow 会整体清空该目录**（CSV append 会混旧行，勿手动残留）。⚠ 该清理**只在脚本内**——直接手敲 `cargo test` 会绕过它，追加写进上一趟的旧行，第二列会出现"前一半没有、后一半有"的半列假象（2026-09-15 实际踩到过；`docs/GNN_CODING_LESSONS.md` §7.2 有记）。
+- shadow CSV 路径：`~/NetlistOpt/temp_sim_test/tl_opt_batch/**/gnn_shadow.csv`（每行 = 一次候选评估：eval_idx/iter/window/gnn_pred/true_delay/transistors[，gnn_pred2=…]）。**跑前 run_shadow 会把整个旧树 mv 归档**（17.3.16 起；此前是 `rm -rf`，等于每跑一趟就毁掉上一趟的原始数据）到 `~/shadow_archive/<TAG>_<时间戳>/`，标签取自**被归档树自己的** `RUN_INFO.txt`。⚠ 该归档**只在脚本内**——直接手敲 `cargo test` 会绕过它，追加写进上一趟的旧行，第二列会出现"前一半没有、后一半有"的半列假象（2026-09-15 实际踩到过；`docs/GNN_CODING_LESSONS.md` §7.2 有记）。**空树（无 `gnn_shadow.csv`）不归档**（17.4.0）——它只证明「这个目录被 mkdir 过」，归档出来就是一份看着像数据的 junk `unknown_*` 存档（2026-09-17 踩过）。
 - ⚠ **三个跨 run 不变量**（破坏则 A/B 与历史口径都不可比）：
-  - **① 不要删 `~/NetlistOpt/temp_sim_cache/`** —— 那是 `XYCE_CACHE` 的内容寻址延迟缓存，根在 `CARGO_MANIFEST_DIR/temp_sim_cache`，**不在** `temp_sim_test/` 下，故 `run_shadow_batch.sh` 的 `rm -rf temp_sim_test/tl_opt_batch` **不会**误清它。缓存命中会跳过 Xyce（2026-09-15 那趟全程 Xyce 进程数 0），删了就白跑。
+  - **① 不要删 `~/NetlistOpt/temp_sim_cache/`** —— 那是 `XYCE_CACHE` 的内容寻址延迟缓存，根在 `CARGO_MANIFEST_DIR/temp_sim_cache`，**不在** `temp_sim_test/` 下，故 `run_shadow_batch.sh` 把 `temp_sim_test/tl_opt_batch` 整体 **mv 归档**时**不会**误清它。缓存命中会跳过 Xyce（2026-09-15 那趟全程 Xyce 进程数 0），删了就白跑。
   - **② 两趟之间不要升级 Xyce** —— 缓存键 = tb 文件 + 每个 `.include` 的 DUT/model 文件哈希（`compute_deck_hash`），**不含 Xyce 版本** → 升级后旧缓存照样命中，会**静默**把两个版本的延迟真值混进同一张表。
   - **③ `SIM_OPTIONS` / `TL_MAX_ITERS` 两趟保持完全一致**。
-- ⚠ **模式 3 的 NaN 会改变分母**：候选集要求"GNN 与 SPICE 都成功"（`true`/`gnn` 非 None）且 ≥4 候选；第二列 NaN 的行会被从 A/B 里剔掉 → **某些集可能因第二列 NaN 而落出 A/B**（脚本在 A/B 节头显式报出落掉的集数，并警告两节分母不同，跨节比指标要留神）。模式 3 每次 `/rank` 都要现场跑一遍 idsavg GNN，`GnnClient` 超时 15s，12 分片并发下是超时的主要嫌疑。**跑完先看第二列 NaN 计数是否为 0**；非 0 则 A/B 的集数与主口径对不上。
+- ⚠ **模式 3 的 NaN 会改变分母**：候选集要求"GNN 与 SPICE 都成功"（`true`/`gnn` 非 None）且 ≥4 候选；第二列 NaN 的行会被从 A/B 里剔掉 → **某些集可能因第二列 NaN 而落出 A/B**（脚本在 A/B 节头显式报出落掉的集数，并警告两节分母不同，跨节比指标要留神）。模式 3 每次 `/rank` 都要现场跑一遍 idsavg GNN，`GnnClient` 的空闲超时**17.3.19 起默认 300s**（`GNN_TIMEOUT_MS` 可覆盖；此前硬编码 15s）——15s 在大候选池被多分片争用时会被打穿，`read_to_end` 报错 → 整窗未命中 → 退到逐候选请求（serve 侧候选数 <2 时改走 `predict_avg_delay`）→ **同一个 `gnn_pred` 列里混进另一种量纲**，同时请求数 ×4.5、该分片从 ~99s 拖到 ~9928s。**跑完先看第二列 NaN 计数是否为 0**；非 0 则 A/B 的集数与主口径对不上。战役的**闸门②（兜底窗口 = 0）**就是拦这件事的。
 
 ### 6.6 Step 5 — 判收尾：首行时间戳被替换，不 grep 关键词
 ```bash
@@ -195,11 +207,14 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 ### 6.7 Step 6 — 对齐口径 + 记录 + 恢复 serve（本地）
 - 读结果：`reports/_shadow_bench_final.txt`（服务器）+ `~/shadow_analyze.out`。**⚠ 2026-09-16 口径定案（DIFF §15）：默认口径 = `--group-by batch` = 714 集 = 部署真值**（`(circuit, iter, window_try)` = 一次 `pre_rank` 调用）；`--group-by window` = **106 集 = 历史池化口径**（把同电路 ~6.7 个批并成一集，集内混不同批的秩 → 系统性失真）。**两个口径都打出来、记录时都写并标清口径，禁止混读**（同 arm 只换口径严格@3 动 +26.5~39.5pp，且因臂而异）。**别拿 PROJECT_LOG 训练侧 548/714 组混着比。全表总行 = 5398**（5390 成功 + 8 失败），m4 族 8 趟逐项相同 —— 这个数正是"轨迹与模型无关"的实证，也用来快速自检：拿到 5398 就说明候选集没被改动过。**另必看「输入污染检查」三项须全 0**（分组内 eval 去重丢弃 / 同电路 eval_idx 跨分组重复 / 同一 eval_idx 真值冲突）—— shadow CSV 是 `append(true)`，非 0 就说明快照被叠过行、集数是重复计数（OPERATIONS `:177` 记过一次真事故）。
 - 同口径基准（m4三兄弟 Rust，DIFF §13.2/13.3）：纯拓扑 **nowave 遗憾 10.87%**（serve 交付基线）；iag GBDT15 严格@3 44.3% / 遗憾 12.19%；iaa ⚠ 15.21%。→ ⚠ **这三行都是 17.2.4 前的数**（边序未知，±0.31pp 带内），见下方权威表。
-  - 📌 **交付基线的权威数（2026-09-16 更新）= v2nowave42m4 `midpoint_ep250.pt`（sha1 09be9a3c53b90760）在 714 集 batch 口径下：选择遗憾 7.23%（中位 3.88%）/ 严格@3 74.4% / 宽松@3 97.6% / 两阶段 1.66%**（四口径全表 + 去重/宏平均/排除最大电路的对照见 DIFF §15.2）。**⚠ 换口径后「距 ≤5% 目标 2.2×」这个读法作废** —— 新口径下 7.23% 距目标 1.4×，且另一口径（② 按候选池去重）已到 4.76% ≤5%；但**严格 recall@3 ≥90% 四种口径全不达标**（74.4/68.9/79.5/65.3）→ **「GNN 只做启发式粗排」的结论与口径之争无关，成立**；诚实读法 = 遗憾「≈5%，临界」而非达标。详见 DIFF §15.6。
+  - 📌 **交付基线的权威数（2026-09-17 重测，两次独立复现）= v2nowave42m4 `midpoint_ep250.pt`（sha1 09be9a3c53b90760，mtime 09-02 起未变）在 714 集 batch 口径下：严格@3 90.8% / 宽松@3 97.9% / 选择遗憾 5.93%（中位 2.13%）/ 两阶段 0.63%**（两次复现 = `~/shadow_archive/midpoint_ep250_20260916_233806` 与 `..._20260917_214841`，逐位相同；四口径全表见 DIFF §15.2 / PROJECT_LOG「部署口径定案」(2)）。**部署两项（严格k3 ≥90%、两阶段 ≤5%）都达标**；但 ① 口径被 `level2/DEPTH_MIX` 一家占 75% 权重，**②③④ 去重 / 去主导后严格 k3 全掉到 90% 线下**（80.1 / 81.5 / 76.7）→ **不能说「够了」**；选择遗憾 ① 5.93% 仍 > 5%（② 3.75%、④ 3.03% 已过线）→ 诚实读法 = **「部署口径达标，但达标压在一个电路上，且按池计权仍未过 5%」**。详见 DIFF §15.6。
+  - 🆕 **✅ 74.4 错标定案（2026-09-17 / 17.4.0）—— 上面那条旧记录整行作废。** `74.4 / 97.6 / 7.23 / 1.66` **不是 `midpoint_ep250.pt` 的数**，它出自分片树 `~/tl_opt_batch_keep_0916` = `~/shadow_archive/unknown_20260916_223140`（用同一版分析器、同一 batch 口径重算，**与 17.3.11 那张表逐位相同**）。两条原假设**都已实测否定**：**(i) ckpt 没换** —— sha1 `09be9a3c53b90760` 与旧记逐位相同、mtime `2026-09-02 21:30:59` 起从未被覆盖；**(ii) Rust 没变** —— 三棵树（09-15 打包 / 09-16 / 09-17）的 **`true_delay` 多重集指纹全等 `cb0d7a96e6aada05`**、都是 46 CSV / 5398 行 ⇒ 候选生成逐值不变（`tree_fp` 不同是因为它含 `gnn_pred` 以外的列/路径，真值层是干净判别量）。**唯一变量是 `gnn_pred` 来自另一个模型**（佐证：那棵老树首行 `gnn_pred=7.562406e-11`，交付树为 `6.622111e-11`）⇒ 按 `§6.7:227`「2026-09-15 夜 8000 上挂的是 **`42b` ep250**」推断为 `42b`（⚠ 该步**仍是推断**，那棵树无 RUN_INFO；**可确证的只是「不是 `42m4` ep250」**）。**这是第 2 次同成因的 I15 类错标**：记的是「本该服务的模型」的身份，不是 8000 实际服务的模型。**防线已落地（17.4.0）**：`RUN_INFO.txt` 现在连同树记录 **`本轮 ckpt sha1` + `Rust 源指纹`（`~/NetlistOpt` 无 .git ⇒ 哈希源码）+ `repo dirty 指纹` + `serve 脚本指纹`**，且空树不再归档（本次正是靠这样一份存档定位的）。
+  - 🆕 **部署选点政策（2026-09-17 定）：取平台末端（最后一个 midpoint），不取 shadow argmax；`best_model.pt` 不进部署候选。** 四口径实证与推导见 PROJECT_LOG §17.4.0。要点：① GNN 在贪心里的唯一调用点是 `pre_rank`、**每 (轮次, 窗口) 一次** ⇒ 部署估计量是 **① 全部批**（工作加权期望），③ 等价于假设「GNN 每电路调一次」——它从没被那样调用过；② ② 的 161 个独立池只用于**配置信区间**（有效样本量），不替换点估计；③ 部署指标是**严格 k3 / 两阶段遗憾**，**不是** `判定` 行的选择遗憾（那个对应「完全不跑 SPICE」的更激进方案）；④ **shadow 从「选择器」降级为「闸门」** —— 每趟训练跑**一次**（~290s）判过不过线，**不做 ckpt 排名**（这才是不必每个 ckpt 都跑的正确解，依据是「`true_delay` 列与 ckpt 无关」已被闸门① 与 n_models=1 单调等价证明）；⑤ **免费的上游守卫** = 看 `train_sweep.py:1055` 每中点那行 `ep{N}: cap2=...`，val capture2 的 argmax 落在**平台内部**（安全）还是**末端**（训练被截断、规则不成立）。
+    > 下面那条「部署选型的杠杆在 epoch，不在换臂」**仍然成立，但答案变了**：臂内选点确实比臂间差异大一个量级 —— 正因如此**才不能靠 shadow 排名去选**（在不可分辨的差上取 argmax = 拟合噪声；已证严格@3 对 1 ulp 的敏感度是遗憾的 ~17 倍）。选点改由**不依赖 shadow 的确定性规则**给出，shadow 只当闸门。
   - 📌 **上一版的权威数（106 集 window 口径，保留存档）= `42m4` ep250 选择遗憾 11.13%**（严格k2 24.5 / 严格k3 34.9 / 宽松k2 46.2 / 宽松k3 66.0 / 两阶段 4.00%（中位 0.79%）/ Sp 0.134 / 79 集 13.66%），17.2.4 规范边序。旧记的 10.87% 与 10.66% 都是抖动抽样，**11.13% 恰是该带（10.51–11.13）最差值 → 旧值高估 0.47pp**。十点全表见 PROJECT_LOG §17.1.x、定因见 DIFF §13.7。**⚠ 该行的 epoch 标注本身存疑**（同 arm 另两处记录把同一读数标成 mid200，严格@3 差 4.7pp，见 DIFF §15.5）→ 跨 ckpt 选点结论冻结待 batch 口径重测。
   - ~~✅ 已定案（2026-09-15 同日对照跑）~~：`42b`（in=45, ep100）复跑 **14.26%**，同口径重跑交付基线 `42m4` ep250 得 **10.66%** → 历史 10.87% 被复现到 0.21pp 以内…**42b 那 3.60pp 差是真的**。部署口径三臂单调可分：`42m4` **10.66** < `42b` **14.26** < `gnn42b` **24.00** → **交付基线 42m4 未被撼动**。
     > ⚠ **本节数值已被 17.2.4 重算（2026-09-15 夜）**：三个数都带未知边序。规范序下 **`42m4` ep250 = 11.13%、`42b` ep100 = 14.03% → 差 2.90pp**（`gnn42b` 24.00 未重测，其结论方向不受影响）。**且那 2.90pp 有 1.61pp 是「42b 服务了自己五个 epoch 里最差的 ep100」**（该臂 ep150 = 12.42%），残余仅 1.29pp。"3.60pp 是臂间真差"这个读法**作废** —— 是「最差 epoch vs 最优 epoch」的对比。**A/B（模式 3）结论不受影响**：42b 是在服务自己最差 epoch 的条件下赢下全部 7 个判据的。
-  - ⚠ **新教训（原因已分离，2026-09-15）**：**「服务 Best midpoint」不可默认 = 部署最优 —— 且判据与部署反序**：`Best midpoint` 由加权 `score`（`train_sweep.py:978`，`100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap`，**recall@3 主导**）选出，**不是** `smoothed_rel_err`（那是 `best_model.pt` 的判据，两个不同 selector；17.2.6 更正）。实测该 `score` 序与 Rust 部署序 **Spearman = −1**（42b 五点完全反序）：`42m4` 挑中五点最优（ep250 11.13%），`42b` 挑中五点**最差**（ep100 14.03%；而该臂训练侧唯一最优 ep150 恰是部署最优 12.42%）。**训完先别信 Best midpoint 这行**。**臂内选点（1.61–2.65pp）比臂间差异（均值 0.46pp）大一个量级** → 部署选型的杠杆在 epoch 上，不在换臂上。换 ckpt 前后各扫一趟很便宜（`_shadow_ckpt_sweep.sh`，缓存全命中，单点 ~3min）。⚠ **但 17.2.4 之前的"每个 ckpt 测多次取中"是错的**（那是在测抖动，不是测模型）——**现在每 ckpt 一次即可**。详见 PROJECT_LOG §17.1.x + DIFF §13.7。
+  - ⚠ **新教训（原因已分离，2026-09-15）**：**「服务 Best midpoint」不可默认 = 部署最优 —— 且判据与部署反序**：`Best midpoint` 的选点分数**在 17.3.7 已换**（`train_sweep.py:1012-1073`）—— 现在是**逐个 midpoint 在 val 上算 `capture2_pct`，取 argmax**（`BEST_MODEL_METRIC='capture2'`，`config.py:22`；理由是 capture2 直接对应部署口径）；~~旧分数 `100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap`（原 `train_sweep.py:978`，recall@3 主导）~~ **已作废**——它正是下面那条「与部署反序」的来源（`:1040-1042` 留档）。两个 selector 仍要分清：`best_model.pt` 走 `smoothed_rel_err`，midpoint 走 capture2（17.2.6 更正）。实测该 `score` 序与 Rust 部署序 **Spearman = −1**（42b 五点完全反序）：`42m4` 挑中五点最优（ep250 11.13%），`42b` 挑中五点**最差**（ep100 14.03%；而该臂训练侧唯一最优 ep150 恰是部署最优 12.42%）。**训完先别信 Best midpoint 这行**。**臂内选点（1.61–2.65pp）比臂间差异（均值 0.46pp）大一个量级** → 部署选型的杠杆在 epoch 上，不在换臂上。换 ckpt 前后各扫一趟很便宜（`_shadow_ckpt_sweep.sh`，缓存全命中，单点 ~3min）。⚠ **但 17.2.4 之前的"每个 ckpt 测多次取中"是错的**（那是在测抖动，不是测模型）——**现在每 ckpt 一次即可**。详见 PROJECT_LOG §17.1.x + DIFF §13.7。
   - 🆕 **17.2.7 必看：分析器新增「并列/一致性诊断」节**（在「跨度>10% 子集」之后；需先 `git pull` 到 17.2.7 才出现）：
     ① **量纲混合守卫必须为 0** —— 非 0 表示该集 `gnn_pred` 混了「候选集内秩」与「原始延迟」两种量纲，排序无意义，先查 serve 预排序整窗是否命中；
     ② **兜底窗口 >0** 表示该批 serve 预排序整窗未命中（集内排序仍有效，仅分数分辨率受 CSV 7 位有效数字限）；
@@ -208,7 +223,7 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
     另外两条口径：**带精排路线下选点看「严格 recall@3」** —— 它逐集恒等于 `regret_2stage == 0`，且对并列免疫（取前 3 内真值最小值，集合内部次序不影响）；**两端 recall@3 不可对读**（总体 / 被排序的量 / 并列约定三处不同源，106 集 1 SE ≈ 5pp），详见 DIFF §13.7.4。
   - **无 ids 列(in=45)的模型与此对比才干净**；带 ids 列(in=46) serve 端本身就净伤害 —— ⚠ 该结论来自**近似**列（iag GBDT15 / iaa 线性，两个都是 serve 端净伤害的近似），**不能外推到模式 3（GNN 现场列）**：模式 3 的那一列本身是准的（R²≈0.79），它测的是"GNN ids 特征入 delay"在部署口径下的效果，是一个独立问题（17.1.5 Phase B 训练侧已判负，Rust 复验是为了确认部署口径同结论，**现已确认：部署口径同向且负得更重，见上**）。
 - 记 PROJECT_LOG（Rust 表行）+ 分析结论 → DIFF + 同步 I7 + 版本化 commit；push 仅按要求。
-- **恢复 serve**：若非交付路线的模型验完，按 Step 2 换回 v2nowave42m4（`--ckpt ~/project-107-v2nowave42m4/outputs/midpoint_ep250.pt`，不带 env）。
+- **恢复 serve**：若非交付路线的模型验完，按 Step 2 换回 v2nowave42m4（`--ckpt ~/project-107-v2nowave42m4/outputs/midpoint_ep250.pt`）。⚠ **「不带 env」这句已作废（17.4.0）** —— §6.3 那三行（`GOMP_SPINCOUNT=0 OMP_WAIT_POLICY=PASSIVE KMP_BLOCKTIME=0`）现在是**每一条** serve 启动命令的必带项，交付基线的 serve 也一样。
   - ⚠ **当前状态（2026-09-15 夜）**：8000 上挂的是 **`42b` ep250**（两次 epoch 扫描的末位遗留，**非交付基线**）。按用户 2026-09-15 决定「不再频繁改动交付基线」→ **本次不换**；**下次要跑 shadow 之前先按 Step 2 换回 `42m4` ep250**。
 
 ### 6.8 分析脚本 / 存档位置

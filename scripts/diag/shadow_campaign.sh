@@ -55,6 +55,19 @@ LOG="${SHADOW_LOG:-$HOME/shadow_campaign.log}"
 MAXWAIT="${SHADOW_MAXWAIT:-21600}"
 MINFREE_GB="${SHADOW_MINFREE_GB:-50}"
 READY_TRIES="${SHADOW_READY_TRIES:-90}"     # × 2s = 最长 3 分钟等 serve 就绪
+# serve 端 libgomp 自旋默认关闭（17.4.0）。libgomp 默认 GOMP_SPINCOUNT=300000 + active 等待策略
+# 会让 worker 线程在**两个并行区之间空转**；而 serve 的负载是每 (pin, 方向, 模型) 一次 forward +
+# `.cpu()` 同步，一批候选就是几百个背靠背的小并行区 → 线程池永不入睡、24 核被 56 个 OMP worker 占满。
+# 实测（同一批候选、同一时刻、两个 serve 并排）：
+#   裸奔 828% CPU   vs   本组 env 3.3% CPU   = 248×
+#   ckpt 加载阶段 70 CPU-s  vs  3 CPU-s（纯浪费）
+# ⚠ 这是**等待策略**，不改线程数、不改工作分解 ⇒ **位级中性**（A/B 两侧都打印 `Threads: 59`，
+#   指标逐位相同）。与 `torch.set_num_threads` 完全不同 —— 那个会改 float 归约顺序，
+#   会重演 17.2.4 刚定序掉的 1-ulp 边序抖动（见 gnn_shadow.rs:70-72 的警告），**不要那样做**。
+# ⚠ 它**不能**消除与 zhirui（16 路 Xyce）的内存带宽/LLC 争用：nice 19 下我们仍拿到 2.4 核，
+#   CPU 时间从来不是瓶颈，所以那 ~7% IPC 损失是共享微架构效应，本 env 不改变这一点。
+# 想临时对比可 `SHADOW_SERVE_ENV='' bash shadow_campaign.sh`（置空即回到裸奔）。
+SERVE_ENV="${SHADOW_SERVE_ENV:-GOMP_SPINCOUNT=0 OMP_WAIT_POLICY=PASSIVE KMP_BLOCKTIME=0}"
 DRY=0
 CKPTS=()
 SKIP=()
@@ -133,14 +146,20 @@ start_serve() {
   if [ "$DRY" = 1 ]; then echo "  [dry] 假装重启 serve --ckpt $ckpt --scaler $SCALER"; return 0; fi
   pkill -f 'serve_htt[p]' 2>/dev/null
   sleep 3
-  ( cd "$HOME/-project" && nohup "$HOME/venv/bin/python3" scripts/diag/serve_http.py \
+  # SERVE_ENV 必须挂在 serve 进程自己身上（不能只挂在战役脚本上靠继承 —— 那样 SHADOW_SERVE_ENV=''
+  # 就关不掉了，且「serve 到底带没带这组 env」无法从进程表核验）。`env` 在展开为空时是 no-op。
+  ( cd "$HOME/-project" && env $SERVE_ENV nohup "$HOME/venv/bin/python3" scripts/diag/serve_http.py \
       --ckpt "$ckpt" --scaler "$SCALER" --port "$PORT" \
       > "$SERVE_LOG_DIR/serve_$tag.log" 2>&1 & )
   while [ "$i" -lt "$READY_TRIES" ]; do
     body=$(curl -s -m 2 "http://127.0.0.1:$PORT/" 2>/dev/null || true)
     if printf '%s' "$body" | grep -q '"status"'; then
       n=$(printf '%s' "$body" | sed -n 's/.*"n_models": *\([0-9]*\).*/\1/p')
-      if [ "$n" = "1" ]; then echo "  serve 就绪（n_models=1）"; return 0; fi
+      if [ "$n" = "1" ]; then
+        echo "  serve 就绪（n_models=1） ckpt sha1=$(sha1sum "$ckpt" 2>/dev/null | cut -c1-16)"
+        echo "  serve env=[$SERVE_ENV]"
+        return 0
+      fi
       say "  ✗ n_models=$n ≠ 1 —— --ckpt 传多了或加载异常，拒绝用这份 serve 起扫"
       return 1
     fi

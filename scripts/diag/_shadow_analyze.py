@@ -427,10 +427,17 @@ def main():
     if sp:
         print(f"  Spearman:       {statistics.mean(sp):6.3f}   (次判据 ≥0.6)   "
               f"中位 {statistics.median(sp):.3f}  (n={len(sp)} 集)")
-    r3_ok = statistics.mean(r3) >= 0.90
-    rg_ok = statistics.mean(rg) <= 0.05
-    print(f"\n判定(旧口径参考): recall@top-3(集合版) {'✅≥90%' if r3_ok else '❌<90%'}  "
-          f"遗憾 {'✅≤5%' if rg_ok else '❌>5%'}")
+    # 17.4.0：原来只打 ✅/❌ 不打值 —— 于是「判定」这一行**不可审计**：判据是 recall3(集合版)，
+    # 而全文没有任何地方印过这个量的数值（严格/宽松 k3 都是**另一个**指标），读者只能看到结论。
+    # 现在把参与判定的两个均值一并印出，并标明它只对应 ① 口径（②③④ 见文末对照表，可能翻号）。
+    _r3m, _rgm = statistics.mean(r3), statistics.mean(rg)
+    r3_ok = _r3m >= 0.90
+    rg_ok = _rgm <= 0.05
+    print(f"\n判定(旧口径参考，仅 ① 全部批口径): "
+          f"recall@top-3(集合版) {_r3m*100:.1f}% {'✅≥90%' if r3_ok else '❌<90%'}  "
+          f"选择遗憾 {_rgm*100:.2f}% {'✅≤5%' if rg_ok else '❌>5%'}")
+    print("  ↑ 判据是**集合版 recall@3**（真前3∩预测前3 / 3），不是上面那两行严格/宽松 k3。"
+          "口径换成 ②③④ 结论可能翻号 → 报数前先定口径，别只看这一行。")
     if r3_ok and rg_ok:
         print("→ **两项主判据达标：GNN 可替换逐候选 SPICE 排序**（top-K 精排，仿真省 ≥75%）")
     else:
