@@ -10,8 +10,18 @@
 #   ② bash run_shadow_batch.sh —— 它会**归档上一棵树**（标签取自那棵树自己的 RUN_INFO，
 #      即上一轮 ckpt，天然正确），并给本轮的树写入本轮 RUN_INFO
 #   ③ 等分片与收尾守卫全部退出（守卫活到分析器跑完，所以这一等等于「等到分析都做完」）
-#   ④ 校验：46 个 CSV、分析输出非空；不合格 → 整棵树隔离到 ~/shadow_archive_failed/
+#   ④ 校验（任一不过 → 整棵树隔离到 ~/shadow_archive_failed/，绝不进分析池）：
+#        · CSV 数 = 46 且分析输出非空                —— 只挡「跑岔了」
+#        · 指纹（剔 gnn_pred 后逐位比对参考树）       —— 挡「半成品」与「换了 Rust」，
+#          这是 #65 配对分析的前提：候选集/顺序/每条 true_delay 必须与既有批可比
+#        · 兜底窗口 = 0                              —— 挡 gnn_pred 混进另一种量纲
+#          （17.3.19 的根因：15s 空闲超时 → 整窗未命中 → 退逐候选，写的是原始延迟）
+#        · 上述实测值（行数/指纹/rank 请求数/兜底数）都落进日志，便于事后判读
 #   ⑤ 转存 ~/shadow_analyze.out → ~/sweep2_<tag>.out
+#
+# 参考指纹取法：SHADOW_REF_FP 显式给定，否则取归档里最新那棵树。取不到 → 该闸门
+# 降级为「只记录不拦」并在日志里说明，不假装验过。换了 Rust 导致指纹变化时，必须
+# 显式给 SHADOW_REF_FP=<新指纹> 才启用新基线（避免把不可比的两批混着分析）。
 #
 # 安全阀（无人值守必需）：
 #   · 磁盘剩余 < SHADOW_MINFREE_GB（默认 50G）→ 中止战役，不写满盘
@@ -80,6 +90,23 @@ tree_tag() {
   if [ -n "$c" ]; then basename "$c" .pt; else echo unknown; fi
 }
 
+# 剔除 gnn_pred 后的指纹（行内容 + 电路归属）。这是 #65 尺子的核心不变量：
+# 候选集、评估顺序、每一条 true_delay 都与 ckpt 无关，ckpt 只改 gnn_pred 一列
+# （Rust 侧 pre_rank 的返回值被丢弃，见 tl_opt.rs:893）。所以两棵可比的树，
+# 剔掉 gnn_pred 后应当逐位相同 —— 不等就说明不是"同一把尺子量出来的"。
+# **相对路径必须入哈希**：否则两棵树只要行的多重集相同，即使那些行被分到了
+# 不同电路也会同哈希（17.3.19 之前我就是这么骗过自己的）。
+tree_fp() {
+  local d="$1" f
+  [ -d "$d" ] || { echo none; return; }
+  ( cd "$d" || exit 0
+    for f in */*/gnn_shadow.csv; do
+      [ -f "$f" ] || continue
+      printf '== %s\n' "$f"
+      sed 's/gnn_pred=[^,]*,//' "$f"
+    done ) | sort | sha1sum | cut -c1-12
+}
+
 # 归档一棵树到 ARCHIVE_ROOT/<tag>_<时间戳>（与 run_shadow_batch.sh 同一命名规则）
 archive_tree() {
   local tag="$1" ts d n
@@ -138,8 +165,12 @@ run_sweep() {
       echo "eval_idx=1, iter=0, window=0, gnn_pred=1.0e0, true_delay=1.0e-9, transistors=6" \
         > "$TREE/level$((i % 4))/CELL$i/gnn_shadow.csv"
     done
-    printf '[%s] 全部分片结束\n候选集数（≥4 候选）: 3   成功行=7 失败行=0 小集=1\n' \
-      "$(date '+%F %T')" > "$ANALYZE_OUT"
+    # 这行必须**无条件**出现（真分析器的 :476 也是无条件打印的）：闸门②把「读不到」
+    # 当作不过处理，假树要是漏打这行，好路径就会被自己的假数据判死。
+    printf '[%s] 全部分片结束\n候选集数（≥4 候选）: 3   成功行=7 失败行=0 小集=1\n兜底窗口（整集 gnn_pred 都是原始延迟，非秩）: %s/714 集 %s\n' \
+      "$(date '+%F %T')" "${SHADOW_DRY_RAW:-0}" \
+      "$([ "${SHADOW_DRY_RAW:-0}" = 0 ] && echo '✅ 无（全走秩聚合）' || echo '⚠ 注入故障')" \
+      > "$ANALYZE_OUT"
     return 0
   fi
   bash "$DIAG_DIR/run_shadow_batch.sh"
@@ -185,12 +216,23 @@ if [ ${#FINAL[@]} -eq 0 ]; then echo "✗ 全部被 --skip 掉了。"; exit 2; f
 
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
+
+# 参考指纹：优先取显式给定的 SHADOW_REF_FP，否则取归档里最新那棵树的。
+# 取不到（首次跑、归档为空）→ 闸门降级为「只记录不拦」，并说明原因，
+# 而不是默认放行又装作验过了。
+FP_REF="${SHADOW_REF_FP:-}"
+if [ -z "$FP_REF" ] && [ -d "$ARCHIVE_ROOT" ]; then
+  ref=$(ls -1dt "$ARCHIVE_ROOT"/*/ 2>/dev/null | head -1)
+  [ -n "$ref" ] && FP_REF=$(tree_fp "$ref")
+fi
+
 say "===== shadow 战役开始（dry=$DRY）====="
 say "rundir  = $RUNDIR"
 say "scaler  = $SCALER"
 say "tree    = $TREE"
 say "归档根  = $ARCHIVE_ROOT（失败隔离 = $FAILED_ROOT）"
 say "单趟上限= ${MAXWAIT}s   磁盘下限= ${MINFREE_GB}G"
+say "参考指纹= ${FP_REF:-（取不到 → 指纹闸门本趟只记录不拦）}"
 say "ckpt 清单（${#FINAL[@]} 个）："
 for c in "${FINAL[@]}"; do say "  - $(tag_of "$c")   $c"; done
 
@@ -211,16 +253,41 @@ for ckpt in "${FINAL[@]}"; do
 
   ok=1
   n=$(ls -1 "$TREE"/*/*/gnn_shadow.csv 2>/dev/null | wc -l)
+  rows=$(cat "$TREE"/*/*/gnn_shadow.csv 2>/dev/null | wc -l)
+  nreq=$(grep -c 'POST /rank' "$SERVE_LOG_DIR/serve_$tag.log" 2>/dev/null || true)
+  # 兜底窗口数：整集 gnn_pred 都是原始延迟（~1e-11）而非秩 —— 见 gnn_shadow.rs 的 timeout_ms
+  raw=$(sed -n 's/.*兜底窗口[^:]*: *\([0-9]*\)\/.*/\1/p' "$ANALYZE_OUT" 2>/dev/null | head -1)
+  fp=$(tree_fp "$TREE")
+
   [ "$n" = 46 ] || { say "  ✗ CSV 数=$n（应 46），本趟不完整"; ok=0; }
   [ -s "$ANALYZE_OUT" ] || { say "  ✗ 分析输出缺失或为空"; ok=0; }
+  # 闸门①：指纹。只查 CSV 个数挡不住「46 个电路都开了头、每个只写了几行」的半成品，
+  # 而半成品会带着一个完全正当的标签进档 —— 正是 I15 那一类错。指纹直接测我们要的
+  # 性质（与既有一批是否同一把尺子），而不是拿行数之类的东西当代理。
+  if [ -n "$FP_REF" ] && [ "$FP_REF" != none ]; then
+    if [ "$fp" != "$FP_REF" ]; then
+      say "  ✗ 指纹 $fp ≠ 参考 $FP_REF —— 候选集/真值与本批不可比"
+      say "    （半成品趟，或 Rust 变了；若是后者，须显式给 SHADOW_REF_FP=<新指纹> 才启用新基线）"
+      ok=0
+    fi
+  fi
+  # 闸门②：兜底。非 0 说明 pre_rank 整窗未命中，gnn_pred 里混进了另一种量纲。
+  # 读数缺失 → 分析器没跑到报告段（_shadow_analyze.py:476 是无条件打印的），
+  # 此时「文件非空」什么也证明不了，一并按不过处理（fail-closed：误隔离只是多一棵树
+  # 进 failed/，误放行会污染整个分析池）。
+  if [ -z "$raw" ]; then
+    say "  ✗ 分析输出里读不到「兜底窗口」数 —— 分析器可能中途退出"
+    ok=0
+  elif [ "$raw" != 0 ]; then
+    say "  ✗ 兜底窗口 $raw 个 —— pre_rank 整窗未命中，gnn_pred 混入原始延迟，与本批不可比"
+    ok=0
+  fi
+  say "  实测：CSV=$n 行=$rows 指纹=$fp rank请求=${nreq:-?} 兜底=${raw:-?}"
   if [ "$ok" = 0 ]; then quarantine_tree "$tag"; continue; fi
 
   if ! mv "$ANALYZE_OUT" "$OUT_DIR/sweep2_$tag.out"; then
-    # 数据本身是好的（46 个 CSV 已校验），只是摘要没转存成 —— 不隔离，
-    # 但必须喊出来：下一趟会覆盖 $ANALYZE_OUT，这份读数就只能回头用归档树补算。
     say "  ✗ 转存分析输出失败（$ANALYZE_OUT 会被下一趟覆盖；可事后 --root 归档树补算）"; ok=0
   fi
-  rows=$(cat "$TREE"/*/*/gnn_shadow.csv 2>/dev/null | wc -l)
   if [ "$ok" = 1 ]; then
     say "  完成 $tag：行=$rows 用时=$(( $(date +%s) - t0 ))s"
   else
