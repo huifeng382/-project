@@ -22,6 +22,61 @@ from src.graph_builder import rebuild_gate_types
 
 PIN_WEIGHTS = {'a': 1.3, 'b': 1.0, 'c': 1.0, 'd': 1.3, 'e': 1.0}
 
+
+# ---------- 部署选点政策（OPERATIONS §6.7:212 落地，17.4.1）----------
+# 政策原文：「取平台末端（最后一个 midpoint），不取 shadow argmax；best_model.pt 不进部署候选」。
+# 两个调用点（训练内 midpoint 块 / EVAL_ONLY=midpoint）**共用这两个函数**——历史上它们是两份
+#   各自 argmax 的复制品，只改一处等于政策落一半（2026-09-17 就是这么发现 EVAL_ONLY 那条的）。
+def midpoint_epoch_of(path):
+    """midpoint_ep{N}.pt → N（int）；解析不出返回 -1。
+    ⚠ 必要性：`sorted(glob(...))` 是**字符串序**，midpoint_ep100 会排在 midpoint_ep50 前面
+    → 想「取末端」却直接取 `mid_files[-1]` 会取到 ep50（取反）。故排序与解析都必须走数值。"""
+    try:
+        return int(os.path.basename(path).replace('midpoint_ep', '').replace('.pt', ''))
+    except Exception:
+        return -1
+
+
+def pick_midpoint(pairs, mode='last'):
+    """从 [(ep, score), ...] 里按政策选一个 epoch。pairs 须**已按 ep 升序**。
+
+    返回 (选中ep | None, 说明行列表)。**只做决策、不打印主日志**：两处调用点的逐 epoch
+    打印格式不同（训练内是 `  ep  N: cap2=...`，eval-only 是 `[eval-only] epN(val): cap2=...`），
+    各自保留原格式不动 —— 尤其训练内那行是 OPERATIONS §6.7:212 ⑤ 指定的「免费守卫」入口。
+
+    mode='last'           取平台末端 = epoch 最大的**有效**中点（政策默认；确定性、不依赖 shadow）
+    mode='argmax_capture2' 17.3.7~17.4.0 旧行为：val capture2 取 argmax（仅供复现旧 run）
+
+    守卫⑤（免费）：val capture2 的 argmax 若恰落在**最后一个**有效中点上，说明曲线到末端仍在爬
+      —— 很可能是早停把平台砍掉了 →「取平台末端」的前提不成立。**只告警、不改变选择**：
+      选点规则本身必须是确定性的，不该被一个噪声级的 argmax 位移牵着走（那正是旧 argmax 选点的病根）。
+    """
+    valid = [(ep, s) for ep, s in pairs if not np.isnan(s)]
+    notes = []
+    if not valid:
+        return None, notes
+    last_ep = max(ep for ep, _ in valid)
+    # 同分取最早（确定性；旧代码用严格 `>` 在字符串序里取到的是「最早」，数值序下保持一致）
+    amax_ep = max(valid, key=lambda t: t[1])[0]
+    if mode == 'argmax_capture2':
+        chosen = amax_ep
+        notes.append("  [选点] 规则=argmax(val capture2) —— 17.3.7~17.4.0 旧行为，仅供复现；"
+                     "已判为「在不可分辨的差上取 argmax = 拟合噪声」")
+    else:
+        chosen = last_ep
+        notes.append("  [选点] 规则=取平台末端（epoch 最大的**有效** midpoint）"
+                     "—— 政策默认，确定性，不依赖 shadow")
+    if amax_ep == last_ep:
+        notes.append(f"  ⚠⚠ 守卫⑤：val capture2 的 argmax 落在**末端** ep{last_ep} —— 曲线到最后"
+                     f"一个中点仍在爬，很可能是早停把平台砍掉了 →「取平台末端」前提不成立。"
+                     f"请看上面逐中点那行曲线确认；必要时 RESUME 续训，或调 EARLYSTOP_CAP2_GUARD / "
+                     f"CAP2_GUARD_MAX_EXTRA 重跑。")
+    else:
+        notes.append(f"  ✓ 守卫⑤：val capture2 的 argmax 在 ep{amax_ep}（末端 ep{last_ep} 之内）"
+                     f"→ 平台已形成，规则成立")
+    return chosen, notes
+
+
 def log_mse_loss(pred_log, target):
     target_log = torch.log10(target + 1e-12)
     return F.mse_loss(pred_log, target_log)
@@ -707,13 +762,13 @@ def main():
         # 选点数据用 **val**（不是 test）：理由见下方训练内 midpoint 块顶部的 17.3.7 注释。
         sel_dyn = val_dataset.dynamic_df.reset_index(drop=True)
         if eval_only == 'midpoint':
-            mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
+            # ⚠ key= 数值序（同训练内那块）：sorted(glob()) 是字符串序，ep100 会排在 ep50 前
+            mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')), key=midpoint_epoch_of)
             assert mid_files, f"[eval-only] 未找到 midpoint 文件于 {OUTPUT_DIR}"
-            best_ep, best_score = None, -float('inf')
+            pairs = []
             for mf in mid_files:
-                try:
-                    ep_num = int(os.path.basename(mf).replace('midpoint_ep', '').replace('.pt', ''))
-                except Exception:
+                ep_num = midpoint_epoch_of(mf)
+                if ep_num < 0:
                     continue
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
                 _, _, mp_preds, mp_targets = evaluate(model, val_loader, device)
@@ -730,14 +785,19 @@ def main():
                       f"| 诊断: regret={mhi.get('regret_pct', 100.0):.2f}% "
                       f"sp={mhi.get('spearman', 0.0):.3f} r2={mr2*100:.1f}% r3={mr3*100:.1f}%")
                 # NaN = 该 epoch 在 val 上没有任何 m>=4 的组（不可统计）→ 不参与选点
-                if not np.isnan(score) and score > best_score:
-                    best_score, best_ep = score, ep_num
+                pairs.append((ep_num, score))
+            # 与训练内那块**同一决策函数**（政策共用），避免两处选点规则各自漂移
+            best_ep, sel_notes = pick_midpoint(pairs, MIDPOINT_SELECT)
+            for _n in sel_notes:
+                print(f"[eval-only]{_n}")
             if best_ep is None:
                 # 这条路径是显式的诊断性重生成（会覆写 test_predictions.npz）→ 直接失败，
                 # 绝不带着错误 ckpt 落盘 npz
                 raise RuntimeError("[eval-only] 所有 midpoint 在 val 上的 capture2 均为 NaN（无 m>=4 组）→ 无法选点")
             ckpt = os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt')
-            print(f"[eval-only] best midpoint ep{best_ep} (capture2={best_score:.2f}%, 选于 val)")
+            _rule = '取平台末端' if MIDPOINT_SELECT != 'argmax_capture2' else '选于 val(argmax)'
+            print(f"[eval-only] best midpoint ep{best_ep} (capture2={dict(pairs)[best_ep]:.2f}%, {_rule}, "
+                  f"MIDPOINT_SELECT={MIDPOINT_SELECT})")
         elif eval_only == 'best':
             ckpt = os.path.join(OUTPUT_DIR, 'best_model.pt')
         else:
@@ -948,6 +1008,9 @@ def main():
                 break
 
     # 排序选点优先；fallback 回原 best_model
+    # ⚠ 17.4.1（OPERATIONS §6.7:212）：**best_model.pt 不进部署候选**。此处装载它只为
+    #   ① 下面的 val/test 基线与 per-corner / per-batch 分解打印；② 万一下面**没有任何可用
+    #   midpoint** 时的退化兜底。真正的部署候选由下方 midpoint 块按政策（MIDPOINT_SELECT）选出。
     rp = os.path.join(OUTPUT_DIR, 'best_rank_model.pt')
     _bm = os.path.join(OUTPUT_DIR, 'best_model.pt')
     if BEST_RANK_METRIC != 'none' and os.path.exists(rp):
@@ -1014,24 +1077,34 @@ def main():
     #   决策的数据；一旦用它挑 epoch，它就不再是测试集，报出的数变成「N 个候选里最好的那个
     #   在 test 上的成绩」，系统性偏乐观，偏量约等于 epoch 间噪声（实测臂内 1.6~2.7pp，
     #   是臂间差异 0.46pp 的数倍），足以把臂的名次排反。val 本就在承担选点职责
-    #   （best_model.pt 按 config.BEST_MODEL_METRIC，当前为 smoothed_rel_err；早停按 val_loss），
+    #   （best_model.pt 按 config.BEST_MODEL_METRIC，**当前为 capture2**——17.3.8 起换的，
+    #    此处旧注释误记为 smoothed_rel_err，17.4.1 更正；早停按 val_loss），
     #   多一项用途不新增污染；且 val 与
     #   test 同为 15% 的 expr 组、规模基本相同，判据噪声不变。选中的 ep 仍**在 test 上报数**
     #   （本块末尾那次 evaluate 不动）→ test 从此才是诚实的成绩单。
     #   分数公式本次**不改**（判据换成两阶段捕获率另出一版，两件事各自可单独验证）。
+    #   17.4.1：**选点规则**改了 —— 从「val capture2 取 argmax」改为政策性的「取平台末端」，
+    #   即 MIDPOINT_SELECT='last'（config.py 有原文与理由）。逐中点那行 `ep N: cap2=...` 的
+    #   **格式逐字未动**：它是 OPERATIONS §6.7:212 ⑤ 指定的免费守卫入口（看 argmax 是否落在
+    #   末端 → 判断早停有没有把平台砍掉）。上面的 val 侧评估保留为**诊断量**，不再决定选谁。
     orig_preds, orig_targets, orig_test_rel = preds.copy(), targets.copy(), test_rel_err
     mid_epoch = None
     if SAVE_MIDPOINTS:
         import glob as _gb
-        mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')))
+        # ⚠ key= 数值序：sorted(glob()) 是字符串序（ep100 会排在 ep50 前）——「取末端」必须数值序
+        mid_files = sorted(_gb.glob(os.path.join(OUTPUT_DIR, 'midpoint_ep*.pt')), key=midpoint_epoch_of)
         if mid_files:
             # 注意：不能用外层的 test_dyn —— 它下面还要给 SUMMARY/per-corner/per-batch 用
             sel_dyn = val_dataset.dynamic_df.reset_index(drop=True)
-            print("\n------- Midpoint Comparison (weighted score, 选于 val) -------")
-            best_ep, best_score = None, -float('inf')
+            # 17.4.1：抬头原写 "weighted score, 选于 val" —— weighted score 自 17.3.7 已弃用，
+            #   且选点规则已改为政策性的「取平台末端」（不再是在 val 上取 argmax）→ 两处都改掉，
+            #   免得读日志的人以为这行还是旧的加权分选点。
+            print("\n------- Midpoint Comparison (逐中点诊断；选点规则见下方 [选点] 行) -------")
+            pairs = []
             for mf in mid_files:
-                try: ep_num=int(os.path.basename(mf).replace('midpoint_ep','').replace('.pt',''))
-                except: continue
+                ep_num = midpoint_epoch_of(mf)
+                if ep_num < 0:
+                    continue
                 model.load_state_dict(torch.load(mf, map_location=device, weights_only=False))
                 _, _, mp_preds, mp_targets = evaluate(model, val_loader, device)
                 mn = min(len(sel_dyn), len(mp_preds))
@@ -1055,15 +1128,29 @@ def main():
                 print(f"  ep{ep_num:>4d}: cap2={score:6.2f}%  | 诊断: regret={mr:.2f}% sp={ms:.3f} "
                       f"cap={mc:.1f}% r2={mr2*100:.1f}% r3={mr3*100:.1f}%")
                 # NaN = 该 epoch 在 val 上没有任何 m>=4 的组（不可统计）→ 不参与选点
-                if not np.isnan(score) and score > best_score:
-                    best_score, best_ep = score, ep_num
+                pairs.append((ep_num, score))
+            # ---- 按政策选点（决策与 EVAL_ONLY=midpoint 共用同一函数，防两处走偏）----
+            best_ep, sel_notes = pick_midpoint(pairs, MIDPOINT_SELECT)
+            for _n in sel_notes:
+                print(_n)
             if best_ep is None:
                 # 全部 epoch 不可统计 → 明确喊出来，不要静默退回（历史踩过「SUMMARY 显示 midpoint
                 # 而 npz 存的是 best_model.pt」的不一致，别让它以新形式重演）。此处不抛异常：
                 # 模型已训完、checkpoint 均已落盘，抛了会连带丢掉 SUMMARY。
+                # ⚠ 这里退回 best_model.pt 是**退化路径**（没有任何可用 midpoint），与政策「best_model.pt
+                #   不进部署候选」不矛盾：政策禁的是「有 midpoint 却去选 best_model」，不是「无 midpoint 时崩掉」。
                 print("  ⚠ 所有 midpoint 的 val capture2 均为 NaN（无 m>=4 组）→ 未选点，沿用 best_model.pt")
+                print("  ⚠⚠ 这是退化路径：本次 run **没有**合法部署候选，不要拿 best_model.pt 去 serve")
             else:
-                print(f"  >>> Best midpoint: ep{best_ep} (capture2={best_score:.2f}%, 选于 val)")
+                best_score = dict(pairs)[best_ep]
+                _rule = '取平台末端' if MIDPOINT_SELECT != 'argmax_capture2' else '选于 val(argmax)'
+                print(f"  >>> Best midpoint: ep{best_ep} (capture2={best_score:.2f}%, {_rule}, "
+                      f"MIDPOINT_SELECT={MIDPOINT_SELECT})")
+                print(f"  ✓ 部署候选 = midpoint_ep{best_ep}.pt；best_model.pt 不进部署候选"
+                      f"（OPERATIONS §6.7:212）")
+                # 诚实标注：上面 per-corner / per-batch 两节消费的是本块**之前**装载的 best_model.pt
+                # 权重（见本块上方那个装载点），自本行起（含 test_predictions.npz）才换成选中的 midpoint。
+                print("  ⚠ 上方 per-corner / per-batch 各行来自 best_model.pt，不是本 midpoint —— 读 SUMMARY 时勿混。")
                 mid_epoch = best_ep
                 model.load_state_dict(torch.load(
                     os.path.join(OUTPUT_DIR, f'midpoint_ep{best_ep}.pt'),

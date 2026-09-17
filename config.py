@@ -33,6 +33,12 @@ TRAIN_SEED = int(os.environ.get('TRAIN_SEED', '42'))   # 只控制模型初始�
 #   「GNN 出前3 → SPICE 精排 → 取前3内真最优」，且分母是「可改进空间」→ 随 spread 归一、
 #   跨组可比。smoothed_rel_err 属回归误差型（预测准不准），而部署只消费组内变体次序，
 #   两者不是一回事（实测该 score/smoothed 序与 Rust 部署序可反序）。
+# ⚠ 2026-09-17 追记（**判决未落地，替换待定 —— 见 task #60 D**）：capture2 后来被**判 ❌ 不采纳**
+#   （四条证据：过度遗憾翻倍 / 亚噪声信号 0.16~0.24pp 撬动 1~2.65pp 后果 / Spearman-Pearson 变号 /
+#   跨臂符号反转），但这一行仍是 capture2 → 「判了没改」。**本项只决定 best_model.pt 存哪个 epoch**，
+#   不碰梯度/RNG（改它不影响训练本身）。而按 OPERATIONS §6.7:212，best_model.pt **已不进部署候选**
+#   → 对部署无害，故不擅自替换。候选：'smoothed_rel_err'（config 上方记的 12.x 实测全指标无短板、
+#   且曾是默认，窗口 BEST_SMOOTH_WINDOW 仍在）/ 'val_loss' / 'val_rel_err'。**待用户定档后再改。**
 BEST_MODEL_METRIC = 'capture2'
 BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 
@@ -43,6 +49,17 @@ RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
 RANK_EVAL_INTERVAL = 5     # 每隔 N 个 epoch 在 val 上评估排序
+
+# 17.4.1 部署选点政策落地（OPERATIONS §6.7:212）—— midpoint 选点规则。
+#   政策原文：「取平台末端（最后一个 midpoint），不取 shadow argmax；best_model.pt 不进部署候选」。
+#   'last'            = 取**平台末端** = epoch 最大的有效 midpoint。**政策默认**，确定性、不依赖 shadow。
+#   'argmax_capture2' = 17.3.7~17.4.0 旧行为（val capture2 取 argmax）。**保留仅供复现旧 run**：
+#                       在不可分辨的差上取 argmax = 拟合噪声（已证严格@3 对 1 ulp 的敏感度是遗憾的 ~17 倍），
+#                       且该 score 序与 Rust 部署序实测 Spearman = −1（42b 五点完全反序）。
+#   ⚠ 改这一项**不影响训练**（不碰梯度/RNG），只改变「哪个 ckpt 被当成产物」。两个调用点
+#   （训练内 midpoint 块 / EVAL_ONLY=midpoint）共用 src.train_sweep.pick_midpoint，不会各走各的。
+#   可用环境变量覆盖以便不改文件复现旧 run：MIDPOINT_SELECT=argmax_capture2 python3 main.py
+MIDPOINT_SELECT = os.environ.get('MIDPOINT_SELECT', 'last')
 
 # 17.3.8 早停守卫：val_loss 平台先到、而 capture2 仍在刷新时，先不停（**只许延后，不许提前**）。
 # 语义是「给早停**增加**一个条件」而非放宽：原 val_loss 条件仍须成立，只是额外要求 capture2
