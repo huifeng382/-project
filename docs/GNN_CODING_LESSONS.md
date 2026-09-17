@@ -16,7 +16,7 @@
 
 ### 1.2 缓存键 = 数据文件 mtime（16.3.1）
 - **现象**：复制了完整缓存但新 run 还是「Graph cache: outdated, clearing」从头重建。
-- **原因**：图缓存键 = `hash(graph_builder.py) + md5(各parquet 的 int(mtime)) + STRUCT_MODE`（train_sweep.py:142-149, 192）。新 clone 的数据 mtime ≠ 旧数据 mtime → 键变 → 清空重建。
+- **原因**：图缓存键 = `hash(graph_builder.py) + md5(各parquet 的 int(mtime)) + STRUCT_MODE`（`src/train_sweep.py:197-204` 的 `_data_mtime_hash` 与 `:246-247` 的键合成；⚠ 17.4.1 在文件顶插入 55 行，此处 **+55** —— 但选点块附近因该块自身也被改过而**偏移更大**（+63/+73/+87），别一刀切用 +55，旧记的 `:142-149, 192` 即 `:142-149→:197-204`）。新 clone 的数据 mtime ≠ 旧数据 mtime → 键变 → 清空重建。
 - **正确做法**：复用缓存必须**连数据一起 `cp -a` 复制**（保 mtime）；跨目录/重拷贝后 mtime 变 → 自动重建（`.version` 机制是安全网，不是 bug）。
 - **教训**：`_check_cache_dir` 按 `.version` 文件比对，**只查键、不查完整性**——残缺缓存（构建中断留下的）可能被当成有效。
 
