@@ -48,10 +48,15 @@ RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
 
 # 17.4.3 采样器与排序损失**解耦**。原先 `RANK_LOSS_W > 0` 一处开关同时改了「损失项」和
 #   「采样器」，于是 §13.6「排序损失全轴净伤害」里这**两个效应本来就分不开**。
-# ⚠ 为何必须能单独打开采样器：本地核算（scripts/diag/_local_obj_feas.py L1）实测，原 sampler
-#   （随机 shuffle）下一个 80 行的 batch **零成对样本的占 rest 94.0% / m4 67.3% / full 54.2%**
-#   —— 组均 11.8 行，随机抓 80 行几乎全落在不同组 ⇒ 成对项**本身就是空的**，不是「效果差」。
+# ⚠ 为何必须能单独打开采样器：本地核算实测，**默认路径**的原 sampler（站点1 else =
+#   `CircuitGroupSampler` 整电路打包）下一个 80 行的 batch **零成对样本的占 full 92.1% /
+#   rest 49.0% / m4 26.7%**（Grouped 下为 0.0%，成对均值比 102~812×）—— 组均 11.8 行，
+#   整电路打包仍常把一组拆到多个 batch ⇒ 成对项**大量为空**，不是「效果差」。
 #   故 GroupedBatchSampler 不是「附带的混淆」，而是成对项非空的**前提**。
+#   ⚠ 17.4.4 更正：本行原记「原 sampler（随机 shuffle）rest 94.0 / m4 67.3 / full 54.2」是错的
+#   —— 那三个数是**随机置换**的读数，而随机置换只对应站点2（离群点清洗分支）的 else，
+#   不是默认路径。方向不变（Grouped 仍是前提），但三个数须换成上面那组。
+#   真读数见 scripts/diag/_t_sampler_live.py Part C（exec 站点真源码 + 真 CircuitGroupSampler）。
 #   'auto' = 旧行为（Grouped ⟺ RANK_LOSS_W > 0），**默认，逐字不改现有一切 run**。
 #   '1'/'0'（及 true/false/yes/no/on/off）= 显式指定，与 RANK_LOSS_W 无关。
 #   三臂实验（task #60）：A = auto 且 w=0（基线）/ C = USE_GROUPED_SAMPLER=1 且 w=0（新增，

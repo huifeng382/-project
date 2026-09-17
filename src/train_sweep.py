@@ -83,9 +83,11 @@ def use_grouped_sampler(rank_loss_w, mode='auto'):
 
     'auto' = 旧行为：Grouped ⟺ RANK_LOSS_W > 0（**默认，逐字不改现有一切 run**）
     '1'/'0'（及 true/false/yes/no/on/off）= 显式指定，与 rank_loss_w 无关。
-    ⚠ 为何要能单独打开采样器：原 sampler（随机 shuffle）下 80 行 batch 的**零成对样本占比**
-      rest 94.0% / m4 67.3% / full 54.2%（本地实测，scripts/diag/_local_obj_feas.py L1）
-      ⇒ 成对项恒空 ⇒ 旧开关下「采样器效应」与「损失效应」分不开（§13.6 那次否证即如此）。
+    ⚠ 为何要能单独打开采样器：**默认路径**的原 sampler（`CircuitGroupSampler` 整电路打包）
+      下 80 行 batch 的**零成对样本占比** full 92.1% / rest 49.0% / m4 26.7%（Grouped 0.0%）
+      ⇒ 成对项大量为空 ⇒ 旧开关下「采样器效应」与「损失效应」分不开（§13.6 那次否证即如此）。
+      ⚠ 17.4.4 更正：原记「随机 shuffle rest 94.0 / m4 67.3 / full 54.2」是**随机置换**的读数
+        （只对应离群点清洗分支站点2 的 else），不是默认路径。见 _t_sampler_live.py Part C。
     """
     m = str(mode).strip().lower()
     if m in ('1', 'true', 'yes', 'on'):

@@ -1215,6 +1215,22 @@ loss        = (sample_loss * PIN_WEIGHTS[switching_pin]).mean()    # 按开关�
 
 **(7) 未做（明确划线）**：本次**不跑任何训练**、不改任何默认值、不碰 RNG/梯度 —— 纯逻辑解耦 + 两层自检（单元 + 真跑）。C 臂训练、以及 17.4.2 §(3) 的 R2（服务器上一趟零风险的部署口径核算）都还没做。
 
+### ✅ 17.4.4 — C 臂可启动（`setup_exp.sh` 变体）+ 零成对读数就地更正（2026-09-18）
+
+**(1) 新增 `setup_exp.sh` 变体 `v2nowavegs<seed>`（= 三臂实验的 C 臂）。** 17.4.3 把采样器与 `RANK_LOSS_W` 解耦后，C 臂（`USE_GROUPED_SAMPLER=1` 且 `w=0`）在**代码上**已可表达，但**在 `setup_exp.sh` 里没有入口** —— 而 OPERATIONS §2 规定训练强制走 `setup_exp.sh`。本次补上该分支：关 wave（`USE_TRANSISTOR_WAVE=False`）+ `export USE_GROUPED_SAMPLER=1` + 按尾缀设 `TRAIN_SEED`；**不动 `RANK_LOSS_W`（保持默认 0.0）**。分支插在 `v2nowave[0-9]*` **之前**，实测归属 5/5 正确（`v2nowavegs42m4`→新分支；`v2nowavegnn42`/`v2nowave42m4`/`v2nowaver42m4`/`v2wave42m4` 仍各归原位）。三臂现状：**A** = `v2nowave42m4`（默认 `auto`+w=0，已有）｜**C** = `v2nowavegs42m4`（新）｜**B** = `v2nowaver42m4`（w=0.5，已有）⇒ C−A = 纯采样器、B−C = 纯损失。
+
+**(2) 零成对读数就地更正**（`config.py` 的 `USE_GROUPED_SAMPLER` 块 + `src/train_sweep.py` 的 `use_grouped_sampler` docstring）。两处引的是 **17.4.2 L1 那组随机置换的数**（`rest 94.0% / m4 67.3% / full 54.2%`）并称其为「原 sampler」，而**默认路径的真数是 `full 92.1% / rest 49.0% / m4 26.7%`**（17.4.3 §(6) 已定案）。差异不是笔误而是**测了另一个 sampler**（那三个数只对应站点 2 离群点清洗分支的 `shuffle=True`）。已在两处换成真数并写明来源（`_t_sampler_live.py` Part C），保留「Grouped 是成对项非空的前提」这一结论（0.0% vs 26.7~92.1%，成对均值比 102~812×）。⚠ 更正**不改变三臂设计**，但改掉了该设计被引用时的数字 —— 留着会让下一个人以为「`rest` 上九成 batch 成对项为空」（真值 49%）。
+
+**(3) `docs/OPERATIONS.md` §3 变体表**补 `v2nowavegs<seed>` 一行，并给 `v2nowaver<seed>` 标注「= 三臂 B 臂」，把 A/B/C 对应关系写进操作手册。
+
+**(4) 启动（服务器，用户执行；本次提交不含任何训练）。** `cd ~/-project` → `CACHE_SEED=$HOME/project-107-v2nowave42m4 bash setup_exp.sh v2nowavegs42m4`。核数：`setup_exp.sh` 内**硬编码 `OMP_NUM_THREADS=6`**（`:295/:297`）⇒ 已满足「≤8 核、不挤压他人」，**无需改动**。
+
+**(5) 🔴 顺序约束（`setup_exp.sh` 会 clone GitHub）。** 该脚本用 `git clone -b 10.3.3-fix-earlystop https://github.com/huifeng382/-project.git` 建树，OPERATIONS §2 亦明写「本地未 push 的代码改动不会生效」⇒ **17.4.1~17.4.4 必须先 push，C 臂才可能跑**。若不 push：`v2nowavegs42m4` 在旧 `case` 里**匹配不到任何分支** ⇒ 不执行任何 sed ⇒ `USE_TRANSISTOR_WAVE` 保持默认 **True**、且旧代码根本没有 `USE_GROUPED_SAMPLER` ⇒ **会静默训出「wave 开 + 原采样器」的模型、却挂着 `v2nowavegs42m4` 的树名** —— 又一次 I15 类错标，且全程无报错。
+
+**(6) 未做**：训练本身（用户执行）；跑完按 OPERATIONS §6 走 shadow，逐 ckpt 读数盖 ckpt sha1。本地自检：`_t_sampler_decouple.py` 全绿、`_t_sampler_live.py` 全绿、`bash -n setup_exp.sh` 通过、`case` 分支归属实测 5/5。
+
+**(7) ⚠ 行号又漂一次（两文件同改）。** `config.py` 第 51 行以下 **+5**、`src/train_sweep.py` 第 86 行以下 **+2** ⇒ §17.4.3 §(4) 那张「当前（17.4.3）权威读数」表在本版本上的读数为：损失站点 `:173-175` → **:175-177**｜`17.3.7 换判据` 留档注释 `:1139-1141` → **:1141-1143**｜`capture2_pct` score `:1145` → **:1147**｜两处 `pick_midpoint(pairs, MIDPOINT_SELECT)` `:816`/`:1159` → **:818**/**:1161**｜`config.py` 的 `USE_GROUPED_SAMPLER` `:60` → **:65**、`USE_STRUCT_PRIOR` `:151` → **:156**；`BEST_MODEL_METRIC` 仍在 `config.py:42`（位于改动行之上，未动）。§17.4.3 那张表**保留原值不动**（它是 17.4.3 时点读数，按 17.4.1 起的规矩本就带时点）；**本次及今后的操作性引用一律按锚点找**。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**

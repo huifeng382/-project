@@ -165,6 +165,11 @@ case "$V" in
     echo "IDS_GNN_TABLE=$IDS_GNN_TABLE"
     _S=$(echo "${V#v2nowavegnn}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v2nowavegs[0-9]*)  # 17.4.4 三臂实验 C 臂：nowave(纯拓扑) + GroupedBatchSampler **单独打开**、排序损失仍关
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    export USE_GROUPED_SAMPLER=1
+    _S=$(echo "${V#v2nowavegs}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
   v2wave[0-9]*)
     _S=$(echo "${V#v2wave}" | grep -oE '^[0-9]+')
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
