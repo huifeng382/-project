@@ -4,10 +4,19 @@
 
   L1 **M2 的干净 A/B 到底存不存在？** `_pairwise_rank_loss` 的组来自 `data.grp`
      （= 行级组ID，batch 后拼成 (B,) 张量），而组本身是 (expr,corner,switching_pin,
-     direction,vector) 的变体集。若用**原 sampler（随机 shuffle）**，一个 80 行的 batch
-     里的行几乎落在 80 个**不同**组 ⇒ 成对项拿到的 pair 数 ≈ 0 ⇒ 「保留原 sampler、
-     只加损失项」这条干净 A/B **在结构上是空的**，不是效果差。
+     direction,vector) 的变体集。若一个 80 行的 batch 里几乎全是不同组的行，成对项拿到的
+     pair 数 ≈ 0 ⇒ 「保留原 sampler、只加损失项」这条干净 A/B **在结构上是空的**，不是效果差。
      ⇒ 核算：两种 sampler 下每个 batch 的 (pair 数, 组数) 分布。
+
+     🔴 **17.4.3 更正（本项的前提有一处错）**：本项把「原 sampler」建模成了**随机置换**，
+     而随机置换只对应**站点 2 的 else**（`DataLoader(..., shuffle=True)`，在**离群点清洗
+     分支**里）。**默认路径是站点 1 的 else = `CircuitGroupSampler`（整电路打包）**，实测
+     零成对占比与随机置换差很多：`full` 92.1% / `rest` 49.0% / `m4` 26.7%（随机置换分别为
+     54.2 / 94.0 / 67.3）⇒ **本项记的那三个数是「另一个 sampler」的读数**。
+     结论方向不变（Grouped 仍是成对项非空的前提：0.0% vs 49~92%，成对均值 102~812×），
+     但**「rest 九成 batch 成对项为空」这句在默认路径上不成立**（实为 49%、均值 1.88 对/batch）。
+     真读数见 `scripts/diag/_t_sampler_live.py` 的 Part C（它直接 exec 站点真源码 + 用真
+     `CircuitGroupSampler` 类跑真数据）。
 
   L2 **M3 边界受限损失可行否？** 只保留「一端属真·前3」的 pair 后，还剩多少 pair、
      有多少组归零（归零的组拿不到任何梯度）。

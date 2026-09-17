@@ -77,6 +77,24 @@ def pick_midpoint(pairs, mode='last'):
     return chosen, notes
 
 
+# ---------- 采样器选择（17.4.3：与 RANK_LOSS_W 解耦）----------
+def use_grouped_sampler(rank_loss_w, mode='auto'):
+    """是否用 GroupedBatchSampler（整组打包，保证 batch 内组内成对样本非空）。
+
+    'auto' = 旧行为：Grouped ⟺ RANK_LOSS_W > 0（**默认，逐字不改现有一切 run**）
+    '1'/'0'（及 true/false/yes/no/on/off）= 显式指定，与 rank_loss_w 无关。
+    ⚠ 为何要能单独打开采样器：原 sampler（随机 shuffle）下 80 行 batch 的**零成对样本占比**
+      rest 94.0% / m4 67.3% / full 54.2%（本地实测，scripts/diag/_local_obj_feas.py L1）
+      ⇒ 成对项恒空 ⇒ 旧开关下「采样器效应」与「损失效应」分不开（§13.6 那次否证即如此）。
+    """
+    m = str(mode).strip().lower()
+    if m in ('1', 'true', 'yes', 'on'):
+        return True
+    if m in ('0', 'false', 'no', 'off'):
+        return False
+    return float(rank_loss_w) > 0
+
+
 def log_mse_loss(pred_log, target):
     target_log = torch.log10(target + 1e-12)
     return F.mse_loss(pred_log, target_log)
@@ -623,7 +641,11 @@ def main():
             return iter(result[:self.n_samples])
         def __len__(self):
             return self.n_samples
-    if RANK_LOSS_W > 0:
+    # 17.4.3：采样器由 use_grouped_sampler 决定，不再看 RANK_LOSS_W（'auto' 下行为与旧代码逐字相同）
+    _grouped = use_grouped_sampler(RANK_LOSS_W, USE_GROUPED_SAMPLER)
+    print(f"[采样器] RANK_LOSS_W={RANK_LOSS_W} USE_GROUPED_SAMPLER={USE_GROUPED_SAMPLER!r} → "
+          f"{'GroupedBatchSampler(整组打包)' if _grouped else 'CircuitGroupSampler(原行为)'}")
+    if _grouped:
         from src.utils import GroupedBatchSampler
         sampler = GroupedBatchSampler(train_dataset.group_ids, BATCH_SIZE, shuffle=True)
         train_loader = DataLoader(train_dataset, batch_sampler=sampler, num_workers=2)
@@ -738,7 +760,11 @@ def main():
             print("========== 清洗完成 ==========\n")
 
         train_subset = torch.utils.data.Subset(train_dataset, keep_indices)
-        if RANK_LOSS_W > 0:
+        # 17.4.3：同站点 1，采样器不再由 RANK_LOSS_W 决定（'auto' 下行为与旧代码逐字相同）
+        _grouped = use_grouped_sampler(RANK_LOSS_W, USE_GROUPED_SAMPLER)
+        print(f"[采样器/清洗后] USE_GROUPED_SAMPLER={USE_GROUPED_SAMPLER!r} → "
+              f"{'GroupedBatchSampler(整组打包)' if _grouped else '随机 shuffle(原行为)'}")
+        if _grouped:
             from src.utils import GroupedBatchSampler
             sub_gids = [train_dataset.group_ids[i] for i in keep_indices]
             sampler = GroupedBatchSampler(sub_gids, BATCH_SIZE, shuffle=True)

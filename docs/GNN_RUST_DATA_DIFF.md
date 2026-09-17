@@ -949,7 +949,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 1. **3.60pp（口径修正后 2.90pp）分解 = 1.61pp 选点错 + 1.29pp 残余**。`42b` 服务的 ep100 **是它五个 epoch 里最差的**（14.03% vs 该臂最优 ep150 12.42%）；`42m4` 服务的 ep250 恰是它五点最优（11.13%）。残余 1.29pp（两臂最优对最优）**未分离**，且 (b) 未被证伪：42b 最晚的 ep250（13.07%）并未跳到 ~10.7%。
 2. **臂内选点（1.61–2.65pp）比臂间差异（均值 0.46pp）大一个量级**，两臂区间大幅重叠（12.42–14.03 vs 11.13–13.78）→ **部署选型的杠杆在 epoch，不在换臂**。
 3. **两阶段口径有真正的臂×指标交互（反序）**：两阶段前五名全是 42b（2.90–3.57%）、后五名全是 42m4（4.00–4.61%），与 GNN 自选 top1 完全反序，**每对 epoch 组合都不反转** → 是臂级差异。机制 = **42m4 右尾更肥**（「均值−中位」3.50/2.86/2.36/2.82/3.21 vs 42b 2.61/1.50/1.73/2.33/2.20），中位数是 42m4 胜 1 / 42b 胜 2 / 平 2。→ **带 SPICE 精排才选 42b，不带选 42m4。**
-4. **`Best midpoint` 无判别力，且判据与部署反序（⚠ 17.2.6 更正判据名）**：`Best midpoint` 由加权 `score`（旧 `train_sweep.py:978`，`100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap`，recall@3 主导）选出，**不是** `BEST_METRIC=smoothed_rel_err`（后者是 **`best_model.pt`** 的判据，两者是不同 selector）。**🔴 17.4.1 补：这套加权 `score` 已于 17.3.7 整体删除**（`train_sweep.py:1113` 的注释即记此换判据），midpoint 选点改为 `score = mrk.get('capture2_pct', …)`（`:1119`）；**17.4.1 起更改为不取 argmax 而取平台末端**（`MIDPOINT_SELECT`，`:1113-1147`）。故本节 4/5 两条的「判据与部署反序（Spearman = −1）」是**已删代码**上的历史实测，**不再是当前代码的风险**。`BEST_METRIC` 亦已更名 `BEST_MODEL_METRIC`。同一 selector 在 42m4 挑中五点最优、在 42b 挑中五点最差（1/2）；进一步查 42b 训练侧逐 epoch（§13.7.3）得**该 `score` 序与 Rust 部署序 Spearman = −1（五点完全反序）**。**不得默认服务 Best midpoint。** 附第二次命中「训练侧 Spearman 高 = 部署差」（42m4 ep200 训练侧 Sp 次高 → 部署 13.78% 该臂最差）。
+4. **`Best midpoint` 无判别力，且判据与部署反序（⚠ 17.2.6 更正判据名）**：`Best midpoint` 由加权 `score`（旧 `train_sweep.py:978`，`100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap`，recall@3 主导）选出，**不是** `BEST_METRIC=smoothed_rel_err`（后者是 **`best_model.pt`** 的判据，两者是不同 selector）。**🔴 17.4.1 补：这套加权 `score` 已于 17.3.7 整体删除**（`train_sweep.py:1139` 的注释即记此换判据），midpoint 选点改为 `score = mrk.get('capture2_pct', …)`（`:1145`）；**17.4.1 起更改为不取 argmax 而取平台末端**（`MIDPOINT_SELECT`，`:1139-1173`）〔以上为 **17.4.3 时**行号；17.4.1 时依次为 `:1113` / `:1119` / `:1113-1147`〕。故本节 4/5 两条的「判据与部署反序（Spearman = −1）」是**已删代码**上的历史实测，**不再是当前代码的风险**。`BEST_METRIC` 亦已更名 `BEST_MODEL_METRIC`。同一 selector 在 42m4 挑中五点最优、在 42b 挑中五点最差（1/2）；进一步查 42b 训练侧逐 epoch（§13.7.3）得**该 `score` 序与 Rust 部署序 Spearman = −1（五点完全反序）**。**不得默认服务 Best midpoint。** 附第二次命中「训练侧 Spearman 高 = 部署差」（42m4 ep200 训练侧 Sp 次高 → 部署 13.78% 该臂最差）。
 5. **交付基线不变 = `42m4` ep250（纯拓扑）**；规范序数值 **11.13%**（旧 10.66/10.87 均为 17.2.4 前抽样，带内最差值为 11.13 → 旧值高估 0.47pp）。§13.2/13.3 各行的 10.87/12.19/15.21 等按「17.2.4 前、±0.31pp 不确定」解读，未重测。
 6. **达标线仍远**：最好的 11.13% 是「选择遗憾 ≤5%」的 2.2×。本节证明的是**选点依据**，不是可交付性。
 
@@ -957,7 +957,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 
 全表与逐条论证见 `docs/PROJECT_LOG.md` §17.1.x「训练侧逐 epoch 复核（17.2.6）」。要点：
 
-1. **目标是 delay，损失里没有排序项**：`src/train_sweep.py:139-146`（17.4.1 起；旧记 `:84-91` —— 17.4.1 在文件顶插 55 行，第 24 行以下行号整体 +55） —— `log10(data.y)` 逐行、Huber(delta=0.3)、按开关脚 `PIN_WEIGHTS` 加权取均值；`RANK_LOSS_W=0`、KD 关闭（纯拓扑臂）。**组内排序只是被测量的量，不是被优化的量**（回归副产品）→ 它在排序轴上早饱和是**必然而非意外**。（另一条 idsavg GNN 线目标是 **ids**、指标 val_R²，与本节的 delay GNN 无关。）
+1. **目标是 delay，损失里没有排序项**：`src/train_sweep.py:157-164`（**17.4.3 时**；17.4.1 时为 `:139-146`，旧记 `:84-91`） —— `log10(data.y)` 逐行、Huber(delta=0.3)、按开关脚 `PIN_WEIGHTS` 加权取均值；`RANK_LOSS_W=0`、KD 关闭（纯拓扑臂）。**组内排序只是被测量的量，不是被优化的量**（回归副产品）→ 它在排序轴上早饱和是**必然而非意外**。（另一条 idsavg GNN 线目标是 **ids**、指标 val_R²，与本节的 delay GNN 无关。）
 2. **训练侧也平且非单调** → §13.7.2 那条 Rust 平线**是如实的**，不是"训练增益不转移"。`42b` 训练侧 regret 5.86 / 5.37 / 5.25 / 5.79 / 5.48（全距 0.61pp），**ep100 之后排序轴零净进步**。
 3. **LR 到 ep250 恰在 `LR_MIN=1e-6`，Val Loss 在 ep150/200/250 三点同为 0.0206，Val Rel Err 在 ep150 触底（29.14%）后回升** → **泛化在 ep150 停止，之后是轻度过拟合**（Train Loss 仍缓降至 0.0083）；本次 run 是跑完、不是被截断。
 4. **四个独立信号在 ep150 交汇**：训练侧 regret 唯一最小 5.25% / Val Rel Err 唯一最小 29.14% / Val Loss 底线首达 / **Rust 选择遗憾唯一最小 12.42%**。**唯一不指向 ep150 的是选点 `score` —— 它挑了 ep100，而 ep100 是 Rust 全表最差（14.03%）** → ep150 是该臂真实局部最优。
@@ -992,7 +992,7 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 | # | 量 | 训练侧（口径真值） | serve 侧（现状） |
 |---|---|---|---|
 | ① | `circuit_sig` | `[#X_ 网表行数, transistor_count, #input_pins]`（`data_loader.py:314-325`，逐电路算） | `[num_nodes, 0.0, len(pins)]`（`serve.py:281`）—— **两项都错**：[0] 是图节点数≠`X_` 行数（可复算，见 ①② 分解）；[1] 恒 0 |
-| ② | `struct_prior` | `[transistor_count, #{g∈ct: 'SC_AND'∈g ∧ 'SC_AND_'∉g}, #{g∈ct: 'SC_INV_WIRE'∈g}]`，`ct=cell_types_json`（`data_loader.py:710-719`，`USE_STRUCT_PRIOR=True` @ `config.py:138`；17.4.1 前为 `:121`） | **整个传 `None`**（`serve.py:286`）→ `model.py:111` 的 `if struct_prior is not None` 为假 → 结构残差整块静默跳过 |
+| ② | `struct_prior` | `[transistor_count, #{g∈ct: 'SC_AND'∈g ∧ 'SC_AND_'∉g}, #{g∈ct: 'SC_INV_WIRE'∈g}]`，`ct=cell_types_json`（`data_loader.py:710-719`，`USE_STRUCT_PRIOR=True` @ `config.py:151`（**17.4.3 时**；17.4.1 时 `:138`，17.4.1 前 `:121`）） | **整个传 `None`**（`serve.py:286`）→ `model.py:111` 的 `if struct_prior is not None` 为假 → 结构残差整块静默跳过 |
 | ③ | 动态 `load` | 逐行 `pin_load_json`（中位 1.2e-15） | 常量 `LOAD_F=1e-15`（`serve.py:117 load = global_load`） |
 
 **①② 的放大器**：`sig_encoder`/`struct_encoder` 都是**未归一化**的裸 `Linear(3, hidden//4)`（`model.py:39-54`），量级 44–132 → **错量级比缺值伤得多**（见 13.8.3 的 recon 行）。
@@ -1156,6 +1156,10 @@ Rust 侧实际出现的 7 个 cell 名全部映射成功，无一 OOV：
 - ⚠ **`cap2 95.55%` 与输入污染三项（含诊断位 31/20/271/0/0）目前仍是旧树那轮的读数、未复测**（`PROJECT_LOG` 已标「待补」）⇒ 本报告引用它们时必须带这一句，**不要**当成 `42m4 ep250` 的已确认值。
 
 **⚠ 附带影响（17.4.1）：全库 `train_sweep.py:NNN` 引用整体漂移（已全部改掉）。** 17.4.1 在 `src/train_sweep.py:25` 处插入了 `midpoint_epoch_of`/`pick_midpoint` 共 **55 行**，**且选点块自身也被改过**（argmax 循环 → `pick_midpoint`）⇒ **偏移不是常数**：第 22 行以下 **+55**、730 行以下 **+60**、948 行以下 **+63**、1014 行以下 **+73**、1055 行以下 **+87**。⚠ 照「+55」一把梭会算错选点块附近的引用。已逐处核对并改：本报告 `:952`（`train_sweep.py:978` ⇒ 该行 **17.3.7 已删**，留档注释现于 `:1113-1115`）与 `:960`（`:84-91` → `:139-146`）；`PROJECT_LOG.md:921`（`:84-91` → `:139-146`）、`:951`（`:978` → 已删）、`:956`（`:815-825` → 见下、`:978-984` → 已删）；`GNN_CODING_LESSONS.md:19`（`:142-149, 192` → `:197-204`（`_data_mtime_hash`）+ `:246-247`（键合成））；`OPERATIONS.md:217`（`:1012-1073` → 节锚 `:1075-1150`、`config.py:22` → `:42`）。**政策操作性引用一律改成按锚点找**（`OPERATIONS.md:212` 与 `PROJECT_LOG.md:1100/1103` 的 `grep -n 'cap2={score' src/train_sweep.py`，17.4.1 时 `:1128`）—— 行号必然再漂，锚点不会。
+- **⚠ 17.4.3 又漂了一次（已再次全改）**：17.4.3 把「采样器」与 `RANK_LOSS_W` 解耦（`config.py` 新增 `USE_GROUPED_SAMPLER`、`train_sweep.py` 新增 `use_grouped_sampler` 并改写两个采样站点）⇒ 共 **3 个 hunk**：第 80 行以下 **+18**（新 helper 18 行）、627 行起 **+22**（站点 1 由 1 行变 5 行）、742 行起 **+26**（站点 2 同）；`config.py` 第 49 行以下 **+13**。**上面那条 +55 梯度已作废、不要再用来换算**。
+
+  **当前（17.4.3）权威读数**：损失块 `src/train_sweep.py:157-164`｜排序损失站点 `:173-175`｜`_data_mtime_hash` `:215-222`｜键合成 `:264-265`｜逐 epoch `cap2` 跟踪 `:893-903`｜`smoothed_rel_err` 判据 `:926-933`｜选点块（中途快照回溯）`:1101-1176`｜`capture2_pct` score `:1145`｜`pick_midpoint(pairs, MIDPOINT_SELECT)` 两处 `:816` 与 `:1159`｜17.3.7 换判据留档注释 `:1139-1141`｜`config.py` 的 `BEST_MODEL_METRIC` `:42`（未动）、`USE_STRUCT_PRIOR` `:151`、`USE_GROUPED_SAMPLER` `:49-61`。
+
 - ⚠ **顺带查出两处 17.4.1 之前就已过期的引用**（不是本次插入造成的）：① 本条所引 `train_sweep.py:815-825` 说成 `smoothed_rel_err` 的判据 —— 那段实为训练循环里的**逐 epoch `cap2` 最优跟踪**（17.4.1 时 `:875-885`），`smoothed_rel_err` 的判据在 `:908`（17.4.1 前 `:848`）；② `:995` 的 `config.py:107`（`USE_STRUCT_PRIOR`）17.4.1 前即为 `:121`，现 `:138`；`model.py:110` 现为 `:111`（该文件 17.4.1 未动）。
 
 **🔴 另有比行号更重的发现（17.4.1 内已一并修掉）**：`train_sweep.py:1113` 的注释写着「**17.3.7 换判据：原 score（100·r3+50·r2+0.3·sp−0.2·regret+0.1·cap，recall@3 主导）**」—— 即 **Best midpoint 的加权 `score` 判据在 17.3.7 就已被 capture2 取代**（现 `score = mrk.get('capture2_pct', ...)`，`:1119`）。因此本报告 `:952` 与 `PROJECT_LOG.md:956`（那条「⚠ 纠一处判据名错误 / 加权 score 选出」的更正）**描述的是已不存在的代码**。**已就地重述**：这两处现在都明写「加权 `score` 自 17.3.7 起已删 / 17.4.1 起选点改为取平台末端」，并保留历史实测值（该 `score` 序与部署序 Spearman = −1）**但标明它挂在已删代码上 ⇒ 不构成当前代码的风险**；`BEST_METRIC` 改名 `BEST_MODEL_METRIC` 也已在两处注明。

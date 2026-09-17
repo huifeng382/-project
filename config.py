@@ -43,8 +43,21 @@ BEST_MODEL_METRIC = 'capture2'
 BEST_SMOOTH_WINDOW = 5     # smoothed_rel_err 的滑动窗口
 
 # 组内成对排序损失（直接优化「分辨同组变体谁更快」，尤其小幅差异）
-RANK_LOSS_W = 0.0          # 0=关(默认,不改现有行为)；>0 启用，用 GroupedBatchSampler
+RANK_LOSS_W = 0.0          # 0=关(默认,不改现有行为)；>0 启用。**采样器不再隐含在这里** → USE_GROUPED_SAMPLER
 RANK_MARGIN = 0.03         # log10 延迟空间的间隔（≈7% 相对）
+
+# 17.4.3 采样器与排序损失**解耦**。原先 `RANK_LOSS_W > 0` 一处开关同时改了「损失项」和
+#   「采样器」，于是 §13.6「排序损失全轴净伤害」里这**两个效应本来就分不开**。
+# ⚠ 为何必须能单独打开采样器：本地核算（scripts/diag/_local_obj_feas.py L1）实测，原 sampler
+#   （随机 shuffle）下一个 80 行的 batch **零成对样本的占 rest 94.0% / m4 67.3% / full 54.2%**
+#   —— 组均 11.8 行，随机抓 80 行几乎全落在不同组 ⇒ 成对项**本身就是空的**，不是「效果差」。
+#   故 GroupedBatchSampler 不是「附带的混淆」，而是成对项非空的**前提**。
+#   'auto' = 旧行为（Grouped ⟺ RANK_LOSS_W > 0），**默认，逐字不改现有一切 run**。
+#   '1'/'0'（及 true/false/yes/no/on/off）= 显式指定，与 RANK_LOSS_W 无关。
+#   三臂实验（task #60）：A = auto 且 w=0（基线）/ C = USE_GROUPED_SAMPLER=1 且 w=0（新增，
+#   单独隔离采样器效应）/ B = 1 且 w>0（= 已跑过的 v2nowaver42m4）⇒ C−A = 纯采样器、B−C = 纯损失。
+#   可用环境变量覆盖以便不改文件：USE_GROUPED_SAMPLER=1 python3 main.py
+USE_GROUPED_SAMPLER = os.environ.get('USE_GROUPED_SAMPLER', 'auto')
 
 # 按排序指标选 checkpoint（直接对齐变体择优任务，替换 smoothed_rel_err 选点）
 BEST_RANK_METRIC = 'none'  # 'none'(沿原行为) | 'regret'(选val选择遗憾最小) | 'spearman'(选val秩相关最高)
