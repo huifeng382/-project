@@ -105,10 +105,19 @@ case "$out" in *"不是一趟数据"*) ok "说明了跳过原因" ;; *) no "未�
 echo "--- 7) 变体：TREE 指向 gnn 副本树 → 归档它，且不碰原件树（变体兼容）---"
 # 直接测本次要的兼容性：两棵树同时在盘上，块只应搬走 TREE 指的那棵。
 D=$(mktemp -d)
-mk2() { # $1=树名 $2=ckpt
+mk2() { # $1=树名 $2=ckpt $3=数据文件名（默认 gnn_shadow.csv；内容形状随文件名走，别造假的形状）
+  local csv="${3:-gnn_shadow.csv}"
   mkdir -p "$D/NetlistOpt/temp_sim_test/$1/level0/AND2"
-  echo "eval_idx=1, iter=0, window=0, gnn_pred=1.0e0, true_delay=1.0e-9, transistors=6" \
-    > "$D/NetlistOpt/temp_sim_test/$1/level0/AND2/gnn_shadow.csv"
+  if [ "$csv" = gnn_only.csv ]; then
+    # GNN-only 模式的真实形状：**9 列**，且**没有 true_delay 列**（候选根本没跑仿真）。
+    # 表头逐字取自 src/gnn_only.rs::new 里那行 writeln!（pred_baseline/ratio/anchored_avg_delay
+    # 是锚定设计加的）。夹具形状必须与真实文件一致，否则这个守卫测的是个不存在的形状。
+    printf 'eval_idx,iter,window,cand_id,gnn_pred,pred_baseline,ratio,anchored_avg_delay,transistor_count\n2,1,0,e2,1.0e-11,1.2e-11,8.333333e-1,9.600000e-10,6\n' \
+      > "$D/NetlistOpt/temp_sim_test/$1/level0/AND2/$csv"
+  else
+    echo "eval_idx=1, iter=0, window=0, gnn_pred=1.0e0, true_delay=1.0e-9, transistors=6" \
+      > "$D/NetlistOpt/temp_sim_test/$1/level0/AND2/$csv"
+  fi
   printf '时间            : 2026-09-16 10:00:00\n本轮 serve ckpt : %s\n' "$2" \
     > "$D/NetlistOpt/temp_sim_test/$1/RUN_INFO.txt"
 }
@@ -123,6 +132,23 @@ got=$(archs "$D")
   || no "原件树被误归档/误删 —— 变体没隔离住"
 [ -f "$D/NetlistOpt/temp_sim_test/tl_opt_gnn_batch/RUN_INFO.txt" ] && ok "gnn 树本轮 RUN_INFO 已重建" \
   || no "gnn 树本轮 RUN_INFO 未建"
+
+echo "--- 8) 变体：TREE 指向 gnnonly 树（数据文件是 gnn_only.csv）→ 也必须归档 ---"
+# GNN-only 模式候选没跑仿真，落的是 gnn_only.csv（无 true_delay 列），**不是** gnn_shadow.csv。
+# 守卫若只认 gnn_shadow.csv，这棵树会被判成"不是一趟数据"→ 不归档 → 留在原地，
+# 下一趟 append 进同一棵 = 混趟。本例如实造出 gnnonly 的真实形状来测守卫放宽了没有。
+D=$(mktemp -d)
+mk2 tl_opt_gnn_only  ep250 gnn_only.csv
+mk2 tl_opt_gnn_batch ep150 gnn_shadow.csv
+( cd "$D/NetlistOpt" && HOME="$D" NL="$D/NetlistOpt" TREE=temp_sim_test/tl_opt_gnn_only \
+    bash /tmp/_blk.sh ) >/dev/null
+got=$(archs "$D")
+[ "$got" = "ep250" ] && ok "gnnonly 树（gnn_only.csv）被归档，标签取自它自己的 RUN_INFO" \
+  || no "gnnonly 树归档标签错，得到 '$got'（期望 ep250）—— 守卫可能仍只认 gnn_shadow.csv"
+[ -d "$D/NetlistOpt/temp_sim_test/tl_opt_gnn_batch" ] && ok "gnn 对照树未被触碰（两变体隔离）" \
+  || no "gnn 对照树被误归档/误删 —— 变体没隔离住"
+[ -f "$D/NetlistOpt/temp_sim_test/tl_opt_gnn_only/RUN_INFO.txt" ] && ok "gnnonly 树本轮 RUN_INFO 已重建" \
+  || no "gnnonly 树本轮 RUN_INFO 未建"
 
 echo "=================================================="
 if [ "$FAIL" -gt 0 ]; then echo "FAIL 共 $FAIL 项"; exit 1; fi
