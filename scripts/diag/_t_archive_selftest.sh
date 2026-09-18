@@ -9,7 +9,10 @@ FAIL=0
 ok() { echo "  OK   $1"; }
 no() { echo "  FAIL $1"; FAIL=$((FAIL + 1)); }
 
-BLOCK=$(awk '/^ARCHIVE_ROOT=/{f=1} f{print} /本轮 RUN_INFO 已写入/{f=0}' "$SCRIPT")
+# 抽取归档块。起止模式都**锚行首**：不锚的话，正文注释里只要出现结束模式那几个字，
+# awk 就会当场截断 —— 实测踩过（2026-09-18：注释里引用了一次结束模式，抽出的块只剩
+# 3 行，6 项自检红 9 条，看起来像功能回归，其实是抽错了）。
+BLOCK=$(awk '/^ARCHIVE_ROOT=/{f=1} f{print} /^echo .*本轮 RUN_INFO 已写入/{f=0}' "$SCRIPT")
 if [ -z "$BLOCK" ]; then echo "FAIL 抽不到归档代码块"; exit 1; fi
 echo "抽取到归档块 $(printf '%s\n' "$BLOCK" | wc -l) 行"
 printf 'set -u\n%s\n' "$BLOCK" > /tmp/_blk.sh
@@ -98,6 +101,28 @@ out=$(run "$D")
 got=$(archs "$D")
 [ -z "$got" ] && ok "空树未归档（不造 junk 存档）" || no "空树被归档成了 '$got'"
 case "$out" in *"不是一趟数据"*) ok "说明了跳过原因" ;; *) no "未说明跳过原因: $out" ;; esac
+
+echo "--- 7) 变体：TREE 指向 gnn 副本树 → 归档它，且不碰原件树（变体兼容）---"
+# 直接测本次要的兼容性：两棵树同时在盘上，块只应搬走 TREE 指的那棵。
+D=$(mktemp -d)
+mk2() { # $1=树名 $2=ckpt
+  mkdir -p "$D/NetlistOpt/temp_sim_test/$1/level0/AND2"
+  echo "eval_idx=1, iter=0, window=0, gnn_pred=1.0e0, true_delay=1.0e-9, transistors=6" \
+    > "$D/NetlistOpt/temp_sim_test/$1/level0/AND2/gnn_shadow.csv"
+  printf '时间            : 2026-09-16 10:00:00\n本轮 serve ckpt : %s\n' "$2" \
+    > "$D/NetlistOpt/temp_sim_test/$1/RUN_INFO.txt"
+}
+mk2 tl_opt_gnn_batch ep250
+mk2 tl_opt_batch     ep150
+( cd "$D/NetlistOpt" && HOME="$D" NL="$D/NetlistOpt" TREE=temp_sim_test/tl_opt_gnn_batch \
+    bash /tmp/_blk.sh ) >/dev/null
+got=$(archs "$D")
+[ "$got" = "ep250" ] && ok "gnn 树被归档，标签取自它自己的 RUN_INFO" \
+  || no "gnn 树归档标签错，得到 '$got'（期望 ep250）"
+[ -d "$D/NetlistOpt/temp_sim_test/tl_opt_batch" ] && ok "原件树未被触碰（两变体隔离）" \
+  || no "原件树被误归档/误删 —— 变体没隔离住"
+[ -f "$D/NetlistOpt/temp_sim_test/tl_opt_gnn_batch/RUN_INFO.txt" ] && ok "gnn 树本轮 RUN_INFO 已重建" \
+  || no "gnn 树本轮 RUN_INFO 未建"
 
 echo "=================================================="
 if [ "$FAIL" -gt 0 ]; then echo "FAIL 共 $FAIL 项"; exit 1; fi

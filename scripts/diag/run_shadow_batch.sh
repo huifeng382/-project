@@ -13,10 +13,19 @@
 #   可事后直接 `_shadow_analyze.py --root ~/shadow_archive/<TAG>_<时间戳>`。
 #   存档不自动清理，占盘自己看情况删（CSV 很小，单趟 MB 级）。
 #
+# 变体：本脚本可驱动**两套** batch，输出树/报告/日志已各自隔离，可并存互不污染：
+#   bash run_shadow_batch.sh          → shadow（原件 tl_opt_shadow_batch，树 temp_sim_test/tl_opt_batch）
+#   bash run_shadow_batch.sh gnn      → gnn   （副本 tl_opt_gnn_batch，树 temp_sim_test/tl_opt_gnn_batch）
+#   两套的 Rust 参数逐字相同，差别只在输出路径。gnn 副本是 NetlistOpt 16.0.0 为
+#   「GNN 取代仿真」准备的 —— ⚠ 现状**仿真并未减少**，见那份文件头部说明。
+#   副本自身的默认输出根已等于本脚本的 gnn 树，故**不需要**再设 SHADOW_OUT_BASE。
+#   ⚠ shadow_campaign.sh / _shadow_ckpt_sweep.sh 目前都以无参数方式调用本脚本（= shadow）；
+#     要用它们驱动 gnn，得先给它们加透传，别只改这里。
+#
 #   17.3.17：修 17.3.16 的**错标**。17.3.16 在本轮开头归档上一轮的树，却用**本轮 serve 的
 #   ckpt** 给归档命名 → 每份存档都错一格（跑 ep150 时归档出的目录叫 ep150，里面其实是
 #   0916 那趟的数据）。错得还很像对的，正是 I15 那类「来源不可信」。现改为：
-#     ① 本轮开始时把**本轮**的身份写进 temp_sim_test/tl_opt_batch/RUN_INFO.txt；
+#     ① 本轮开始时把**本轮**的身份写进 $TREE/RUN_INFO.txt；
 #     ② 归档时读**被归档树自己**的 RUN_INFO 来命名 —— 标签随数据走，不靠猜；
 #     ③ 读不到就写 unknown（`ARCHIVE_TAG` 可手工指定，例如给当前这棵无 RUN_INFO 的老树）；
 #     ④ 归档后若树内本来没有 RUN_INFO，补一份说明「ckpt 未知」，而不是填本轮的 ckpt。
@@ -28,12 +37,28 @@
 #     nohup ~/venv/bin/python3 scripts/diag/serve_http.py \
 #     --ckpt CKPT路径.pt --scaler SCALER路径.pkl --port 8000 &
 #   这一步留一份固定副本：~/NetlistOpt/serve_env.sh（内容即上面那行的 env 段）
-# 用法：bash ~/-project/scripts/diag/run_shadow_batch.sh
+# 用法：bash ~/-project/scripts/diag/run_shadow_batch.sh [shadow|gnn]   （缺省 shadow）
 # 结果：全部跑完自动执行 _shadow_analyze.py，输出到 ~/shadow_analyze.out
+#       （gnn 变体另存 ~/shadow_analyze_gnn.out，免得两趟收尾互相覆盖）
 
 set -u
 NL="$HOME/NetlistOpt"
 [ -d "$NL" ] || { echo "ERROR: 没有 $NL"; exit 1; }
+
+# 0a) 变体选择（$1）。TREE 一律**无条件**赋值、不读环境变量：防将来有人 export TREE
+#     时静默改掉落点（shadow_campaign.sh 自己也有个 TREE，两处语义不同，别互相渗透）。
+VARIANT="${1:-shadow}"
+case "$VARIANT" in
+  shadow) TEST=tl_opt_shadow_batch; SUB=tl_opt_batch ;;
+  gnn)    TEST=tl_opt_gnn_batch;    SUB=tl_opt_gnn_batch ;;
+  *) echo "ERROR: 未知变体 '$VARIANT'（可用 shadow | gnn）"; exit 1 ;;
+esac
+TREE="temp_sim_test/$SUB"
+LOG_PFX="$HOME/shadow"; ANA_OUT="$HOME/shadow_analyze.out"
+if [ "$VARIANT" != shadow ]; then
+  LOG_PFX="$HOME/shadow_$VARIANT"; ANA_OUT="$HOME/shadow_analyze_$VARIANT.out"
+fi
+echo "[$(date +%F\ %T)] 变体=$VARIANT  test=$TEST  树=$TREE  日志前缀=$LOG_PFX"
 
 # 0) 检查 GNN serve（括号技巧防自匹配）
 if ! pgrep -f 'serve_htt[p]' >/dev/null; then
@@ -57,17 +82,23 @@ cd "$NL"
 #    标签取**被归档树自己**的 RUN_INFO（那描述的是产出这棵树的上一轮），读不到就 unknown。
 #    ⚠ 绝不拿本轮 serve 的 ckpt 命名旧树 —— 那是错标，会重演 I15 那类「来源不可信」。
 ARCHIVE_ROOT="$HOME/shadow_archive"
+#   下面几行是给**被单独抽出的本块**兜底：_t_archive_selftest.sh 用 awk 抽出本块单独运行
+#   （起于 ARCHIVE_ROOT=、止于 RUN_INFO 落盘那行 echo），那里没有 $TREE/$VARIANT/$TEST，
+#   缺兜底会以「未绑定变量」中断、把自检变成假回归。脚本正常路径上它们已在上方定好。
+#   ⚠ awk 的结束模式是那行 echo 的原文，注释里**不要照抄它**：照抄会提前截断抽出的块
+#     （实测踩过：抽出的块只剩 3 行，6 项自检红 9 条）。
+: "${TREE:=temp_sim_test/tl_opt_batch}" "${VARIANT:=shadow}" "${TEST:=tl_opt_shadow_batch}"
 SERVE_ARGS=$(ps -o args= -p "$(pgrep -f 'serve_htt[p]' 2>/dev/null | head -1)" 2>/dev/null | head -1 || true)
 CKPT=$(printf '%s\n' "${SERVE_ARGS:-}" | sed -n 's/.*--ckpt[= ][ ]*\([^ ]*\).*/\1/p' | head -1)
 # ckpt 身份取**内容 sha1**（不是路径）。同一份权重可能被复制成多个文件名、同一个文件名也可能
 # 被覆盖重训 —— 只有 sha1 能回答「报的这个数挂的是不是这个文件」。与 serve 的 `_sha16` 同法。
 CKPT_SHA=$( [ -n "${CKPT:-}" ] && sha1sum "$CKPT" 2>/dev/null | cut -c1-16 )
-OLD_CKPT=$(sed -n 's/^本轮 serve ckpt *: *//p' temp_sim_test/tl_opt_batch/RUN_INFO.txt 2>/dev/null | head -1)
+OLD_CKPT=$(sed -n 's/^本轮 serve ckpt *: *//p' "$TREE/RUN_INFO.txt" 2>/dev/null | head -1)
 # 17.4.0：只归档**有数据**的树。空的（或只剩 RUN_INFO 的）树归档出来就是一份 junk
 # `unknown_<时间戳>` 存档 —— 看着像一趟数据，其实只证明「这个目录被 mkdir 过」。
 # 实测踩过（2026-09-17，见 #65）：一条 mkdir -p 命令就造出一份 1 文件的假存档。
-TREE_HAVE_CSV=$(ls -1 temp_sim_test/tl_opt_batch/*/*/gnn_shadow.csv 2>/dev/null | head -1)
-if [ -d temp_sim_test/tl_opt_batch ] && [ -n "$TREE_HAVE_CSV" ]; then
+TREE_HAVE_CSV=$(ls -1 "$TREE"/*/*/gnn_shadow.csv 2>/dev/null | head -1)
+if [ -d "$TREE" ] && [ -n "$TREE_HAVE_CSV" ]; then
   TAG=${ARCHIVE_TAG:-$(basename "${OLD_CKPT:-unknown}" .pt)}; [ -n "$TAG" ] || TAG=unknown
   if [ -n "$OLD_CKPT" ]; then SRC=树内RUN_INFO; else SRC=兜底; fi
   TS=$(date +%Y%m%d_%H%M%S)
@@ -75,7 +106,7 @@ if [ -d temp_sim_test/tl_opt_batch ] && [ -n "$TREE_HAVE_CSV" ]; then
   mkdir -p "$ARCHIVE_ROOT"
   n=1
   while [ -e "$DEST" ]; do DEST="$ARCHIVE_ROOT/${TAG}_${TS}_$n"; n=$((n + 1)); done
-  if ! mv temp_sim_test/tl_opt_batch "$DEST"; then
+  if ! mv "$TREE" "$DEST"; then
     echo "ERROR: 归档失败（$DEST）—— 拒绝对未清理的旧 CSV 继续跑（append 会混趟）"
     exit 1
   fi
@@ -83,7 +114,7 @@ if [ -d temp_sim_test/tl_opt_batch ] && [ -n "$TREE_HAVE_CSV" ]; then
     printf '本轮 serve ckpt : unknown\n（归档时树内没有 RUN_INFO —— 这棵树的 ckpt 未知；目录标签 %s 来自 ARCHIVE_TAG 或 unknown，不可当已证来源）\n' "$TAG" > "$DEST/RUN_INFO.txt"
   fi
   echo "[$(date +%F\ %T)] 已归档旧树 → $DEST  (标签=$TAG 来源=$SRC)"
-elif [ -d temp_sim_test/tl_opt_batch ]; then
+elif [ -d "$TREE" ]; then
   echo "[$(date +%F\ %T)] 旧树无 gnn_shadow.csv → 不是一趟数据，跳过归档（不造 junk unknown_* 存档）"
 else
   echo "[$(date +%F\ %T)] 无旧树，跳过归档（首跑）"
@@ -100,7 +131,7 @@ fi
 #     故改为记**内容指纹**：dirty 指纹（git diff + status 一起哈希）、Rust 源码指纹
 #     （无 VCS 就哈希 src/ tests/ Cargo.toml 全文 + 相对路径）、serve 脚本 sha1
 #     （gnn_pred = 批内平均秩，由它的 predict_rank_batch 算出来）。
-mkdir -p temp_sim_test/tl_opt_batch
+mkdir -p "$TREE"
 REPO_DIRTY_FP=$(cd "$HOME/-project" 2>/dev/null && { git diff 2>/dev/null; git status --porcelain 2>/dev/null; } | sha1sum | cut -c1-12)
 RUST_FP=$(cd "$NL" 2>/dev/null && find src tests Cargo.toml -type f 2>/dev/null | LC_ALL=C sort \
           | xargs -r sha1sum 2>/dev/null | sha1sum | cut -c1-12)
@@ -108,7 +139,8 @@ RUST_REV=$(cd "$NL" 2>/dev/null && git rev-parse --short HEAD 2>/dev/null || ech
 SERVE_PY_FP=$(sha1sum "$HOME/-project/scripts/diag/serve_http.py" 2>/dev/null | cut -c1-12)
 {
   echo "时间            : $(date +%F\ %T)"
-  echo "源目录          : $NL/temp_sim_test/tl_opt_batch"
+  echo "变体            : $VARIANT  （cargo --test $TEST，输出树 $TREE）"
+  echo "源目录          : $NL/$TREE"
   echo "本轮 serve 进程 : ${SERVE_ARGS:-未取到}"
   echo "本轮 serve ckpt : ${CKPT:-未识别}"
   echo "本轮 ckpt sha1  : ${CKPT_SHA:-未识别}"
@@ -118,25 +150,28 @@ SERVE_PY_FP=$(sha1sum "$HOME/-project/scripts/diag/serve_http.py" 2>/dev/null | 
   echo "Rust rev        : ${RUST_REV}  （无 VCS 时此项无意义，看下一行）"
   echo "Rust 源指纹     : ${RUST_FP:-未识别}  （src/ tests/ Cargo.toml 全文+路径的 sha1 前12位）"
   echo "serve 脚本指纹  : ${SERVE_PY_FP:-未识别}  （scripts/diag/serve_http.py sha1 前12位）"
-} > temp_sim_test/tl_opt_batch/RUN_INFO.txt
+} > "$TREE/RUN_INFO.txt"
 echo "[$(date +%F\ %T)] 本轮 RUN_INFO 已写入（ckpt=${CKPT:-未识别} sha1=${CKPT_SHA:-未识别}）"
 
 # 2) 并行分片：level0-3 各一个进程；level4 按电路逐个进程（大电路最慢，全并行）
 for l in 0 1 2 3; do
   TL_ONLY=level$l GNN_SHADOW=1 GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1 \
-    nohup cargo test --release --test tl_opt_shadow_batch -- --nocapture --ignored \
-    > ~/shadow_lvl$l.log 2>&1 &
+    nohup cargo test --release --test $TEST -- --nocapture --ignored \
+    > ${LOG_PFX}_lvl$l.log 2>&1 &
 done
 for c in $(ls testbench/tl_cells/level4/*.tl | xargs -n1 basename | sed 's/\.tl$//'); do
   # 16.11.6: level4/ 前缀精确匹配（防 OVF 误带 ADD4_OVF/ovf1 → 并发写同 CSV 损坏）
   TL_ONLY=level4/$c GNN_SHADOW=1 GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1 \
-    nohup cargo test --release --test tl_opt_shadow_batch -- --nocapture --ignored \
-    > ~/shadow_lvl4_$c.log 2>&1 &
+    nohup cargo test --release --test $TEST -- --nocapture --ignored \
+    > ${LOG_PFX}_lvl4_$c.log 2>&1 &
 done
-echo "[$(date +%F\ %T)] 已启动并行分片（level0-3 + level4 每电路一个进程）"
+echo "[$(date +%F\ %T)] 已启动并行分片（变体=$VARIANT test=$TEST，level0-3 + level4 每电路一个进程）"
 
 # 3) 自动收尾：所有 cargo 分片结束后跑分析
 #    轮询用 cargo 模式（不要锚定二进制哈希——cargo 重编译后哈希会变）
-nohup bash -c 'while pgrep -f "car[g]o test --release --test tl_opt_shadow_batch" >/dev/null 2>&1; do sleep 30; done; sleep 5; { echo "[$(date +%F\ %T)] 全部分片结束"; cd ~/-project && ~/venv/bin/python3 scripts/diag/_shadow_analyze.py --root ~/NetlistOpt/temp_sim_test/tl_opt_batch; } > ~/shadow_analyze.out 2>&1' > /dev/null 2>&1 &
-echo "[$(date +%F\ %T)] 自动收尾已挂（完成后写 ~/shadow_analyze.out）"
-echo "监控: tail -f ~/shadow_analyze.out"
+#    轮询模式、--root、输出文件三处都随变体走：两套的 pgrep 模式互不匹配（测试名不同），
+#    所以并行跑两个变体时各自的收尾只认自己的分片，不会谁先结束就把对方提前收掉。
+CLOSER="while pgrep -f \"car[g]o test --release --test $TEST\" >/dev/null 2>&1; do sleep 30; done; sleep 5; { echo \"[\$(date +%F\\ %T)] 全部分片结束\"; cd \$HOME/-project && \$HOME/venv/bin/python3 scripts/diag/_shadow_analyze.py --root $NL/$TREE; } > $ANA_OUT 2>&1"
+nohup bash -c "$CLOSER" > /dev/null 2>&1 &
+echo "[$(date +%F\ %T)] 自动收尾已挂（完成后写 $ANA_OUT）"
+echo "监控: tail -f $ANA_OUT"
