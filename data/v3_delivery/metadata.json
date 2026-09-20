@@ -1,0 +1,335 @@
+{
+  "dataset": {
+    "circuits": 12455,
+    "rows": 599976,
+    "exprs": 837,
+    "corner": "s02p0_l01p0",
+    "groups_10_15": true,
+    "group_size_min": 10,
+    "group_size_max": 15,
+    "split_rows": {
+      "train": 431439,
+      "val": 62835,
+      "test": 105702
+    }
+  },
+  "tier": {
+    "tierA_circuits": 7810,
+    "tierB_circuits": 4645,
+    "tierA_rows": 221906,
+    "tierB_rows": 378070,
+    "tierA_row_share": 0.3699
+  },
+  "shape_coverage": {
+    "16x1": {
+      "n_circuits": 299,
+      "trans_p50": 52.0,
+      "trans_p90": 64.0,
+      "trans_max": 72,
+      "rows": 9568,
+      "rust_band": [
+        35,
+        40
+      ],
+      "in_band_share": 0.1405,
+      "p50_ge_rust_med": true
+    },
+    "2x1": {
+      "n_circuits": 261,
+      "trans_p50": 24.0,
+      "trans_p90": 43.0,
+      "trans_max": 59,
+      "rows": 1044,
+      "rust_band": [
+        8,
+        51
+      ],
+      "in_band_share": 0.9808,
+      "p50_ge_rust_med": true
+    },
+    "2x2": {
+      "n_circuits": 300,
+      "trans_p50": 42.0,
+      "trans_p90": 61.0,
+      "trans_max": 89,
+      "rows": 2400,
+      "rust_band": [
+        26,
+        36
+      ],
+      "in_band_share": 0.2533,
+      "p50_ge_rust_med": true
+    },
+    "2x3": {
+      "n_circuits": 253,
+      "trans_p50": 44.0,
+      "trans_p90": 56.0,
+      "trans_max": 68,
+      "rows": 3036,
+      "rust_band": [
+        29,
+        32
+      ],
+      "in_band_share": 0.087,
+      "p50_ge_rust_med": true
+    },
+    "5x2": {
+      "n_circuits": 943,
+      "trans_p50": 183.0,
+      "trans_p90": 197.0,
+      "trans_max": 207,
+      "rows": 18380,
+      "rust_band": [
+        140,
+        208
+      ],
+      "in_band_share": 0.9343,
+      "p50_ge_rust_med": true
+    },
+    "7x4": {
+      "n_circuits": 794,
+      "trans_p50": 346.0,
+      "trans_p90": 388.0,
+      "trans_max": 400,
+      "rows": 41118,
+      "rust_band": [
+        235,
+        262
+      ],
+      "in_band_share": 0.0504,
+      "p50_ge_rust_med": true
+    },
+    "8x3": {
+      "n_circuits": 655,
+      "trans_p50": 212.0,
+      "trans_p90": 226.0,
+      "trans_max": 233,
+      "rows": 31282,
+      "rust_band": [
+        170,
+        233
+      ],
+      "in_band_share": 0.9985,
+      "p50_ge_rust_med": true
+    },
+    "3x1": {
+      "n_circuits": 392,
+      "trans_p50": 30.0,
+      "trans_p90": 38.0,
+      "trans_max": 52,
+      "rows": 2316,
+      "rust_band": [
+        11,
+        39
+      ],
+      "in_band_share": 0.9209,
+      "p50_ge_rust_med": true
+    },
+    "4x1": {
+      "n_circuits": 430,
+      "trans_p50": 41.0,
+      "trans_p90": 59.0,
+      "trans_max": 92,
+      "rows": 3287,
+      "rust_band": [
+        12,
+        52
+      ],
+      "in_band_share": 0.8465,
+      "p50_ge_rust_med": true
+    },
+    "9x6": {
+      "n_circuits": 5068,
+      "trans_p50": 284.0,
+      "trans_p90": 350.0,
+      "trans_max": 400,
+      "rows": 425231,
+      "rust_band": [
+        247,
+        316
+      ],
+      "in_band_share": 0.5257,
+      "p50_ge_rust_med": true
+    },
+    "3x2": {
+      "n_circuits": 357,
+      "trans_p50": 117.0,
+      "trans_p90": 144.0,
+      "trans_max": 162,
+      "rows": 4275,
+      "rust_band": [
+        49,
+        50
+      ],
+      "in_band_share": 0.07,
+      "p50_ge_rust_med": true
+    },
+    "4x3": {
+      "n_circuits": 405,
+      "trans_p50": 52.0,
+      "trans_p90": 64.0,
+      "trans_max": 78,
+      "rows": 7290,
+      "rust_band": [
+        56,
+        69
+      ],
+      "in_band_share": 0.3827,
+      "p50_ge_rust_med": false
+    },
+    "5x1": {
+      "n_circuits": 732,
+      "trans_p50": 51.0,
+      "trans_p90": 63.0,
+      "trans_max": 78,
+      "rows": 5434,
+      "rust_band": [
+        14,
+        117
+      ],
+      "in_band_share": 1.0,
+      "p50_ge_rust_med": true
+    },
+    "5x5": {
+      "n_circuits": 310,
+      "trans_p50": 78.0,
+      "trans_p90": 90.0,
+      "trans_max": 106,
+      "rows": 8060,
+      "rust_band": [
+        48,
+        60
+      ],
+      "in_band_share": 0.0935,
+      "p50_ge_rust_med": true
+    },
+    "8x1": {
+      "n_circuits": 296,
+      "trans_p50": 42.0,
+      "trans_p90": 59.0,
+      "trans_max": 69,
+      "rows": 4736,
+      "rust_band": [
+        22,
+        67
+      ],
+      "in_band_share": 0.9865,
+      "p50_ge_rust_med": true
+    },
+    "8x4": {
+      "n_circuits": 510,
+      "trans_p50": 211.0,
+      "trans_p90": 222.0,
+      "trans_max": 232,
+      "rows": 24647,
+      "rust_band": [
+        189,
+        233
+      ],
+      "in_band_share": 0.9706,
+      "p50_ge_rust_med": true
+    },
+    "9x1": {
+      "n_circuits": 450,
+      "trans_p50": 132.0,
+      "trans_p90": 140.0,
+      "trans_max": 146,
+      "rows": 7872,
+      "rust_band": [
+        104,
+        146
+      ],
+      "in_band_share": 1.0,
+      "p50_ge_rust_med": true
+    }
+  },
+  "row_weighted": {
+    "trans_p50": 268.0,
+    "trans_p90": 350.0,
+    "band_140_190": 0.0269,
+    "band_189_233": 0.2425,
+    "band_233_316": 0.4522
+  },
+  "group_delay": {
+    "buckets": {
+      "<1%": 0.1591,
+      "1-5%": 0.1925,
+      "5-20%": 0.2904,
+      ">20%": 0.3579
+    },
+    "groups_with_gt10pct_spread": 0.7133,
+    "spread_median": 0.1951,
+    "n_groups": 837,
+    "target_buckets": {
+      "<1%": 0.2,
+      "1-5%": 0.35,
+      "5-20%": 0.39,
+      ">20%": 0.06
+    },
+    "target_spread_median": [
+      0.3,
+      0.6
+    ],
+    "target_groups_with_gt10pct_spread": 0.8,
+    "adjacent_diff_share": {
+      "<1%": 0.6727,
+      "1-5%": 0.159,
+      "5-20%": 0.1215,
+      ">20%": 0.0467
+    },
+    "relative_to_best_share": {
+      "<1%": 0.1591,
+      "1-5%": 0.1925,
+      "5-20%": 0.2904,
+      ">20%": 0.3579
+    },
+    "spread_median_over_min": 0.2087,
+    "per_shape_family_span_median": {
+      "16x1": 2.711,
+      "2x1": 5.115,
+      "2x2": 5.144,
+      "2x3": 3.008,
+      "5x2": 2.882,
+      "7x4": 1.507,
+      "8x3": 1.636,
+      "3x1": 3.913,
+      "4x1": 4.851,
+      "9x6": 1.31,
+      "3x2": 3.604,
+      "4x3": 2.842,
+      "5x1": 5.84,
+      "5x5": 2.269,
+      "8x1": 3.792,
+      "8x4": 1.973,
+      "9x1": 1.745
+    },
+    "note": "buckets reported under both readings: the 20/35/39/6 target is self-consistent only as ADJACENT differences (a ladder whose steps are ~1-20% and whose total span is 30-60%); under the relative-to-best reading a 30-60% span forces most variants >20% above the group best. The harvested function families cap the achievable span (see per_shape_family_span_median): 9x6 spans only 1.31x, which bounds the 5-20% bucket at well under the target because 29% of steps in 5-20% need a >45% span."
+  },
+  "weak_drive": {
+    "circuits_with_weak_intermediate": 12455,
+    "share": 1.0,
+    "fanout_median": 1.0
+  },
+  "notes": {
+    "transistor_count": "per-instance transistor total (TRANS_PER_INSTANCE): equals the number of transistor_wave_json entries; replaces the macro-deduplicated count of the V2 collector",
+    "previous_transistor_count_p50_by_shape": {
+      "16x1": 36.0,
+      "2x1": 16.0,
+      "2x2": 29.0,
+      "2x3": 26.0,
+      "5x2": 123.0,
+      "7x4": 242.0,
+      "8x3": 146.0,
+      "3x1": 22.0,
+      "4x1": 28.0,
+      "9x6": 150.0,
+      "3x2": 103.0,
+      "4x3": 30.0,
+      "5x1": 30.0,
+      "5x5": 42.0,
+      "8x1": 26.0,
+      "8x4": 138.0,
+      "9x1": 56.0
+    }
+  }
+}
