@@ -298,22 +298,41 @@ sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 # 数据从 CACHE_SEED/data 复制（cp -a 保 mtime），否则用 ~/-project/data（统一数据源，键对齐的前提）
 # 例: CACHE_SEED=$HOME/cache107_master bash setup_exp.sh v2wave42
 if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
-  # 1) V2 数据（保 mtime）：fresh 总是复制（clone 的 checkout mtime 不对，必须覆盖）；
-  #    RESUME 且目录已有数据 → 跳过（保留目录自身 mtime，避免图缓存键失效）
-  if [ "$RESUME_MODE" = "1" ] && [ -d "$D/data/batch_v2_rest" ]; then
-    echo "RESUME: 目录已有数据，跳过数据种子（保留原 mtime，缓存键不变）"
+  # 1) 数据（保 mtime）：fresh 总是复制（clone 的 checkout mtime 不对，必须覆盖）；
+  #    RESUME 且目录已有本次所需数据 → 跳过（保留目录自身 mtime，避免图缓存键失效）
+  # 18.2.0：播种清单改为**由 DATA_BATCHES 派生**，不再写死四个 batch_v2_*。
+  #   为什么必须改：图缓存键含数据文件 mtime（src/train_sweep.py:291 / src/train_lib.py:245）。
+  #   旧清单里没有 v3_delivery ⇒ V3 树里的 v3_delivery 只能来自 clone checkout（mtime = clone 时刻），
+  #   与种子缓存建立时的 mtime 不同 ⇒ **缓存键整批落空**，从第二个 V3 运行起每趟白建一次全量图缓存
+  #   （而 V3 的图比 V2 大一个量级）。V2 时代没这问题，只因那时还没有 v3_delivery 这个集。
+  #   派生后与 V2 时代逻辑完全一致：V2 变体派生出旧四批（顺序不同，cp 无所谓），V3 派生出 v3_delivery。
+  _SEED_MAIN="$(echo "$DATA_BATCHES" | tr ',' ' ')"
+  _SEED_ALL="$_SEED_MAIN batch_v2_io"   # batch_v2_io 不在 DATA_BATCHES 里，但历史上一直在播种清单中
+  _lack=""
+  for b in $_SEED_ALL; do [ -d "$D/data/$b" ] || _lack="$_lack $b"; done
+  if [ "$RESUME_MODE" = "1" ] && [ -z "$_lack" ]; then
+    echo "RESUME: 目录已有本次所需数据（$DATA_BATCHES），跳过数据种子（保留原 mtime，缓存键不变）"
   else
     SEED_DATA="$CACHE_SEED/data"
-    [ -d "$SEED_DATA/batch_v2_rest" ] || SEED_DATA="$HOME/-project/data"
-    if [ -d "$SEED_DATA/batch_v2_rest" ]; then
-      for b in batch_v2_full batch_v2_rest batch_v2_io batch_v2_m4; do
-        if [ -d "$SEED_DATA/$b" ]; then
-          mkdir -p "$D/data/$b"
-          cp -a "$SEED_DATA/$b/." "$D/data/$b/"
-        fi
-      done
-      echo "seeded V2 data (mtime preserved) from $SEED_DATA"
-    fi
+    for b in $_SEED_MAIN; do
+      if [ ! -d "$SEED_DATA/$b" ]; then
+        echo "种子源 $SEED_DATA 缺 $b → 退化到统一数据源 $HOME/-project/data"
+        SEED_DATA="$HOME/-project/data"
+        break
+      fi
+    done
+    _nseed=0
+    for b in $_SEED_ALL; do
+      if [ -d "$SEED_DATA/$b" ]; then
+        mkdir -p "$D/data/$b"
+        cp -a "$SEED_DATA/$b/." "$D/data/$b/"
+        _nseed=$((_nseed + 1))
+      fi
+    done
+    echo "seeded $_nseed dataset(s) (mtime preserved) from $SEED_DATA"
+    for b in $_SEED_MAIN; do
+      [ -d "$D/data/$b" ] || echo "⚠ WARN: $D/data/$b 缺失但本次运行需要它（DATA_BATCHES=$DATA_BATCHES）—— 图缓存键将落空"
+    done
   fi
   # 2) 缓存目录：RESUME 且目录已有 graphs/ → 跳过（用自己的，增量续建）；否则复制种子
   OLD_CACHE=""
