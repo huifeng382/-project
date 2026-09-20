@@ -368,6 +368,22 @@ case "$V" in
     ;;
 esac
 
+# P1-1 启动前自检（V3_ISSUES §4 第 3 条）：`transistor_count` 是否与 netlist 自洽。
+#   该列同时是输入特征（data_loader.py:322）与 struct_prior[0]（:716），且 struct_encoder
+#   无归一化（model.py:50-54）⇒ 同 netlist 多值 = 往模型里注入「同结构同延迟、尺寸不同」的噪声。
+#   实测：V3 371/5900 种 netlist 不自洽、涉及 1,847/12,455 电路 = 14.8%，极差中位 6 / max 32；
+#   而 V2 两批（batch_v2_full / batch_v2_m4）**全部自洽** ⇒ 这是 **V3 引入的回归**，不是老账。
+#   归因（`scripts/diag/_t_v3_tc_cause.py`）：368/371 组「组内延迟逐值全同却多值」= 错在这一列；
+#   3/371 组（20 电路）「静态六列全同、延迟不同」= 交付记录缺维度（模型侧同输入双标签）。
+# ⚠ **只告警、不阻断**（脚本默认退出 0）：命中是**已记档**的缺陷，写成硬失败会把每一次 V3
+#   运行都挡在门外，而它挡下的是已经知道的事、不是新信息。本检查的价值在「下一版别再犯」
+#   与「将来某次运行突然变好/变坏要看得见」。生成方给出一致定义后，它应当恒静默。
+case "$V" in
+  v3wave[0-9]*|v3nowave[0-9]*)
+    ~/venv/bin/python3 scripts/check_transistor_count.py --batches "$DATA_BATCHES" || true
+    ;;
+esac
+
 ulimit -n 8192
 # 蒸馏变体默认 teacher 预测目录（可被 KD_TEACHER_DIR 环境变量覆盖）
 if [[ "$V" == v2kd* ]]; then
