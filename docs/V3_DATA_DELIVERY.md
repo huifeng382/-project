@@ -2,16 +2,24 @@
 
 > 生成：2026-09-20 ｜ 交付目录：服务器 `~/NetlistOpt/data/v3_delivery/`（本地镜像 `data/v3_delivery/`）
 > 上一版保留在 `v3_delivery_prev/`（2026-09-20 01:48 前）
+> **GitHub**：`huifeng382/-project` 分支 `10.3.3-fix-earlystop`，`data/v3_delivery/`（含 31 个 `timing_arcs_partNN.parquet`）
 
 ## 1. 交付物
 
 | 文件 | 内容 | 大小 |
 |---|---|---|
-| `timing_arcs.parquet` | **599,976 行**仿真记录（单 corner `s02p0_l01p0`）| 3.94 GB（服务器）|
+| `timing_arcs.parquet` | **599,976 行**仿真记录（单 corner `s02p0_l01p0`）| 整理前 3.94 GB（服务器原始文件）|
+| `timing_arcs_part01..31.parquet` | 同上的 GitHub 分片（≤96 MB/片，snappy 重写后合计 **2.90 GB**，599,976 行完整）| 2.90 GB |
 | `circuit_static.parquet` | **12,455 电路 / 837 expr 组**（每组 10-15 功能等价变体）| 7.6 MB |
 | `metadata.json` | 逐形状分位（规格口径）+ Tier A/B + 行加权分布 + 分组延迟剖面 + 弱驱动 | 7.2 KB |
 | `coverage_report.json` | 必需字段覆盖率自检 | — |
 | `sc_expansion.json` | **1,049 个 V3 SC_ 宏，100% 覆盖** | 6.7 MB |
+| `PARTS.txt` / `timing_arcs.sha256` | 分片行数/字节清单、原始 `timing_arcs.parquet` 的 sha256 | — |
+
+* 原始单文件 sha256：`7170b43d54ee49104daf09f157acb61e6645461da012652fd3b8229a98560d96`
+* 分片读取：`pd.read_parquet('data/v3_delivery/')`（同目录下 part 文件按需拼接），或逐片 `pd.concat`。
+* 原始 3.94 GB 单文件仍在服务器 `~/NetlistOpt/data/v3_delivery/timing_arcs.parquet`（未压缩重写前的版本）。
+
 
 切分（按 expr）：train 431,439 / val 62,835 / test 105,702 行
 Tier A 7,810 电路 / 221,906 行（**36.99%**）；Tier B 4,645 电路 / 378,070 行（63.01%）
