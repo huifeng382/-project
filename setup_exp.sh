@@ -246,6 +246,30 @@ case "$V" in
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
 esac
 
+# V3 单一数据集变体（18.0.0，2026-09-20）：data/v3_delivery
+#   形态 = 单 circuit_static.parquet + 31 个 timing_arcs_partNN.parquet（599,976 行 / 12,455 电路）
+# 用法：v3wave<seed> / v3nowave<seed>（后缀即 TRAIN_SEED；nowave = 纯拓扑，Rust 可部署形态）
+# ⚠ 必须用**新名**（v3*）：:28 会 rm -rf "$D"，复用 v2 名会删掉已有 V2 运行目录。
+# ⚠ v2wave[0-9]* / v2nowave[0-9]* 只匹配字面 "v2" —— 名叫 v3nowave42 **不会**命中 nowave 分支，
+#   所以 v3 必须显式写臂，不能靠名字「看起来像」。
+case "$V" in
+  v3wave[0-9]*|v3nowave[0-9]*)
+    export DATA_BATCHES=v3_delivery
+    echo "DATA_BATCHES=$DATA_BATCHES"
+    ;;
+esac
+case "$V" in
+  v3wave[0-9]*)
+    _S=$(echo "${V#v3wave}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v3nowave[0-9]*)
+    sed -i "s/^USE_TRANSISTOR_WAVE = .*/USE_TRANSISTOR_WAVE = False/" config.py
+    _S=$(echo "${V#v3nowave}" | grep -oE '^[0-9]+')
+    sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
+  v3*)
+    echo "ERROR: 未知 v3 变体: $V（应为 v3wave<seed> | v3nowave<seed>）"; exit 1 ;;
+esac
+
 sed -i "s/CACHE_DIR = .*/CACHE_DIR = \"cache107$V\"/" config.py
 
 # 可选：复用缓存（16.3.1 修正：缓存键含数据文件 mtime，必须连数据一起保 mtime 复制；16.6.0 支持 master 缓存目录）
@@ -289,6 +313,22 @@ if [ -n "$CACHE_SEED" ] && [ -d "$CACHE_SEED" ]; then
     fi
   fi
 fi
+
+# V3 宏表合并（**不是覆盖**）—— 两张表的 cell 名域近乎互斥（DIFF §17.2(b) 实测）：
+#   共享表 24,625 条：对 V2 名域 100.0%，对 V3 名域只有 8.3%；
+#   V3 自带表 1,049 条：对 V3 名域 100.0%，对 V2 名域只有 0.3%。
+# 只覆盖 ⇒ V2 数据加载被打崩；只保留 ⇒ V3 有 91.7% 的 SC_ 宏落进 gate_struct 兜底
+# （logic='COMPLEX' / n_t=6.0），STRUCT_MODE='base' 的 n_transistors 近乎常数。
+# ⇒ 取并集：union 25,587 条，两个名域都 100%（87 个同名条目内容完全一致，合并无歧义）。
+# 放在播种块**之后**：播种可能覆盖 data/sc_expansion.json；合并是 dict 更新，幂等，重复跑安全。
+case "$V" in
+  v3wave[0-9]*|v3nowave[0-9]*)
+    ~/venv/bin/python3 scripts/merge_sc_expansion.py \
+      --base data/sc_expansion.json \
+      --add  data/v3_delivery/sc_expansion.json --inplace || {
+        echo "ERROR: sc_expansion 合并失败 —— 拒绝以 8.3% 覆盖率的宏表启动训练"; exit 1; }
+    ;;
+esac
 
 ulimit -n 8192
 # 蒸馏变体默认 teacher 预测目录（可被 KD_TEACHER_DIR 环境变量覆盖）

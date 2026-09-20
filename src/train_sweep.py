@@ -1,5 +1,6 @@
 import sys
 import os
+import glob
 import time
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import hashlib
@@ -297,6 +298,43 @@ def get_outlier_cache_path(train_ids, static_parquets, dynamic_parquets):
     return os.path.join(outlier_dir, f'outlier_keep_{key_hash}.npy')
 
 
+def resolve_v2_batch_files(data_dir, data_batches):
+    """按 DATA_BATCHES 解析 V2/V3 数据文件；static 与 arcs 两侧**各自独立**。
+
+    单文件优先，否则取 *_partN.parquet 分片。
+    ⚠ 旧写法要求两侧「同时单文件」或「同时分片」，会把 V3 的混合形态
+      （单 circuit_static.parquet + 31 个 timing_arcs_partNN.parquet）整个跳过，
+      打印 "V2 data not found" 后静默不加载任何数据。
+      DATA_SPEC_V2.md「parquet 可拆多文件但同属一集」⇒ 混合形态合法。
+    单文件与分片并存是可疑状态：只取单文件，且必须出声（别静默丢一半数据）。
+
+    返回 (static_parquets, dynamic_parquets)。抽成模块级函数是为了让
+    scripts/diag 的检查脚本能直接调用**这份真代码**，而不是另抄一份逻辑。
+    """
+    static_parquets, dynamic_parquets = [], []
+    for batch in data_batches.split(','):
+        batch = batch.strip()
+        if not batch:
+            continue
+        bdir = os.path.join(data_dir, f"data/{batch}")
+        sone = os.path.join(bdir, "circuit_static.parquet")
+        done = os.path.join(bdir, "timing_arcs.parquet")
+        sparts = sorted(glob.glob(os.path.join(bdir, "circuit_static_part*.parquet")))
+        dparts = sorted(glob.glob(os.path.join(bdir, "timing_arcs_part*.parquet")))
+        if os.path.exists(sone) and sparts:
+            print(f"⚠ {batch}: circuit_static 单文件与 {len(sparts)} 个分片并存，只用单文件")
+        if os.path.exists(done) and dparts:
+            print(f"⚠ {batch}: timing_arcs 单文件与 {len(dparts)} 个分片并存，只用单文件")
+        sfiles = [sone] if os.path.exists(sone) else sparts
+        dfiles = [done] if os.path.exists(done) else dparts
+        if sfiles and dfiles:
+            static_parquets.extend(sfiles); dynamic_parquets.extend(dfiles)
+            print(f"V2 data: {batch} ({len(sfiles)} static + {len(dfiles)} arcs)")
+        else:
+            print(f"V2 data not found, skipping: {batch}")
+    return static_parquets, dynamic_parquets
+
+
 def main():
     t_total_start = time.time()
     set_seed(RANDOM_SEED)
@@ -305,28 +343,11 @@ def main():
 
     # ---------- 数据集路径：V2（batch_v2_full + batch_v2_io）或旧 V1（delivery1+2） ----------
     data_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    import glob
     static_parquets = []
     dynamic_parquets = []
     if USE_V2:
-        # V2 数据（默认 batch_v2_full + batch_v2_rest；DATA_BATCHES env 可覆盖；支持 *_partN.parquet）
-        for batch in DATA_BATCHES.split(','):
-            batch = batch.strip()
-            if not batch:
-                continue
-            sp = os.path.join(data_dir, f"data/{batch}/circuit_static.parquet")
-            dp = os.path.join(data_dir, f"data/{batch}/timing_arcs.parquet")
-            if os.path.exists(sp) and os.path.exists(dp):
-                static_parquets.append(sp); dynamic_parquets.append(dp)
-                print(f"V2 data: {batch}")
-            else:
-                sparts = sorted(glob.glob(os.path.join(data_dir, f"data/{batch}/circuit_static_part*.parquet")))
-                dparts = sorted(glob.glob(os.path.join(data_dir, f"data/{batch}/timing_arcs_part*.parquet")))
-                if sparts and dparts:
-                    static_parquets.extend(sparts); dynamic_parquets.extend(dparts)
-                    print(f"V2 data: {batch} (parts)")
-                else:
-                    print(f"V2 data not found, skipping: {batch}")
+        # V2/V3 数据（默认 batch_v2_full + batch_v2_rest；DATA_BATCHES env 可覆盖）
+        static_parquets, dynamic_parquets = resolve_v2_batch_files(data_dir, DATA_BATCHES)
         four_pin_only_eff = False   # rest/io 含任意 I/O，V2 下不做 4-pin 过滤
     else:
         # delivery1 + delivery2 合并（~54 万行，1,437 电路。旧数据在 archive_v13.1/）
