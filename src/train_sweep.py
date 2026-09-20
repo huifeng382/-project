@@ -346,7 +346,8 @@ def main():
     static_parquets = []
     dynamic_parquets = []
     if USE_V2:
-        # V2/V3 数据（默认 batch_v2_full + batch_v2_rest；DATA_BATCHES env 可覆盖）
+        # V2/V3 数据（18.1.0 起默认 v3_delivery；DATA_BATCHES env 可覆盖。
+        # 旧三批 batch_v2_full/rest/m4 仍在盘上，setup_exp.sh 的 v2*/seed*/struct* 变体显式钉住它们）
         static_parquets, dynamic_parquets = resolve_v2_batch_files(data_dir, DATA_BATCHES)
         four_pin_only_eff = False   # rest/io 含任意 I/O，V2 下不做 4-pin 过滤
     else:

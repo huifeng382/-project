@@ -246,6 +246,25 @@ case "$V" in
     sed -i "s/^TRAIN_SEED = .*/TRAIN_SEED = ${_S}/" config.py ;;
 esac
 
+# 旧三批显式钉住（18.1.0，2026-09-20）—— 因为 config.py 的 DATA_BATCHES 默认已改成 v3_delivery。
+# 不钉住的话：所有既有变体名（v2 家族 + V2 时代的消融名）会**静默改吃 V3 数据，名字却一个字母没变**
+# —— 历史可比性被无声打断，而且跑得完、退出码 0、日志正常（正是本仓库最怕的那类静默失败）。
+# 最要命的是 v2wave42m4：DATA_SPEC_V2 §四「量化验收 B 段」把它当**跨分布通用闸门**，
+# 它若变成 V3 数据，闸门就自己验自己了。
+# ⚠ 只钉**名字宣称旧语义**的那些；v3* 由下面的块接管。用 ${DATA_BATCHES:-…} 保留外部显式覆盖。
+# ⚠ 下列 6 个 diag 脚本各自硬编码了旧默认串（不经 config.py），**故意不动**：
+#   _fit_idsavg_gnn_server.py / check_idsgnn_serve_parity.py / _serve_input_ablation.py /
+#   _auto_launch_chain2.py / _auto_launch_m4_chain.py / _t_rankpairs.py
+#   理由：idsavg GNN 的 OOF 表是**线上 serve 特征的来源**，给它换数据会废掉已部署特征。
+#   ⇒ 它们的取数仍走旧三批，与 config.DATA_BATCHES 不再一致（这是刻意的，不是遗漏）。
+case "$V" in
+  v3wave[0-9]*|v3nowave[0-9]*) ;;          # V3 臂在下一块处理
+  v2*|seed[0-9]*|struct*|waverich|cornerattn)
+    export DATA_BATCHES="${DATA_BATCHES:-batch_v2_full,batch_v2_rest,batch_v2_m4}"
+    echo "DATA_BATCHES=$DATA_BATCHES（钉住旧三批）"
+    ;;
+esac
+
 # V3 单一数据集变体（18.0.0，2026-09-20）：data/v3_delivery
 #   形态 = 单 circuit_static.parquet + 31 个 timing_arcs_partNN.parquet（599,976 行 / 12,455 电路）
 # 用法：v3wave<seed> / v3nowave<seed>（后缀即 TRAIN_SEED；nowave = 纯拓扑，Rust 可部署形态）

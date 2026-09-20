@@ -125,6 +125,10 @@ FOUR_PIN_ONLY = True       # True=只保留4引脚电路（去掉~12%），False
 
 # V2 数据模式（15.1.0 起）：True=用 batch_v2_full(4-pin) + batch_v2_io(任意I/O)，False=旧 delivery1+2
 # 15.1.1 起默认 True：训练只使用 V2 两个新数据集
+# ⚠ 名字是历史遗留：它标志的是「V2 版列结构 + resolve_v2_batch_files loader + mean 聚合口径」这一整套，
+#   **不是「用 V2 数据集」**。V3 走的是同一条路径（所以 V3 运行也必须 USE_V2=True）。
+#   真正决定吃哪份数据的是下面的 DATA_BATCHES。改这个开关会连带改 ranking_metrics 的
+#   avg_delay 口径（train_sweep.py 多处）与 STRUCT_MODE（V2_STRUCT_MODE）—— 别为了让名字好看而改它。
 USE_V2 = True
 # V2 训练推荐（14.4.4 结论）：STRUCT_MODE='logic_only'（干净 10 逻辑最优）；cornerattn 保留默认
 V2_STRUCT_MODE = 'logic_only'
@@ -163,7 +167,12 @@ WAVE_COVERAGE_SEED = int(os.environ.get('WAVE_COVERAGE_SEED', '42'))  # 固定�
 USE_IDS_AVG_APPROX = os.environ.get('USE_IDS_AVG_APPROX', '0')  # 16.10.0: '1'=线性拟合回归近似 ids_avg（零仿真，Rust 端可算）；16.11.4: '2'=GBDT15 近似
 IDS_AVG_APPROX_COEF = [0.133045, 0.083942, 0.083942, 0.078951, 1.036561, -1.564259, 0.133045, 0.083942, 0.121103]  # 来自 _eval_idsavg_approx.py（full 样本回归 R^2=0.655）
 MIN_GROUP_SIZE = int(os.environ.get('MIN_GROUP_SIZE', '10'))   # 组大小过滤：剔除 <N 变体的组（排序无价值）
-DATA_BATCHES = os.environ.get('DATA_BATCHES', 'batch_v2_full,batch_v2_rest,batch_v2_m4')  # 训练数据批次（16.11.4 起默认 full+rest+m4，m4=V3.2 五形状补充）
+DATA_BATCHES = os.environ.get('DATA_BATCHES', 'v3_delivery')  # 训练数据（18.1.0 起默认 V3 单一数据集）。
+# V3 = data/v3_delivery（12,455 电路 / 599,976 行 / 837 expr 组；形态 = 单 circuit_static + 31 分片 timing_arcs）。
+# 旧 batch_v2_full/rest/m4 **不再入训练**，只保留其固定 test 集作跨分布闸门（DATA_SPEC_V2 §四 量化验收 B 段）。
+# ⚠ setup_exp.sh 里所有 v2*/seed*/struct*/waverich/cornerattn 变体都**显式钉住旧三批** ——
+#   名字宣称旧语义就不能被新默认悄悄换掉数据（详见该处注释）。
+# ⚠ 若直接跑 main.py（不经 setup_exp.sh），拿到的就是这里的新默认 V3。
 GRAPH_CACHE_MAX = int(os.environ.get('GRAPH_CACHE_MAX', '6000'))  # 图 LRU 缓存上限（内存驻留图数，超限磁盘回源；防多 run 并发内存过载）
 USE_CORNER_ATTN = True         # Corner 感知注意力池化（13.6 内部最优，设为默认）
 
