@@ -1,7 +1,7 @@
 # 未决问题 / 待复核 / 风险清单（OPEN ISSUES）
 
 > 集中散落在各文档的「⚠ / 待复核 / 未决」项。**接手新任务或下结论前先扫本表**；状态更新时同步改这里。
-> 记录风格遵循版本记录式（REQUIREMENTS §4）。最后更新：2026-09-20（18.4.0）。
+> 记录风格遵循版本记录式（REQUIREMENTS §4）。最后更新：2026-09-22（18.5.0）。
 
 | ID | 状态 | 内容 | 位置 / 影响 |
 |---|---|---|---|
@@ -22,5 +22,6 @@
 | I13 | 🔶 规划 | 6-seed 集成（V2+m4 系现全只有 seed42）：v2iag42m4 Rust 结果后决定铺哪些 seed | DIFF §12.5 |
 | I14 | ✅ 已做 | push：16.11.18-32 已全部推送 GitHub（2026-09-03）；NetlistOpt 仅本地（按规则） | — |
 | I17 | 🟠 待生成方答 | **V3 交付的静态记录不能唯一确定电路**（P1-1 归因新增）：**3 组 20 个电路**的 `gate_level_netlist`/`cell_types_json`/pins/`pin_loads_json`/`parasitic_caps_json` **六列逐字节相同**，时序弧 `DELAY` **却不同** ⇒ 模型拿到「同一输入、两个标签」，训练侧不可约噪声；另有 **368 组**「延迟全同、只有 `transistor_count` 变」= 该列是噪点。要求已拆成两条写进重出规格（②比①重要）。⚠ 连带：P0-1 去重键（不含 `tc`）会合并那 20 个真不同电路（0.16%，不改 P0-1 结论）。探针 `scripts/diag/_t_v3_tc_cause.py`；启动前自检 `scripts/check_transistor_count.py`（只告警不阻断，已接 `setup_exp.sh` V3 臂） | `V3_ISSUES.md` P1-1 / §4 第 3 条 / Q6；DIFF §20.2+§20.4 |
+| I18 | 🟡 待复核 | **V3 交付的 `dataset.split_rows` 与训练侧重切是两套切分**：交付 `metadata.json` = {train **431,439** / val **62,835** / test **105,702**}，训练侧 `utils.split_by_expr`（`set_seed(42)` + 排序 expr + `random.shuffle`，`int(n*0.7)`/`int(n*0.85)`）= {406,953 / 95,805 / 97,218}；**两侧都合计 599,976** ⇒ 不是行归属记错，是**两个 splitter**。训练**忽略**交付的 `split` 列、每次自己重切（`src/train_sweep.py` 调 `utils.split_by_expr`）⇒ **任何引用交付 `split` 列做评估/对账的口径都会与训练侧对不上**（差最大的是 val，+33k 行）。未定论：是交付方 splitter 与训练侧不同源，还是交付 `split` 列的语义另有定义（待向生成方问） | PROJECT_LOG §18.5.0；`metadata.json` `dataset.split_rows` |
 
 > 原则（REQUIREMENTS §5，2026-09-03）：数据/分析结论先完整验证再下结论；证据不足标「待复核」不下定论；数据相关问题以 DIFF 为参考（§14 审计标注为准）。

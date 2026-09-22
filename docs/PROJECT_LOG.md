@@ -1453,6 +1453,40 @@ loss        = (sample_loss * PIN_WEIGHTS[switching_pin]).mean()    # 按开关�
 **g) 相关口径结论（不在本节复述）。** 「90.8% 严格@3 与 GNN-only 问的不是同一件事」、
 以及「`ep250` vs `ep300` 不可盲换、先查部署配置」记在 **`GNN_RUST_DATA_DIFF.md` §十六**。
 
+### ✅ 18.5.0 — V3 数据集首次训练（`v3nowave42`，2026-09-20 起训 / 2026-09-22 收尾）
+
+**运行与启动闸门。** `~/project-107-v3nowave42`，**0 error**；225 epochs early_stop（val_loss 连续 40ep 无改善），总 **2186.3 min**（Avg/epoch **558.2 s**）。启动实测四行：`DATA_BATCHES=v3_delivery` / `USE_TRANSISTOR_WAVE=False` / `TRAIN_SEED=42` / `CACHE_DIR=cache107v3nowave42`，日志打印 `V2 data: v3_delivery (1 static + 31 arcs)` ⇒ 走的正是 18.0.0 修的那条**混合形态** loader 路径（单 `circuit_static.parquet` + 31 分片 `timing_arcs`）。配置：LR 1e-4 / LR_MIN 1e-6 / FACTOR 0.5 / HUBER 0.3 / BATCH 80 / `BEST_METRIC=capture2` / `SPLIT_SEED=42` / `V2_STRUCT_MODE=logic_only` / `USE_IDS_AVG_APPROX=0` ⇒ **纯拓扑 in=45**，与 serve 交付形态一致。切分后行数：train **406,953** / val **95,805** / test **97,218**（合计 599,976）。
+
+**部署候选 = `midpoint_ep200.pt`**（政策 `MIDPOINT_SELECT='last'` 取平台末端，17.4.1）。下表全部取 **midpoint 块**。
+
+| 指标（训练侧 test） | `v2nowave42m4`（548 组） | **`v3nowave42`（126 组）** |
+|---|---|---|
+| Test Median Rel Err | 22.13% | **7.21%** |
+| Mean Abs Err | — | 3.58 ps |
+| Spearman | 0.393 | **0.879** |
+| 选择遗憾 | 3.80% | **0.52%** |
+| top1 | 42.5% | **67.5%** |
+| 捕获率 | — | 96.7% |
+| recall@3 严格 A / 宽松 B | — / 83.4% | **81.7% / 95.2%** |
+| 成对分辨 <2% / >10% | 55% / 81% | **75% / 99%** |
+| spread>10% 子集（组数） | 遗憾 5.18% / Sp 0.450 / B 88.2%（346） | **遗憾 0.61% / Sp 0.897 / B 95.7%（94）** |
+
+- recall@2：全局 **A 77.0% / B 88.1%**（n=126）；spread>10% 子集 **A 80.9% / B 90.4%**（n=94）。成对分辨分档：<2% **75%**（n=1773）/ 2–5% 95% / 5–10% 97% / >10% **99%**。Best Val Rel Err 12.96%。组内变体差中位 **17.1%**。
+- ⚠ **`v2nowave42m4` 那列是训练侧口径**（DIFF §15 已定案：训练侧 ≠ 部署口径）。其 Rust 部署读数（714 集 batch）是 严格@3 **90.8%** / 宽松@3 **97.9%** / 选择遗憾 **5.93%** / 两阶段 0.63% —— **那是另一把尺，不要与本表并列解读**。
+
+**⚠ 三条禁止混读（否则「V3 让模型好了 5 倍」是个假读法）。** ① **组集不同**：548 组 → 126 组，指标是在**两张不同的卷子**上算的；② **spread 更窄**：V3 交付侧组内 spread 中位 **0.195**，**未达规格 0.30**（18.1.0 验收 ❌），而「组内差异更大 ⇒ 更好排」正是这些指标最敏感的方向（`v2nowave42m4` 的同一字段**未记录** ⇒ 跨数据不可比，**待复核**）；③ **训练侧遗憾历来不转移**：交付基线 nowave 训练侧 3.80% → Rust 部署 10.87%（≈7pp 落差，I7），V3 的 0.52% **不能按比例搬到部署**。⇒ 本节只记「V3 首训跑通、训练侧数字在本口径内全面优于 V2 各臂」，**部署是否变好只能由 Rust shadow 回答**。
+- ⚠ **SUMMARY 里的 `Test Loss` / `Test Mean Relative Error` 两行来自 `best_model.pt`，不是 `midpoint_ep200.pt`**（日志自己已警告）⇒ 引用 V3 结果**一律引 midpoint 块**；把 20.59% 当「V3 的成绩」是错的。另：`best_model.pt` 的 mtime（09-21 07:43 ≈ ep50）与守卫⑤ 说 val capture2 argmax 在 ep150 对不上 ⇒ **记为 I15 同类证据，不作结论**（任务 #60）。
+
+**126 组 vs 548 组 = 形状差，不是数据量差（已实测）。** 复刻训练切分（同代码同 seed，两侧与各自日志逐数吻合）：V2（full+rest+m4，过 `MIN_GROUP_SIZE=10` 后）**746,242 行 / 45,541 电路 / 3,652 组**，test = **6,843 电路 / 548 组 / 111,364 行**；V3 **599,976 / 12,455 / 837**，test = **1,876 / 126 / 97,218**。⇒ V3 的 test **行数**是 V2 的 87%，但**组数只有 23%**：V3 组**胖 3.8×**（772 vs 203 行/组）。根因是五形状配额把样本压在少数大组（(9,6) 占 **40.7% 电路 / 70.9% 行**，18.1.0）。
+
+**⚠ 启动前拦下的静默错臂风险（本次最值钱的一条）。** 服务器 `~/-project` 停在 **17.4.8**，其 `setup_exp.sh` **没有 `v3*` 臂**（`grep -c v3nowave` = **0**）⇒ 直接用它启动会**静默训成 `v3wave42`**：跑得完、退出码 0、日志正常，只有 `USE_TRANSISTOR_WAVE` 没被关掉 —— 与「名字宣称 nowave」不符而**没有任何报错**。本次改为从 `origin/10.3.3-fix-earlystop:setup_exp.sh` 取 18.4.0 的 blob 落到 `~/setup_exp_1840.sh`（`git hash-object` = `3a765d3ce4c290baeaba6589d4c1dc9d6a568ba3`，`v3nowave` 命中 9 处，`bash -n` 通过）启动，**未动 `~/-project` 的工作区/索引**。**下次 V3 开跑前先确认 `grep -c v3nowave setup_exp.sh` 非 0。**
+- ⚠ **`CACHE_SEED` 不要给 `~/cache107_master`**（177M，V2 键）。graph 缓存键 = `md5(graph_builder.py)` + `md5(所有 static/dynamic parquet mtime)` + `STRUCT_MODE`，不匹配则 `_check_cache_dir` **清空重建**并告警 —— 播种 V2 缓存进 V3 树等于白拷。V3 臂的 mtime 基线只有 `$HOME/project-107-v3nowave42`（未来 V3 各臂共用）。
+- 启动自检 `scripts/check_transistor_count.py` 按预期报 ⚠ **14.8%**（P1-1 已记档缺陷；只告警不阻断，理由见该脚本文件头）。
+
+**🟡 待复核（未定论，已入 OPEN_ISSUES I18）。** 交付 `metadata.json` 的 `dataset.split_rows` = {train **431,439** / val **62,835** / test **105,702**} 与训练侧重切 {406,953 / 95,805 / 97,218} **不同** —— 两侧都合计 599,976 ⇒ 交付方与 `utils.split_by_expr` 用了**两套切分**。训练**忽略**交付的 `split` 列、每次自己重切（`set_seed(42)` + 排序 expr + `random.shuffle`）⇒ **任何引用交付 `split` 列做评估的口径都会与训练侧对不上**。
+
+**下一步** = 按 `OPERATIONS.md` §6 runbook 把 serve 换到 `midpoint_ep200.pt`（+ 本 run 的 `outputs/scaler.pkl`）跑 **Rust shadow**，**复用旧缓存**（`~/NetlistOpt/temp_sim_cache/` 不删；`run_shadow_batch.sh` 只 mv 归档 `temp_sim_test/tl_opt_batch`），与 §6.7 的 714 集 batch 口径交付基线（90.8 / 97.9 / 5.93 / 0.63）对照。**`v3wave42`（wave 控制臂）是否跑未定** —— nowave 是唯一可部署形态（`serve.py` 强制 `USE_TRANSISTOR_WAVE=False`），wave 臂只回答「训练侧 wave 是否帮忙」。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**
