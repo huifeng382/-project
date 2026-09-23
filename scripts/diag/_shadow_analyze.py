@@ -266,7 +266,7 @@ def run_stamp(root):
     print("=== 戳结束 ===")
 
 # ————————————————————————————————————————————————————————————————————————
-# 以 current 为锚的 GNN 判据质量（18.6.0）
+# 以 current 为锚的 GNN 判据质量（18.6.0 新增 / 18.6.1 修正配对校验）
 # ————————————————————————————————————————————————————————————————————————
 # 动机：本文件其余所有指标都把 GNN 放在**候选集内部**评分（「这批里谁最快」），参照系里
 #   **没有 current 这个角色**。而部署时贪心的实际判据是「按生成序试 current+窗口衍生出来的
@@ -404,7 +404,7 @@ def cur_metrics(cur_rank, cur_true, cands):
     tmin = [i for i, v in enumerate(true) if v == min(true)]
     return {
         "n_cands": len(cands), "S": S, "FP": FP, "P": P, "FN": FN,
-        # 头号 = 误报率：GNN 说「比 current 好」的那些里，真值其实**不更好**（>= 含相等）的占比
+        # 参考口径（逐候选）误报率：GNN 说「比 current 好」的那些里，真值其实**不更好**（>= 含相等）的占比
         "fp_rate": (FP / S) if S > 0 else float("nan"),
         # 伴随 = 漏报率：真有改进机会的里面，GNN 判成「不如 current」的占比
         "fn_rate": (FN / P) if P > 0 else float("nan"),
@@ -440,9 +440,22 @@ def _agg_keys(ss, keys, macro=False):
     return tuple(out)
 
 def current_anchor_report(root, min_cands, main_sets, dom_circ):
-    """以 current 为锚的判据质量报告（18.6.0）。
-    main_sets = 主口径候选集列表（仅用于并排报覆盖率）；dom_circ = 主口径 ④ 排除的电路。"""
-    print("\n=== 以 current 为锚的 GNN 判据质量（18.6.0；头号 = 误报率）===")
+    """以 current 为锚的判据质量报告（18.6.0 新增；18.6.1 修正配对校验 + 加核心指标）。
+    18.6.1 核心（用户口径）：**只看 GNN 排第一的那个候选是否真负**，不再逐项看所有排在
+    current 之前的候选。窗级：严格 = 首推组全部 t1 < t_cur（与 `delta<0` 同调）、宽松 =
+    全部 t1 <= t_cur（不劣）；并列取同秩整组，组内真假不一时按**保守**判错并单列 t1_mix；
+    首推候选无真值（落在未评估后缀）⇒ 单列 n_t1_nodata 并剔出分母；分母缺口恒等式
+    n_zero_S + n_t1_nodata + n_t1_win == len(recs)。同时报**镜像漏推率**（GNN 首推 current
+    的窗里其实存在更优候选的比例），防「永远说 current 最好」把首推率衬托得好看。
+    旧的逐候选 误报率/漏报率/top-1/秩相关一律降级为**参考口径**。
+    main_sets = 主口径候选集列表（仅用于并排报覆盖率）；dom_circ = 主口径 ④ 排除的电路。
+    18.6.1 修正（首跑实测倒逼）：18.6.0 要求「每个候选行的推断 eval_idx 都必须在 shadow 里存在」，
+    实测 134 个窗口不满足 ⇒ 整窗被剔并报「配对不可信 → 本节数字作废」。但那些「缺」是**预期结构**：
+    Pass 3 遇到第一个 accept 就 break（tl_opt.rs:1191）⇒ 该窗尾部候选永不评估、永无 eval_idx 行，
+    而本文件的候选行来自 `mods`（= `prepared` 全表，:1024-1026）⇒ present 只能是**前缀**。
+    故校验改为「present 必须是前缀 {0..k-1}」+「shadow 行集恰为 {base+1..base+k}」+ 逐行 tc 相符，
+    缺的后缀单列计数（它还会让 S 低估，故另报其中「秩高于 current」的项数）。"""
+    print("\n=== 以 current 为锚的 GNN 判据质量（18.6.1；核心 = 首推真负率）===")
     cur_files = sorted(glob.glob(os.path.join(root, "*", "*", "gnn_current.csv")))
     if not cur_files:
         # ⚠ 必须是**常量**：_t_shadow_tiebreak.py 断言剥戳后两侧逐字节相同，而它的 fixture 树
@@ -452,6 +465,8 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     recs = []
     n_win_total = n_no_shadow = n_mismatch = n_ev_missing = n_tc_mismatch = 0
     n_empty_cand = n_dim = n_dup_eval = n_dup_win = 0
+    n_uneval = n_uneval_above = 0     # 结构性未评估（贪心提前 accept 的尾部候选，见下面配对校验）
+    n_t1_nodata = 0                   # 核心口径：首推候选无真值（判不了）的窗数
     n_cur_rank_na = n_cur_true_na = n_true_na = n_rank_na = 0
     n_header_dup = n_bad_row = n_win_unclaimed = 0
     for curp in cur_files:
@@ -510,13 +525,34 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
             if dup:
                 n_dup_win += 1
                 continue
+            # —— 配对校验（18.6.1 修正）：present 必须是**前缀**，缺的尾部 = 结构性未评估 ——
+            # 代码依据（tl_opt.rs:1156-1191）：Pass 3 按 `prepared` 顺序逐个 evaluate，撞上第一个
+            # `accept`（delta<0）就 `break` ⇒ 排在其后的候选**永不评估、永无 eval_idx 行**。而本文件
+            # 的候选行出自 `mods`，`mods` 由 `prepared` 现取（:1024-1026）⇒ 本文件 = prepared 全表、
+            # shadow 的评估行 = 它的**前缀**。故「缺」是预期结构（贪心接受后就没再试），不是错位。
+            # 校验强度不减：① pos 集必须恰为 {0..k-1}（有洞/零个 ⇒ 推断失效，真错位）；② 该窗 shadow
+            # 行集必须恰为 {base+1..base+k}（len 相等，无多余行）；③ 逐行 tc 相符；④ 窗内 eval 不重复（上）。
+            if any(c["pos"] is None for c in cand_rows):
+                n_ev_missing += 1; continue
+            pres = [c for c in cand_rows if c["eval"] is not None and c["eval"] in sh_by_ev]
+            k = len(pres)
+            if k == 0 or sorted(c["pos"] for c in pres) != list(range(k)):
+                n_ev_missing += 1; continue
+            if len(sh_by_ev) != k:
+                n_mismatch += 1; continue
+            # 计数放在校验通过之后（只统计**被本节采用**的窗）：未评估的那些里「GNN 秩高于
+            # current」的个数尤其要紧 —— 它们无真值 ⇒ 分子分母都进不去，**S 因此被低估这么多**，
+            # 必须可见（否则读者会以为 S 覆盖了该窗全部候选）
+            pres_ids = {id(c) for c in pres}
+            uneval = [c for c in cand_rows if id(c) not in pres_ids]
+            n_uneval += len(uneval)
+            if cur["rank"] is not None:
+                n_uneval_above += sum(1 for c in uneval
+                                      if c["rank"] is not None and c["rank"] < cur["rank"])
             pairs, broken = [], False
-            for c in cand_rows:
-                # 双射校验：推断的 eval_idx 必须**存在**于该窗口（按 (iter,window) 查，
-                # 所以标签相符是查表自带的）；再核 tc（与 shadow 的 transistors 同源同值）
-                if c["eval"] is None or c["eval"] not in sh_by_ev:
-                    n_ev_missing += 1; broken = True; break
+            for c in pres:
                 sr = sh_by_ev[c["eval"]]
+                # tc 校验（与 shadow 的 transistors 同源同值）：抓「位置↔真值」错配
                 tc_s = int(sr["nt"]) if sr["nt"] else None
                 if c["tc"] is not None and tc_s is not None and c["tc"] != tc_s:
                     n_tc_mismatch += 1; broken = True; break
@@ -529,10 +565,6 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
                 pairs.append((c["rank"], sr["true"]))
             if broken:
                 continue
-            # 集合相等 = 双射（认领的 eval_idx 集必须与该窗口 shadow 的行集一一对应）
-            if len(sh_by_ev) != len(cand_rows):
-                n_mismatch += 1
-                continue
             if cur["rank"] is None:
                 n_cur_rank_na += 1
                 continue
@@ -542,6 +574,39 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
             if len(pairs) < min_cands:
                 continue
             m = cur_metrics(cur["rank"], cur["true"], pairs)
+            # —— 核心口径（18.6.1）：首推 = 秩最小的候选，只看它**是否真负**（真改进）——
+            # 为什么另立一条：上面那条把「所有排在 current 之前的候选」逐项汇总，一个窗里 GNN 把几个
+            # 候选都排在 current 之前时，摊到每项上的说法与部署无关；部署上真正发生的是「贪心照 GNN 的
+            # 名次**先试第一名**」⇒ 只问那一个：一试就中，还是空跑。
+            # 严格 = 真改进（t₁ < t_cur，与 `delta < 0.0` 同调）；宽松 = 不劣（t₁ ≤ t_cur，含相等）。
+            # 并列：serve 给并列同一（平均）秩 ⇒ 首推可能是一组，**要求全组都真负**才算严格正确（保守），
+            # 组内真假不一致的单列计数。首推候选若落在未评估后缀（或那条 eval 失败）⇒ 无真值、判不了，
+            # 剔出分母并单列 —— 这条不能省：部署上贪心先试的正是首推那个。
+            rk_c = [c["rank"] for c in cand_rows if c["rank"] is not None]
+            m["t1_win"] = 0.0                     # 该窗是否进核心分母（首推了候选且有真值）
+            m["t1_neg"] = m["t1_nn"] = float("nan")
+            m["t1_tie"] = m["t1_mix"] = 0.0
+            # ⚠ 镜像判据**不能**写成 S == 0：S 只数「rank 与真值都齐」的候选，而首推只看秩 ——
+            # 若首推那个候选的真值缺失（未评估后缀），S 仍可为 0，于是同一个窗会被同时算进
+            # 「首推 current」与「首推无真值」两个桶 ⇒ 下面那条缺口恒等式破。故这里改用**秩**判：
+            # 三个桶（首推 current / 首推无真值 / 进分母）互斥且穷尽（cur["rank"] 为 None 的窗、
+            # 空候选窗、len(pairs)<min_cands 的窗都已在此之前 continue 掉）。
+            _t1_top = bool(rk_c) and min(rk_c) < cur["rank"]
+            m["s0"] = 0.0 if _t1_top else 1.0      # 镜像：GNN 首推 current（无名次更优的候选）
+            m["s0_miss"] = 1.0 if (not _t1_top and m["P"] > 0) else 0.0   # 镜像：其实有更优候选
+            if _t1_top:
+                _mr = min(rk_c)
+                picks = [c for c in cand_rows if c["rank"] is not None and c["rank"] == _mr]
+                tt = [sh_by_ev[c["eval"]]["true"] if c["eval"] in sh_by_ev else None for c in picks]
+                if any(x is None for x in tt):
+                    n_t1_nodata += 1              # 首推无真值（未评估后缀 / eval 失败）
+                else:
+                    m["t1_win"] = 1.0
+                    m["t1_neg"] = 1.0 if all(x < cur["true"] for x in tt) else 0.0
+                    m["t1_nn"] = 1.0 if all(x <= cur["true"] for x in tt) else 0.0
+                    m["t1_tie"] = 1.0 if len(picks) > 1 else 0.0
+                    if len(picks) > 1 and len({x < cur["true"] for x in tt}) > 1:
+                        m["t1_mix"] = 1.0
             m["circuit"] = circ; m["iter"] = it; m["window"] = w
             m["nout"] = cur["nout"] if cur["nout"] is not None else nwin - 1
             # sig 与主口径**同一配方**（:315-333）：先剔 true/gnn 缺的行，再按 eval 去重，
@@ -576,7 +641,34 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     P_tot = sum(x["P"] for x in recs); FN_tot = sum(x["FN"] for x in recs)
     n_zero_S = sum(1 for x in recs if x["S"] == 0)
     n_zero_P = sum(1 for x in recs if x["P"] == 0)
-    print(f"\n  头号 误报率（GNN 把**真不优于** current 的排到了 current 之前）: "
+    # —— ★ 核心：只看首推那一个候选「是否真负」 ——
+    n_t1_win = sum(1 for x in recs if x["t1_win"] == 1.0)
+    t1neg = sum(x["t1_neg"] for x in recs if _finite(x.get("t1_neg")))
+    t1nn = sum(x["t1_nn"] for x in recs if _finite(x.get("t1_nn")))
+    n_tie = sum(1 for x in recs if x["t1_tie"] == 1.0)
+    n_mix = sum(1 for x in recs if x["t1_mix"] == 1.0)
+    print(f"\n  ★ 核心 首推真负率（只看 GNN 排第一的那个候选**是否真改进**，"
+          f"不再逐项看所有排在 current 之前的）:")
+    print(f"      严格（t₁ < t_cur，与 `delta<0` 同调）: {_mean(recs, 't1_neg')*100:6.2f}%   "
+          f"宽松（t₁ ≤ t_cur，不劣）: {_mean(recs, 't1_nn')*100:6.2f}%   "
+          f"（每格 = 窗均；窗是单位）")
+    print(f"      分母 = GNN 严格首推了候选**且首推有真值**的窗 {n_t1_win} 个"
+          f"（占合格集 {len(recs)} 的 {n_t1_win/len(recs)*100:.1f}%）；"
+          f"池化 Σ真负/Σ窗 = {t1neg/n_t1_win*100:.2f}% / 宽松 {t1nn/n_t1_win*100:.2f}%"
+          if n_t1_win else "      分母 = 0 个窗（无可用集）")
+    # s0t = 「GNN 首推 current」的窗数（= 上面分母缺口的第一个桶，两者必须是同一个集合）
+    s0t = int(sum(x["s0"] for x in recs)); s0m = int(sum(x["s0_miss"] for x in recs))
+    print(f"      分母缺口（三项相加必须 = 合格集 {len(recs)}）：GNN 首推 current 的窗 {s0t} 个"
+          f" ＋ 首推候选**无真值**的窗 {n_t1_nodata} 个（落在未评估后缀 ⇒ 判不了，"
+          f"而部署上贪心先试的恰是它）＋ 进分母 {n_t1_win} 个")
+    print(f"      镜像 漏推率（防「永远说 current 最好」好看）：GNN 首推 current 的 {s0t} 个窗里，"
+          f"其实**存在更优候选**的 {s0m} 个 ⇒ {s0m/s0t*100 if s0t else float('nan'):6.2f}%"
+          f"（下界：未评估后缀里的更优候选无从知道）")
+    print(f"      首推并列的窗 {n_tie} 个（并列要求**全组都真负**才算严格正确；"
+          f"其中组内真假不一 {n_mix} 个 ⇒ 按保守判错）")
+    print(f"\n  —— 以下为**逐候选口径（参考）**：把「所有排在 current 之前的候选」逐项汇总，"
+          f"分母是候选而非窗；核心结论请引上面的首推率 ——")
+    print(f"  头号 误报率（GNN 把**真不优于** current 的排到了 current 之前）: "
           f"{_mean(recs, 'fp_rate')*100:6.2f}%   分母 ΣS={S_tot} 项 / {len(recs)-n_zero_S} 集")
     print(f"  伴随 漏报率（真有更好却被 GNN 判为不如 current）:                 "
           f"{_mean(recs, 'fn_rate')*100:6.2f}%   分母 ΣP={P_tot} 项 / {len(recs)-n_zero_P} 集")
@@ -591,8 +683,9 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     print(f"  集内候选数: min={min(x['n_cands'] for x in recs)} "
           f"med={statistics.median([x['n_cands'] for x in recs]):.0f} "
           f"max={max(x['n_cands'] for x in recs)}")
-    print(f"  ⚠ |S|=0 的集 {n_zero_S} 个（该窗口 GNN 一个候选都没排在 current 之前）"
-          f"⇒ 误报率**无定义**、已从均值与分母里剔除；|P|=0 的集 {n_zero_P} 个同理。"
+    print(f"  ⚠ |S|=0 的集 {n_zero_S} 个（该窗口**有真值的**候选里没有一个被排在 current 之前；"
+          f"注意与核心口径的缺口行不是同一个集合——那边按秩判，不看真值有没有）"
+          f"，⇒ 误报率**无定义**、已从均值与分母里剔除；|P|=0 的集 {n_zero_P} 个同理。"
           f"不剔除的话「谁都不排在 current 之前 ⇒ 误报率 0%」会是假好")
 
     # —— 本节指标的四口径（复用主表的规格；③ 按电路、④ 排除主表那个最大电路）——
@@ -602,7 +695,8 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
         if k in _seen:
             continue
         _seen.add(k); dedup.append(s)
-    keys = ("fp_rate", "fn_rate", "top1_strict", "top1_len", "sp", "kt")
+    # ★ 核心 推严/推宽 也在里面 —— 四口径与分层表都据此多出一列（列序见表头）
+    keys = ("t1_neg", "t1_nn", "fp_rate", "fn_rate", "top1_strict", "top1_len", "sp", "kt")
     # ⚠ 标签必须**前有字**（`口径①` 而非 `①`）：_t_shadow_groupby.py:127 的 table_units() 用
     # `strip().startswith("①②③④")` 认表、toks[-7] 当单位数（int()）—— 本节的行若以圈码起头会被
     # 它当成口径对照表的行**覆盖**既有读数，且末 7 个 token 是百分数 ⇒ `int()` 直接抛异常。
@@ -615,22 +709,26 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
          sum(1 for s in recs if s["circuit"] != dom_circ)),
     )
     print("\n  本节指标的四口径（与上面主表同规格；每格 nan = 该口径无可用集）：")
-    print("    " + _pad("口径", 32) + _pad("单位数", 8) + _pad("误报率", 10) + _pad("漏报率", 10)
-          + _pad("top1严格", 10) + _pad("top1宽松", 10) + _pad("Sp(修正)", 10) + "Kendall")
+    print("    " + _pad("口径", 32) + _pad("单位数", 8) + _pad("★推严", 9) + _pad("★推宽", 9)
+          + _pad("误报率", 10) + _pad("漏报率", 10) + _pad("top1严格", 10) + _pad("top1宽松", 10)
+          + _pad("Sp(修正)", 10) + "Kendall")   # ★ = 核心（首推真负率）两口径
     for label, ss, macro, n_units in specs:
         a = _agg_keys(ss, keys, macro)
         print("    " + _pad(label, 32) + _pad(str(n_units), 8)
-              + _pad(f"{a[0]*100:.2f}%" if _finite(a[0]) else "NA", 10)
-              + _pad(f"{a[1]*100:.2f}%" if _finite(a[1]) else "NA", 10)
-              + _pad(f"{a[2]*100:.1f}%" if _finite(a[2]) else "NA", 10)
-              + _pad(f"{a[3]*100:.1f}%" if _finite(a[3]) else "NA", 10)
-              + _pad(f"{a[4]:.3f}" if _finite(a[4]) else "NA", 10)
-              + (f"{a[5]:.3f}" if _finite(a[5]) else "NA"))
+              + _pad(f"{a[0]*100:.2f}%" if _finite(a[0]) else "NA", 9)
+              + _pad(f"{a[1]*100:.2f}%" if _finite(a[1]) else "NA", 9)
+              + _pad(f"{a[2]*100:.2f}%" if _finite(a[2]) else "NA", 10)
+              + _pad(f"{a[3]*100:.2f}%" if _finite(a[3]) else "NA", 10)
+              + _pad(f"{a[4]*100:.1f}%" if _finite(a[4]) else "NA", 10)
+              + _pad(f"{a[5]*100:.1f}%" if _finite(a[5]) else "NA", 10)
+              + _pad(f"{a[6]:.3f}" if _finite(a[6]) else "NA", 10)
+              + (f"{a[7]:.3f}" if _finite(a[7]) else "NA"))
 
     # —— 单/多输出分层（**必需项**，不是可选：见上面「口径③」）——
     print("\n  单/多输出分层（解释上面读数用；多输出电路占候选集 52~57%）：")
-    print("    " + _pad("层", 20) + _pad("集数", 7) + _pad("误报率", 10) + _pad("漏报率", 10)
-          + _pad("top1严格", 10) + _pad("Sp(修正)", 10) + "池化误报")
+    print("    " + _pad("层", 20) + _pad("集数", 7) + _pad("★推严", 9) + _pad("★推宽", 9)
+          + _pad("误报率", 10) + _pad("漏报率", 10) + _pad("top1严格", 10) + _pad("Sp(修正)", 10)
+          + "池化误报")
     for lab, ss in (("单输出(nout=1)", [s for s in recs if s["nout"] == 1]),
                     ("多输出(nout>=2)", [s for s in recs if s["nout"] >= 2])):
         if not ss:
@@ -638,6 +736,8 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
             continue
         St = sum(x["S"] for x in ss); Ft = sum(x["FP"] for x in ss)
         print("    " + _pad(lab, 20) + _pad(str(len(ss)), 7)
+              + _pad(f"{_mean(ss, 't1_neg')*100:.2f}%" if _finite(_mean(ss, 't1_neg')) else "NA", 9)
+              + _pad(f"{_mean(ss, 't1_nn')*100:.2f}%" if _finite(_mean(ss, 't1_nn')) else "NA", 9)
               + _pad(f"{_mean(ss, 'fp_rate')*100:.2f}%", 10)
               + _pad(f"{_mean(ss, 'fn_rate')*100:.2f}%", 10)
               + _pad(f"{_mean(ss, 'top1_strict')*100:.1f}%", 10)
@@ -652,7 +752,7 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
           f"   有 gnn_current 无 gnn_shadow（半趟）: {n_no_shadow}")
     # 窗内 eval_idx 重复**属于配对失败**（该窗的 eval_idx↔行 对应关系有歧义 ⇒ 该窗已被剔出
     # recs）—— 故与双射/缺 eval/tc 同列，不放进下面那组 ⚠（否则「被剔了但没报警」）。
-    print(f"    配对失败 双射集合不等: {n_mismatch}   eval_idx 不存在: {n_ev_missing}"
+    print(f"    配对失败 双射集合不等: {n_mismatch}   推断位置非前缀(pos 缺失): {n_ev_missing}"
           f"   tc 不等: {n_tc_mismatch}   窗内 eval_idx 重复: {n_dup_win}"
           f"   {'✅' if (n_mismatch + n_ev_missing + n_tc_mismatch + n_dup_win) == 0 else '❌ 配对不可信 → 本节数字作废'}")
     print(f"    只有 CURRENT 行的窗口（rank_window 的空候选守卫漏了）: {n_empty_cand}"
@@ -664,10 +764,14 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
           f"   {'✅' if (n_dup_eval + n_header_dup + n_bad_row) == 0 else '⚠ 疑 append 叠趟/损坏行'}")
     print(f"    候选真值缺失(true_delay=NA，已剔出该集): {n_true_na}"
           f"   候选秩缺失/NaN(已剔): {n_rank_na}")
+    print(f"    结构性未评估候选（贪心该窗提前 accept 并 break ⇒ 尾部候选永不评估、无真值）: "
+          f"{n_uneval} 项，其中「秩高于 current」{n_uneval_above} 项 ⇒ 这 {n_uneval_above} 项"
+          f"**计入不了 S 的分母**，S 与误报率因此只覆盖「贪心真试过」的那部分候选")
     print(f"    current 秩缺失/NaN 的集 {n_cur_rank_na}（= 模型评估不了 current，"
           f"**不是**「GNN 一个都没看上」）   current 真值缺失的集 {n_cur_true_na}")
     print(f"    gnn_shadow 有、gnn_current 无的窗口: {n_win_unclaimed}"
-          f"（预期每电路约 1 个 = 初始 current 那次 eval_idx=1，以及候选全部 lift/patch 失败的窗）")
+          f"（预期每电路约 1 个 = 初始 current 那次 eval_idx=1；候选全空（`prepared` 空）的窗"
+          f"不写本文件 —— 注意 lift/patch 失败的候选**根本进不了** `mods`，故不会出现在这里）")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -1009,7 +1113,7 @@ def main():
     print("  ⚠ 宽松 k3 在 n=4 的集上**定义性饱和**（真前3 与预测前3 各占 4 选 3，必然相交 → 恒 100%）"
           "→ 该列含白送分；严格列不受此影响。")
 
-    # —— 以 current 为锚的 GNN 判据质量（18.6.0）——
+    # —— 以 current 为锚的 GNN 判据质量（18.6.0 新增 / 18.6.1 修正配对校验）——
     # ⚠ 位置被两处夹死，**不要挪**：
     #  (a) 必须在「=== 每候选集明细」之**前**：_t_shadow_analyze_2col.py:127-129 的 head_meta()
     #      把 DETAIL_MARK 之前的一切逐字节跨树比较（:147）⇒ 本节在无 gnn_current.csv 的树上
