@@ -92,6 +92,12 @@ while [ $# -gt 0 ]; do
   shift
 done
 
+# 17.6.0：把 `MINFREE_GB` 导出给子脚本。它在上面是**普通赋值、没 export**，而
+# run_shadow_batch.sh 自己那道磁盘闸门读的是 `SHADOW_MINFREE_GB`（默认 50）⇒ 不加这一行，
+# `--minfree 20` 只对本战役生效，子脚本仍按 50 拦，两条路径口径不一致（正是 I20 那类：
+# 同一件事两个数，事后看不出哪个生效了）。变量名按子脚本的读法转写。
+export SHADOW_MINFREE_GB="$MINFREE_GB"
+
 say() { echo "[$(date '+%F %T')] $*" | tee -a "$LOG"; }
 tag_of() { basename "$1" .pt; }
 

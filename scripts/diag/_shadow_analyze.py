@@ -65,6 +65,10 @@ CSV_RE = re.compile(
 CSV2_RE = re.compile(r"gnn_pred2=([0-9.eE+-]+|nan)")
 # 17.3.10: transistors 同样单查（同 CSV2_RE 的理由：旧 CSV 可能整列缺席）
 CSV_NT_RE = re.compile(r"transistors=(\d+)")
+# 17.6.0: 失败行的 error 列同样单查（旧 CSV 里 NA 行**没有** error 列 ⇒ 并入 CSV_RE 会全表失配）。
+# 只用于**读数**（数一数有多少 NA 行是超时），不参与任何判据 —— 故截到第一个逗号就够，
+# 不必处理引号转义（超时那条消息本身不含逗号，见 simulation.rs 里 Timeout 的构造）。
+CSV_ERR_RE = re.compile(r"error=([^,]*)")
 
 def parse_row(line):
     m = CSV_RE.search(line)
@@ -76,6 +80,7 @@ def parse_row(line):
         m2 = CSV2_RE.search(line)
         g2 = m2.group(1) if m2 else None
         m3 = CSV_NT_RE.search(line)
+        m4 = CSV_ERR_RE.search(line)
         return {
             "eval": int(m.group(1)),
             "iter": int(m.group(2)),
@@ -89,6 +94,8 @@ def parse_row(line):
             # 与 transistors 文本。两者都取自真值列 → 判同结果不随 ckpt 变。
             "ttxt": g5,
             "nt": m3.group(1) if m3 else "",
+            # 17.6.0：失败行的 error 文本（成功行没有这一列 ⇒ 空串）。只给「超时行数」那条读数用。
+            "err": m4.group(1) if m4 else "",
         }
     except (ValueError, TypeError):
         return None   # 16.11.6: 损坏行（并发写 CSV 交错）跳过，不崩溃
@@ -187,7 +194,12 @@ def per_window_metrics(rows, key="gnn"):
 # 17.5.0 再补 TL_BESTFIRST / TL_MAX_STEPS：前者换的是**搜索算法本身**（全组仿真 + 最好者胜 +
 # 栈式回溯），后者换的是步数预算。二者都直接改轨迹 ⇒「同 ckpt、同 seed、结果不同」的最可能
 # 原因就是它们；不进戳等于下一个 I20。
+# 17.6.0 再补 TL_MAX_WALL_S / XYCE_TIMEOUT_S：这两个直接决定「**哪些候选没被仿真**」——
+# 前者到点会让这一趟提前收工（DONE 行 stopped=wall、total_iters < 预算），后者会让单次仿真作废
+# （CSV 里落 true_delay=NA）。它们不同的两趟，同一 ckpt / 同一 seed 也会有不同轨迹，
+# 而差异**长得像**「模型换了」⇒ 不进戳就是下一个 I20。
 ENV_KEYS = ("SIM_OPTIONS", "SIM_TRAN", "TL_MAX_ITERS", "TL_BESTFIRST", "TL_MAX_STEPS",
+            "TL_MAX_WALL_S", "XYCE_TIMEOUT_S",
             "XYCE_CACHE", "XYCE_CACHE_DIR", "GNN_HOST",
             "GNN_PORT", "GNN_PORT2", "USE_IDS_AVG_APPROX", "IDSGNN_CKPT",
             # 17.2.4 补：进程间数值复现性直接受这几个变量影响（PYTHONHASHSEED 是 serve
@@ -489,6 +501,7 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     n_opp_pair = n_opp_cur_na = n_opp_rank_na = n_opp_true_na = 0
     arecs = []                        # 18.7.0：真值全到位的组（= R1/R2 的候选分母池）
     n_cur_rank_na = n_cur_true_na = n_true_na = n_rank_na = 0
+    n_timeout_na = 0                  # 17.6.0：NA 行里由超时造成的那部分（见下面 diag 行）
     n_header_dup = n_bad_row = n_win_unclaimed = 0
     for curp in cur_files:
         shp = os.path.join(os.path.dirname(curp), "gnn_shadow.csv")
@@ -626,6 +639,13 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
                     n_tc_mismatch += 1; broken = True; break
                 if sr["true"] is None:
                     n_true_na += 1
+                    # 17.6.0：其中有多少是**超时**（`XYCE_TIMEOUT_S` 把这一刀掐了）——
+                    # 这是「两道保险到底有没有触发」的唯一直接读数。两个 marker 都认：搜索层的
+                    # `TlOptError::Timeout`（"simulation timeout: …"）与仿真层的
+                    # `SimulationError::Timeout`（"Simulator timed out: …"）—— 后者出现在
+                    # 「超时被折进 Evaluation」的错误接线下，认它就等于给那条退化路径留了灯。
+                    if "timeout" in (sr["err"] or "").lower():
+                        n_timeout_na += 1
                     continue
                 if c["rank"] is None:
                     n_rank_na += 1
@@ -895,6 +915,13 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
           f"   {'✅' if (n_dup_eval + n_header_dup + n_bad_row) == 0 else '⚠ 疑 append 叠趟/损坏行'}")
     print(f"    候选真值缺失(true_delay=NA，已剔出该集): {n_true_na}"
           f"   候选秩缺失/NaN(已剔): {n_rank_na}")
+    # 17.6.0：把上面那批 NA 行**按成因**分出一支 —— 单次仿真被 `XYCE_TIMEOUT_S` 掐掉的
+    # 有多少。判据 = 该行 error 列含 timeout（见 parse_row 的 CSV_ERR_RE 与上面累加处）。
+    # 读法：>0 说明保险**真的触发过**（组内允许：该候选作废、落 NA 行、不写缓存）；
+    #       结构性未评估（下一行）则**必须**为 0，两者是不同性质的东西，别混读。
+    print(f"    其中由超时造成(单次仿真被 XYCE_TIMEOUT_S 掐掉): {n_timeout_na} 个"
+          f"   {'✅ 本趟没有候选被掐' if n_timeout_na == 0 else '⚠ 保险已触发 —— 组内允许；连续 5 次会中止整个电路（DONE 行 error）'}"
+          f"   （其余 {n_true_na - n_timeout_na} 个 NA 行是别的失败；本行只看 error 列，不参与任何判据）")
     print(f"    结构性未评估候选（贪心该窗提前 accept 并 break ⇒ 尾部候选永不评估、无真值）: "
           f"{n_uneval} 项，其中「秩高于 current」{n_uneval_above} 项 ⇒ 这 {n_uneval_above} 项"
           f"**计入不了 S 的分母**，S 与误报率因此只覆盖「贪心真试过」的那部分候选")

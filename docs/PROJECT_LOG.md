@@ -1512,6 +1512,47 @@ loss        = (sample_loss * PIN_WEIGHTS[switching_pin]).mean()    # 按开关�
 
 **下一步** = ① 按 §6 Step 6 **恢复 serve**：8000 现挂本轮换上去的 V3 ep200，**待收**；恢复目标 = 交付基线 `midpoint_ep250`（顺带纠正 09-17 `_shadow_ckpt_sweep.sh` 末位遗留在 8000 的 `ep300` 漂移，见 I9）。② **`v3wave42`（wave 控制臂）是否跑未定** —— nowave 是唯一可部署形态（`serve.py` 强制 `USE_TRANSISTOR_WAVE=False`），wave 臂只回答「训练侧 wave 是否帮忙」。③ §6.4b **双端点 A/B**（8001 挂 `ep250` + 启动前 `export GNN_PORT2=8001`）可消掉「基线侧 serve vintage（09-17 那次 serve 是否带 `PYTHONHASHSEED=0`）」这个唯一剩余未知量 —— 两臂候选集逐字相同、基线数已同版复现 ⇒ 边际价值中等，**本轮未跑**。
 
+### ✅ 17.5.0/17.6.0 / 18.7.0/18.7.1 — 全组仿真最好者胜 ＋ 预算闸门与两道保险（2026-09-25）
+
+**为什么这一节记在 PROJECT_LOG 而不是只写 DIFF**：本轮产生的是**运行代价定档**（决定全量要跑多久、旋钮取什么值），属于「读数」，按记录规则①进本文件；口径与语义细节在 DIFF §23 / OPERATIONS §6.9 / OPEN_ISSUES I23–I26。**本节的数只有一趟（服务器 level4/ADD4_OVF 单电路），标注清楚，别当全量统计用。**
+
+**① 服务器实测读数（定档依据；`TL_ONLY=level4/ADD4_OVF`，`TL_MAX_STEPS=2`，冷缓存 `temp_sim_cache_bf20260923`）：**
+
+| 量 | 值 | 怎么来的 |
+|---|---|---|
+| 墙钟 | `real 13m41.709s` | `time` 包住跑 |
+| 候选评估数 | `evals=29` | DONE 行 |
+| 窗尝试数 | `window tries 3` | 同上 |
+| 组大小之和 | `sum group_size 28` | 同上 |
+| 跑完缓存文件数 | 3512 | `find … \| wc -l` |
+| **单候选评估** | **≈28.3 s** | 821.7s ÷ 29 evals |
+| **单步（一轮）** | **≈410 s** | 821.7s ÷ 2 iters（28 候选 ÷ 2 轮 ⇒ 每轮 ≈14 次评估） |
+| **平均组大小** | **≈9.3 候选/窗** | 28 ÷ 3 window tries |
+| **单候选缓存文件** | **≈121** | 3512 ÷ 29 |
+
+⚠ 由此派生的「全量 46 电路 ≈ 23 万次仿真」「≈121 缓存文件/候选 ⇒ 全量小文件量级」是**外推**，不是实测。⚠ 同名条目里此前写的「≈14.5 窗/步」**待复核**（本趟是 1.5 窗/轮、9.3 候选/窗、14 候选/轮，对不上；已标待复核，不得引用）。
+
+**② 三个旋钮定档（用户 2026-09-25 决定）：**
+
+| 旋钮 | 值 | 理由 |
+|---|---|---|
+| `TL_MAX_STEPS` | **40** | 与 batch 下 `search_params.max_iters` 同值 ⇒ **设不设行为一样**，显式设只是为了进运行身份戳 |
+| `XYCE_TIMEOUT_S` | **1800**（用户保留原选；我曾建议全量降到 600） | 单次 Xyce 墙钟上限，全局所有变体 |
+| `TL_MAX_WALL_S` | **21600** | **保两臂配对**：40 × 410s = 16400s < 21600，留 ~1.3 倍余量。⚠ 这条是**必要条件**不是保险丝——取值若咬到正常趟，两臂就不同口径、结果不可比 |
+
+代价界：全量正常 ≈4.6h（受最慢 level4 电路支配，驱动按 level0-3 四进程 + level4 每电路一进程并行）；**最坏界 = 21600 + 12×1800 = 12h**（墙钟只在组边界检查 ⇒ 最坏过冲一个在飞组，见 I24）。若把 `XYCE_TIMEOUT_S` 降到 600，最坏压到 ≈3.8h，**纯 `MODE_ENV` 一行、零代码差异**。
+
+**③ 本地验证（2026-09-25，全绿）：**
+
+- `bash -n run_shadow_batch.sh shadow_campaign.sh`、`python -m py_compile _shadow_analyze.py`、`bash _t_archive_selftest.sh` 全过（RUN_INFO 块在 `set -u` 下单独跑通 ⇒ 改动 3 没弄坏身份戳）。
+- `cargo check --release --tests` + `cargo build --release --tests` 通过 ⇒ **不设新 env 时行为逐字不变**这条硬约束成立。
+- **新增 `tests/xyce_timeout.rs`（`#[cfg(unix)]`，离线、不需要 Xyce）五趟全绿**：(a) `XYCE_TIMEOUT_S=1` + `sleep 5` ⇒ 退出码 **42**、墙钟 < 5s、stderr 含 `XYCE_TIMEOUT`；(b) 不设超时 + `/bin/true` ⇒ 退出码 **0**（默认路径不变）；(c) `/bin/false` + 超时开着 ⇒ 退出码 **1**（**非超时的失败不被 42 冒充**）；(d) 超时开着 + `/bin/true` ⇒ 退出码 0；(e) **`XYCE_TIMEOUT_S=0.5`（非法小数）⇒ 等同「没设」**：模板的 `[ "${XYCE_TIMEOUT_S:-0}" -gt 0 ] 2>/dev/null` **只接受正整数**，小数会让 `[` 报 "integer expression expected" 并被 `2>/dev/null` 吞掉 ⇒ 走原分支。⚠ **这条把「0.5 是半秒上限」这个直觉钉死为错**，别把 `XYCE_TIMEOUT_S=0.001` 当成「秒级触发」用（上一版计划里就是这么写的，已作废）。
+- ⚠ **本地跑任何 cargo 必须带 `RUSTFLAGS="-A dead_code"`**：rustc 1.94.1 有 diagnostic-rendering bug（`StyledBuffer::replace` panic，"slice index starts at 12 but ends at 10"），由 `src/extractors/sampleextractor.rs` 两个既有 dead_code 警告触发；`--message-format=json` 挡不住（cargo 仍会传 `--json=diagnostic-rendered-ansi`）。我本轮忘带一次 ⇒ lib 重编 ⇒ ICE 退出 101。已记 I26 并写进 OPERATIONS §6.9 step 0。
+
+**④ 一条既有单测确定性挂（与本轮改动无关，已留完整证据链，记 I25）。** 该测试 5/5 次以完全相同形态在 0.03s 内失败；顶层函数 30→33（新增 `bestfirst_mode`/`optimize_tl_module_bestfirst`/`wall_exceeded`，删除 0），**共同函数只有 2 个不同**（贪心的 dispatch 是 env 门控 + 结果常量字段、一处 warning 打印），其余 28 个字节相同 ⇒ `combined_score`/`generate_candidates`/`uniform_output_delays`/`scaled_baseline_output_delays` 是**纯搬迁**；测试与其 fixture 从不出现在 diff 里；测试实跑的是贪心（`round {}` trace）、env 干净；且它是纯 mock evaluator ⇒ `simulation.rs` 的改动不在路径上。**服务器上按已知失败处理**（OPERATIONS §6.9 step 1 带 warning）。顺带做出一件可复用工具：`scripts/diag/_t_fnbody_diff.py <rev>` 按顶层函数体比对工作区与某版本（解决「git diff 把搬迁显示成删+加」看不清的问题）。
+
+**⑤ 待服务器（本轮没跑，跑完回填本节）**：模板 sha1 对账 ⇒ `cargo build --release --tests` ⇒ `cargo test --release --test xyce_timeout --nocapture` ⇒ **正面验证四趟**（正常路径 / 单次超时触发 / 连续 5 次超时中止该电路 / 电路墙钟到点收工且末组仍完整）⇒ level4 代价复测 ⇒ 12 分片全量 ⇒ 分析器读数（R1/R2 严格+宽松、四层分层、NA/超时计数、fail-loud 计数）⇒ 第二臂换 ckpt 复跑 ⇒ 回填。
+
 ### 项目文件归类规范（2026-08-25 起长期有效）
 
 > 教训：之前大量 `_*.py` / `_*.txt` 诊断文件散落在仓库根目录（如 `_bridge_check.txt`），杂乱且难维护。**今后一律按类归档，不往根目录散落。**

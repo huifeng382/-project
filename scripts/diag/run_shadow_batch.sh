@@ -81,7 +81,21 @@ TREE="temp_sim_test/$SUB"
 #   17.5.0 起 bestfirst 需要三件套（模式 + 新搜索 + 缓存落点），故此处从「单个赋值」放宽。
 case "$VARIANT" in
   gnnonly)   MODE_ENV="GNN_ONLY=1" ;;
-  bestfirst) MODE_ENV="GNN_SHADOW=1 TL_BESTFIRST=1 XYCE_CACHE_DIR=$NL/temp_sim_cache_bf20260923" ;;
+  #   17.6.0：bestfirst 还带三个**预算 / 保险**旋钮。放在这里（而不是只在命令行 export 一下）
+  #   是有意的：它们会随本串进入 $TREE/RUN_INFO.txt 的「模式 env」行，并经下面 :220 的 export
+  #   循环传给子进程 ⇒ 收尾跑的 _shadow_analyze.py 从 ENV_KEYS 里就能读到。三个都是运行身份：
+  #     TL_MAX_STEPS=40    轮数预算（与 batch 的 max_iters 同口径；显式写出来是为了进身份戳）；
+  #     TL_MAX_WALL_S=21600 单**电路**墙钟 —— 到点 = 预算用完 ⇒ **正常收工**（DONE 行 stopped=wall）；
+  #     XYCE_TIMEOUT_S=1800 单**次**仿真墙钟 —— 超时 = 这一刀作废；连续 5 次 ⇒ 该电路记一行 error。
+  #   ⚠ 取值理由（2026-09-25 定档，据 level4/ADD4_OVF 实测 28.3s/候选 ≈ 410s/步）：
+  #     墙钟必须 > TL_MAX_STEPS × 每步成本 = 40 × 410s = **16400s**，否则最慢那几个 level4 电路会被
+  #     砍在半路；而**两臂（换 ckpt）砍点不同 ⇒ 该电路失去配对**（见 docs/OPEN_ISSUES.md I24）。
+  #     21600（6h）留 ~1.3 倍余量 ⇒ 健康电路跑满 40 步、两臂步数一致。⚠ 它只在真卡死时才咬合：
+  #     全量正常路径的墙钟 ≈ 最慢电路 40 步 ≈ 4.6h（驱动是 level4 一电路一进程并行，全量就等它）。
+  #     最坏界：21600s + 一个在飞组（≤12 候选 × 1800s）= **12h** —— 墙钟检查点只在组边界，
+  #     且「连续 5 次超时即中止」也在组边界收工，故最坏只多这一个在飞组，不会继续开新组。
+  #   翻转**只改这一行**，零代码差异 —— 所以它必须留在这条字符串里、不能藏到别处。
+  bestfirst) MODE_ENV="GNN_SHADOW=1 TL_BESTFIRST=1 TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800 XYCE_CACHE_DIR=$NL/temp_sim_cache_bf20260923" ;;
   *)         MODE_ENV="GNN_SHADOW=1" ;;
 esac
 
@@ -122,6 +136,37 @@ if [ -n "$SPID" ] && ! tr '\0' '\n' < "/proc/$SPID/environ" 2>/dev/null | grep -
   echo "    实测代价 828% CPU vs 3.3%（248×），且会加重与 zhirui 的内存带宽/LLC 争用。"
   echo "    建议停掉重起（按上面的前置命令）。若你是有意做对照，忽略本条即可。"
 fi
+
+# 0c) coreutils `timeout` 前置检查（17.6.0）：**只有本趟真要**给单次仿真加墙钟时才必须。
+#     判据 = MODE_ENV 里带着 XYCE_TIMEOUT_S（bestfirst 带；shadow/gnn/gnnonly 不带 ⇒ 不拦）。
+#     为什么必须拦：没有 `timeout` 而模板又开了超时，脚本会以 127 收场（`timeout: command not found`）
+#     —— 那会被 Rust 侧当成「仿真跑挂了」而不是「超时」⇒ 「连续 5 次超时即中止」的保险静默失效，
+#     又回到「Xyce 卡死就永远挂着」。宁可开跑前拦住，别等 46 个电路各挂几趟才发现。
+case " $MODE_ENV " in
+  *" XYCE_TIMEOUT_S="*)
+    if ! command -v timeout >/dev/null 2>&1; then
+      echo "ERROR: MODE_ENV 设了 XYCE_TIMEOUT_S，但本机没有 coreutils 'timeout' ⇒ 单次仿真超时会静默失效"
+      echo "       装（yum/apt install coreutils）或改成不带 XYCE_TIMEOUT_S 的模式再跑。"
+      exit 1
+    fi
+    ;;
+esac
+
+# 0d) 磁盘闸门（17.6.0）：开跑前先看盘，低于阈值就**不启动**。
+#     为什么放这个位置：此刻**什么都还没发生** —— 旧树未归档、$TREE 未建、报告 CSV 未碰、
+#     分片未起、收尾未挂 ⇒ 中止是**零副作用**的（清够盘、原样重跑即可）。
+#     为什么必须有：bestfirst 全量往新缓存目录写 ≈ 46×40×124 ≈ 23 万个小文件；写满盘会让分片
+#     以「写失败」到处炸，而那类失败**看着像电路问题、不像环境问题**（正是 I20 那类）。
+#     口径照 shadow_campaign.sh 的 house idiom（df --output=avail -BG /）：取不到数就**放行**，
+#     不因为取不到而挡住正常跑。⚠ 与 shadow_campaign.sh 那道是**两道闸**，各管各的调用路径。
+MINFREE_GB="${SHADOW_MINFREE_GB:-50}"
+avail=$(df --output=avail -BG / 2>/dev/null | tail -1 | tr -dc '0-9')
+if [ -n "$avail" ] && [ "$avail" -lt "$MINFREE_GB" ]; then
+  echo "ERROR: 磁盘可用 ${avail}G < ${MINFREE_GB}G —— 不启动（$TREE 未建、旧树/缓存/报告一律未动）"
+  echo "       腾空间后原样重跑；确实要降门槛：SHADOW_MINFREE_GB=20 bash $0 $VARIANT"
+  exit 1
+fi
+echo "[$(date +%F\ %T)] 磁盘可用 ${avail:-取不到}G（阈值 ${MINFREE_GB}G）"
 
 cd "$NL"
 

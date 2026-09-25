@@ -242,6 +242,55 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 - **重跑分析器、只看新节（18.6.1）**：先核版本 —— `cd ~/-project; git pull --ff-only; sha1sum scripts/diag/_shadow_analyze.py`（本地同 blob：`git show <rev>:scripts/diag/_shadow_analyze.py | sha1sum`）；再跑 `~/venv/bin/python3 scripts/diag/_shadow_analyze.py --detail-max 5 > ~/sha1861.out 2>&1; echo rc=$?`；节头是 `=== 以 current 为锚的 GNN 判据质量（18.6.1；核心 = 首推真负率）===`（只打这一段：`sed -n '/核心 = 首推真负率/,/两列并排/p' ~/sha1861.out`）。**判读按此顺序**：① 诊断行 `推断位置非前缀: 0`（非 0 = 真错位 ⇒ 本节数字作废）② `分母缺口` 三项相加 == 合格集 ③ `结构性未评估` 项数及其「秩高于 current」子数（未评估后缀无真值 ⇒ 逐候选 `S` 只覆盖「贪心真试过」的候选，参考口径的误报率读法要带这句）④ 再读 `★ 核心 首推真负率` 严格 / 宽松（首轮**不设判据线**）。
 - **本地回归（改分析器后四个都要跑，不需要服务器）**：`_t_shadow_current_anchor.py`（新指标：`ref_core()` 独立复算 + 手算常量 + 三桶恒等式 + 缺文件常量 + 量纲守卫）、`_t_shadow_analyze_2col.py`、`_t_shadow_groupby.py`、`_t_shadow_tiebreak.py`（后三个**一字未改**，跑过即证明「除新增节外逐字节相同」）。⚠ Windows 控制台是 GBK：带 `✅` 的输出要 `PYTHONIOENCODING=utf-8`，否则 `UnicodeEncodeError` 会**假装**成断言失败（rc=1）。
 
+### 6.9 bestfirst 全量 runbook（内层 17.5.0+17.6.0 / 外 18.7.1）
+
+> 新模式 = 「一个窗口的**全部**衍生电路都跑仿真 ⇒ 组内成绩最好者当下一轮 current；组内无改进 ⇒ 回退到更早轮的窗组改选第 2 名」。语义、R1/R2 口径与定档算术见 DIFF §23。**下面第 2 步的四趟正面验证必须在全量之前跑完** —— 它们才是「闸门真会触发」的证据。
+
+**0) 前置（少一件都别开跑）**
+- 内层树：`cd ~/NetlistOpt; sha1sum src/process_template/xyce.sh` 必须等于本地 `git show <rev>:src/process_template/xyce.sh | sha1sum`。⚠ 模板是**运行时按相对路径读**的文件（`simulation.rs` 里 `PathBuf::from("src/process_template/xyce.sh")`，**不是** `include_str!`）⇒ **漏传它 = 只改 Rust 不改脚本 = 超时静默失效**。
+- 外层树：`cd ~/-project && git pull --ff-only`（驱动与分析器都要 ≥ 18.7.1，否则没有磁盘闸门、也没有 R1/R2 与超时计数行）。
+- `command -v timeout`（缺则驱动开跑前自己会拦住）；顺手记 `rustc -V` 留档。
+
+**1) 编译 + 两个窄测试**
+```bash
+cd ~/NetlistOpt && cargo build --release --tests
+cargo test --release --test xyce_timeout -- --nocapture     # 五例：(a) 42 / (b) 0 / (c) 1 / (d) 0 / (e) 0 且墙钟 ≥1.5s
+cargo test --release --lib -- tl_opt:: simulation::         # ⚠ 已知失败一条见下
+```
+- ⚠ **不要在全量前跑整个 lib 套件**：`flow_smoke_test*` / `generate_testbench_spice_and_pngs` 会重写 `testbench/*`，那是仿真语料。
+- ⚠ **已知失败（改前就挂，不是 17.6.0 回归）**：`tl_opt::tests::optimize_module_accepts_candidate_improving_only_affected_output`（`assertion failed: result.accepted_moves >= 1`，`tl_opt.rs:2780`）—— 确定性挂（连跑 5/5、0.03s），且该测试的判据/生成/夹具在 17.5.0+17.6.0 里**逐字未动**（证据链见 I25）。判读时**把它列入已知失败**，别当成新回归。
+
+**2) 正面验证四趟**（`TL_ONLY=` 单电路，每趟分钟级；⚠ `XYCE_TIMEOUT_S` 只认**正整数**，别用 `0.001`）
+
+| 趟 | 要点 | 期望读数 |
+|---|---|---|
+| (a) 正常路径 | `TL_ONLY=level0/AND2` + `TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800` | 跑满 40 步；DONE 行**无** `stopped=wall`；`true_delay=NA` 行 = 0；每组 `pos` 集完整 |
+| (b) 单次超时触发 | 同上但 `XYCE_TIMEOUT_S=1` | 出现 `true_delay=NA` 行且 `error=Simulation timed out: …`；**无** NOOP 重试成功的翻倍开销；**不挂起** |
+| (c) 连续超时中止 | 同 (b) | 该电路以 `error=连续 5 次仿真超时…` 收场，批次继续下一个电路（树里已跑完的组照旧可分析） |
+| (d) 电路墙钟触发 | `TL_MAX_WALL_S=5 TL_MAX_STEPS=40` | DONE 行尾 `stopped=wall`、`iters < 40`、**末组仍是完整的 1+n 行**（这条直接验 `pos` 集不变式没被切碎） |
+
+```bash
+# 形状（四趟只改 env）：新缓存目录必须显式给，别写进旧缓存
+cd ~/NetlistOpt && OMP_NUM_THREADS=6 TL_ONLY=level0/AND2 GNN_SHADOW=1 TL_BESTFIRST=1 \
+  TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800 \
+  XYCE_CACHE_DIR=$HOME/NetlistOpt/temp_sim_cache_bf20260923 \
+  cargo test --release --test tl_opt_gnn_batch -- --nocapture
+```
+
+**3) 代价实测**（决定 `XYCE_TIMEOUT_S` 要不要调小）：`TL_ONLY=level4/ADD4_OVF` + `TL_MAX_STEPS=2`，记 `real` 与 DONE 行的 `evals`。⚠ 2026-09-25 首测 = `13m41.709s / evals=29` ⇒ **28.3 s/候选、≈410 s/步**（定档算术见 DIFF §23.7）。**若量级变化 ≥2 倍，`TL_MAX_WALL_S` 必须重算**（硬条件：> `TL_MAX_STEPS × 单步成本`，否则两臂配对会破）。
+
+**4) 全量 12 分片**（写**新**缓存目录；旧缓存一律不动）
+```bash
+cd ~/NetlistOpt && OMP_NUM_THREADS=6 nohup bash ~/-project/scripts/diag/run_shadow_batch.sh bestfirst > ~/bf_full.out 2>&1 &
+```
+收尾判据照 §6.6（**首行时间戳被替换**，别 grep 关键词 —— 旧文件会误判）。⚠ 驱动收尾循环**无 deadline**，所以**手跑全量时留在终端旁看日志**；战役路径（`shadow_campaign.sh`）那条自带 `MAXWAIT` + `pkill`。
+
+**5) 分析器判读顺序（bestfirst 树）**
+1. 核版本：`sha1sum scripts/diag/_shadow_analyze.py` 对本地 blob；`★ 机会集口径 R1/R2` 块必须在。
+2. **判决书**：`机会集口径（18.7.0）前置校验失败` 四项**必须全 0**（配对/覆盖 `pos` 集非全集、current 秩或真值缺、候选秩缺、候选真值缺）——❌ 就是「该树不是全组仿真的 ⇒ 分母只是下界」，此时**别读 R1/R2**。
+3. 读 `R1严格` / `R2宽松` 的**四行分层**（全部组 / ≥`min_cands` / 单输出 / 多输出）——**两条口径都要给**，R1/R2 **越大越坏**。
+4. NA 行：`超时/失败 NA 行` 允许 > 0（按电路列出）；**结构性未评估必须为 0**（bestfirst 树上出现即说明树不是全组仿真的）。
+
 ## 7. Git 同步现状（⚠ 三处代码源不同步）
 
 | 源 | HEAD | 说明 |
