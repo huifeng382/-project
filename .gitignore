@@ -14,6 +14,8 @@ outputs/
 .idea/
 
 # 临时文件（一次性调试输出不提交；诊断脚本统一放 scripts/diag/，报告放 reports/）
+# sync_out/ = NetlistOpt 上机的传输包与 sha1 清单（由 scripts/diag/_t_nlo*_sync.py 生成）
+sync_out/
 *.log
 cache_smoke_*/
 models/

@@ -262,22 +262,32 @@ cargo test --release --lib -- tl_opt:: simulation::         # ⚠ 已知失败�
 - ⚠ **不要在全量前跑整个 lib 套件**：`flow_smoke_test*` / `generate_testbench_spice_and_pngs` 会重写 `testbench/*`，那是仿真语料。
 - ⚠ **已知失败（改前就挂，不是 17.6.0 回归）**：`tl_opt::tests::optimize_module_accepts_candidate_improving_only_affected_output`（`assertion failed: result.accepted_moves >= 1`，`tl_opt.rs:2780`）—— 确定性挂（连跑 5/5、0.03s），且该测试的判据/生成/夹具在 17.5.0+17.6.0 里**逐字未动**（证据链见 I25）。判读时**把它列入已知失败**，别当成新回归。
 
-**2) 正面验证四趟**（`TL_ONLY=` 单电路，每趟分钟级；⚠ `XYCE_TIMEOUT_S` 只认**正整数**，别用 `0.001`）
+**2) 正面验证四趟**（`TL_ONLY=` 单电路，每趟分钟级；**2026-09-25 已实跑，读数见 PROJECT_LOG 该节**）
 
-| 趟 | 要点 | 期望读数 |
+⚠ **三个坑，按顺序都踩过 —— 别再重走一遍**
+1. **`XYCE_TIMEOUT_S` 只认正整数**（模板守卫 `[ "${XYCE_TIMEOUT_S:-0}" -gt 0 ] 2>/dev/null`；`0.001` 会被 `2>/dev/null` 吞掉、与「未设」同路）⇒ **1 秒是能设的最小值**。
+2. **而 1 秒比一次真仿真还长** ⇒ 只把 `XYCE_TIMEOUT_S=1` **测不出超时**：实测 level4/ADD4_OVF（214 器件 / 757 未知量）一次 Xyce = **0.28s**，level0/AND2 只有 **≈0.045s**。2026-09-25 首轮就栽在这：`XYCE_TIMEOUT_S=1` 跑满 11 轮、`timeout_hits=0`，读起来像「超时坏了」，其实只是没触发（那趟反倒成了「不误杀」的反面控制）。
+3. ⇒ 要验超时**必须把仿真拖慢**。模板认 `XYCE_BIN`（`XYCE_BIN="${XYCE_BIN:-…真实路径}"`，全 crate 只有模板引用它 ⇒ 环境变量必然继承到脚本），把 `XYCE_BIN` 指向一个慢壳即可，**零代码改动**：`printf '#!/bin/bash\nsleep 5\n' > ~/slowsim.sh; chmod +x ~/slowsim.sh`。
+
+| 趟 | env 要点 | 2026-09-25 实测读数 |
 |---|---|---|
-| (a) 正常路径 | `TL_ONLY=level0/AND2` + `TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800` | 跑满 40 步；DONE 行**无** `stopped=wall`；`true_delay=NA` 行 = 0；每组 `pos` 集完整 |
-| (b) 单次超时触发 | 同上但 `XYCE_TIMEOUT_S=1` | 出现 `true_delay=NA` 行且 `error=Simulation timed out: …`；**无** NOOP 重试成功的翻倍开销；**不挂起** |
-| (c) 连续超时中止 | 同 (b) | 该电路以 `error=连续 5 次仿真超时…` 收场，批次继续下一个电路（树里已跑完的组照旧可分析） |
-| (d) 电路墙钟触发 | `TL_MAX_WALL_S=5 TL_MAX_STEPS=40` | DONE 行尾 `stopped=wall`、`iters < 40`、**末组仍是完整的 1+n 行**（这条直接验 `pos` 集不变式没被切碎） |
+| `n` 正常路径 | `TL_ONLY=level0/AND2 TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800` | `iters=40 evals=5539 failed=0`、157s、DONE 行**无** `stopped=wall`、`NA_rows=0`；分析器 `pos 集非全集 0`（638 窗） |
+| `w` 电路墙钟 | 同上 + `TL_MAX_WALL_S=120`（**新缓存目录**，冷才慢得起来；缓存一热步就变秒级、120s 未必咬得住） | `iters=28`、120.0s、DONE 行尾 **`stopped=wall`**；分析器 `pos 集非全集 0`（436 窗）⇒ **末组完整**、`pos` 不变式没被切碎 |
+| `t` 单次超时 | `TL_ONLY=level4/ADD4_OVF XYCE_BIN=$HOME/slowsim.sh TL_MAX_STEPS=2 TL_MAX_WALL_S=300 XYCE_TIMEOUT_S=1` | 1.12s 就 `FAIL …: simulation timeout: …`、`NA_rows=1`、error 行落盘、`test result: ok`（批次继续）。⚠ 纯慢壳会让**基线那次评估**先超时 ⇒ 直接作废电路，走的是「早退」而不是连续计数 |
+| `x` 连续超时中止 | `TL_ONLY=level0/AND2 XYCE_BIN=$HOME/mixsim.sh TL_MAX_STEPS=40 TL_MAX_WALL_S=300 XYCE_TIMEOUT_S=1`；`mixsim.sh` = 「前 60 秒真跑、之后 `sleep 5`」（`date +%s > ~/slow_t0` 起算）⇒ 基线成功、候选连续超时 | `FAIL …: 连续 20 次仿真超时（XYCE_TIMEOUT_S）⇒ … 中止该电路（已跑 11 步…）`、28 条 NA 行、无 DONE。**文案必须是真实连击数，不是 `连续 0 次`**（后者是 17.6.1 修掉的 bug：计数器在组尾之前会被「回退命中缓存」的成功候选清零） |
+
+- **10 秒直连验**（不依赖 Rust，验「env 真进了脚本」）：拿一个已渲染的 `cmd_expr_*.sh` 跑三种 env —— ① `XYCE_TIMEOUT_S=1` + 真 `XYCE_BIN` ⇒ `rc=0` / 0.3s；② 同上 + `XYCE_BIN=$HOME/slowsim.sh` ⇒ **`rc=42`** / 1.0s、stderr `XYCE_TIMEOUT: killed after 1s`；③ 只给 `XYCE_BIN=$HOME/slowsim.sh`（不设旋钮）⇒ `rc=0` / 5.0s（默认分支逐字不变）。
+- ⚠ **分析器必须用 `~/venv/bin/python3`、且在 `~/-project` 下跑**：裸 `python3` 没有 numpy（`ModuleNotFoundError: No module named 'numpy'`）⇒ rc=1、一条读数都没有。2026-09-25 我第一次拿裸 `python3` 跑，白等两趟。
+- 顺带验的：`XYCE_CACHE_DIR` 覆盖真生效（新目录有几千文件）、默认 `temp_sim_cache` 的 mtime **不动** ⇒ 「不读旧缓存、另建新缓存」这条是硬的。
 
 ```bash
 # 形状（四趟只改 env）：新缓存目录必须显式给，别写进旧缓存
 cd ~/NetlistOpt && OMP_NUM_THREADS=6 TL_ONLY=level0/AND2 GNN_SHADOW=1 TL_BESTFIRST=1 \
   TL_MAX_STEPS=40 TL_MAX_WALL_S=21600 XYCE_TIMEOUT_S=1800 \
   XYCE_CACHE_DIR=$HOME/NetlistOpt/temp_sim_cache_bf20260923 \
-  cargo test --release --test tl_opt_gnn_batch -- --nocapture
+  cargo test --release --test tl_opt_gnn_batch -- --nocapture --ignored
 ```
+- ⚠ **`--ignored` 不能漏**（2026-09-25 我漏过一次）：该测试是 `#[ignore = "requires simulation binaries/models + GNN server"]`（`tests/tl_opt_gnn_batch.rs:555`）⇒ 少了它 cargo 会打印 `test result: ok. 0 passed; 0 failed; 1 ignored` **且 rc=0**：日志 12KB 全是编译输出、`DONE` 行一个没有、树也没建。**看着像"成功跑完"，实际一行没跑** —— 与「`rc=101` 冒充跑挂」是同一类假信号。**判据**：`passed` 必须 ≥1、日志里必须有 `DONE` 行，两者缺一就是没跑成。驱动脚本里的调用形如 `run_shadow_batch.sh:268`，照抄它最稳。
 
 **3) 代价实测**（决定 `XYCE_TIMEOUT_S` 要不要调小）：`TL_ONLY=level4/ADD4_OVF` + `TL_MAX_STEPS=2`，记 `real` 与 DONE 行的 `evals`。⚠ 2026-09-25 首测 = `13m41.709s / evals=29` ⇒ **28.3 s/候选、≈410 s/步**（定档算术见 DIFF §23.7）。**若量级变化 ≥2 倍，`TL_MAX_WALL_S` 必须重算**（硬条件：> `TL_MAX_STEPS × 单步成本`，否则两臂配对会破）。
 
