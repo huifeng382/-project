@@ -1542,16 +1542,32 @@ loss        = (sample_loss * PIN_WEIGHTS[switching_pin]).mean()    # 按开关�
 
 代价界：全量正常 ≈4.6h（受最慢 level4 电路支配，驱动按 level0-3 四进程 + level4 每电路一进程并行）；**最坏界 = 21600 + 12×1800 = 12h**（墙钟只在组边界检查 ⇒ 最坏过冲一个在飞组，见 I24）。若把 `XYCE_TIMEOUT_S` 降到 600，最坏压到 ≈3.8h，**纯 `MODE_ENV` 一行、零代码差异**。
 
-**③ 本地验证（2026-09-25，全绿）：**
+**③ 本地验证（2026-09-25）—— ⚠ 本节初稿在此谎报过一次，见下面的「编译事故」：**
 
 - `bash -n run_shadow_batch.sh shadow_campaign.sh`、`python -m py_compile _shadow_analyze.py`、`bash _t_archive_selftest.sh` 全过（RUN_INFO 块在 `set -u` 下单独跑通 ⇒ 改动 3 没弄坏身份戳）。
-- `cargo check --release --tests` + `cargo build --release --tests` 通过 ⇒ **不设新 env 时行为逐字不变**这条硬约束成立。
-- **新增 `tests/xyce_timeout.rs`（`#[cfg(unix)]`，离线、不需要 Xyce）五趟全绿**：(a) `XYCE_TIMEOUT_S=1` + `sleep 5` ⇒ 退出码 **42**、墙钟 < 5s、stderr 含 `XYCE_TIMEOUT`；(b) 不设超时 + `/bin/true` ⇒ 退出码 **0**（默认路径不变）；(c) `/bin/false` + 超时开着 ⇒ 退出码 **1**（**非超时的失败不被 42 冒充**）；(d) 超时开着 + `/bin/true` ⇒ 退出码 0；(e) **`XYCE_TIMEOUT_S=0.5`（非法小数）⇒ 等同「没设」**：模板的 `[ "${XYCE_TIMEOUT_S:-0}" -gt 0 ] 2>/dev/null` **只接受正整数**，小数会让 `[` 报 "integer expression expected" 并被 `2>/dev/null` 吞掉 ⇒ 走原分支。⚠ **这条把「0.5 是半秒上限」这个直觉钉死为错**，别把 `XYCE_TIMEOUT_S=0.001` 当成「秒级触发」用（上一版计划里就是这么写的，已作废）。
-- ⚠ **本地跑任何 cargo 必须带 `RUSTFLAGS="-A dead_code"`**：rustc 1.94.1 有 diagnostic-rendering bug（`StyledBuffer::replace` panic，"slice index starts at 12 but ends at 10"），由 `src/extractors/sampleextractor.rs` 两个既有 dead_code 警告触发；`--message-format=json` 挡不住（cargo 仍会传 `--json=diagnostic-rendered-ansi`）。我本轮忘带一次 ⇒ lib 重编 ⇒ ICE 退出 101。已记 I26 并写进 OPERATIONS §6.9 step 0。
+- ⚠⚠ **编译事故（初稿在这里写「`cargo check` + `cargo build --release --tests` 通过」，是假的）**：给 DONE 行加 `stopped=wall` 时**只加了实参、没给格式串补 `{}`**（`tests/tl_opt_gnn_batch.rs:360` 13 个占位符 vs 14 个实参）⇒ `error: argument never used`。本地**改动之后没有真跑过** `cargo build --release --tests`（只在改动之前跑过，我就把旧结论挪用了），错误一路带到服务器才由 `build_rc=101` 暴露 —— **三趟正面验证全部 `rc=101`，一行都没跑**。已修（补一个 `{}`）并在 WSL 真编译复验 `rc=0`；内层 17.6.0 因此被 `--amend` 重打成 `ed3cd72`（该 repo 无远端、服务器是 tar 装包而非 git，故重打无外泄成本）。**教训（已写进 OPERATIONS §6.9）**：动了 `format!`/`println!`/`eprintln!` 的**参数表**，必须**真跑**一次 `cargo build --release --tests`；「我之前编译过了」不能替代一条带 rc 的命令，凡是要写进文档的「通过」，必须是本轮跑出来的 rc。
+- `cargo build --release --tests`（WSL、`RUSTFLAGS="-A dead_code"`、`CARGO_TARGET_DIR=$HOME/nlo_target`）**rc=0** ⇒ **不设新 env 时行为逐字不变**这条硬约束成立。
+- **新增 `tests/xyce_timeout.rs`（`#[cfg(unix)]`，离线、不需要 Xyce）五趟实测全绿**（2026-09-25 服务器实跑：`xt_rc=0`、`1 passed; 0 failed`、3.02s）：(a) `XYCE_TIMEOUT_S=1` + `sleep 5` ⇒ 退出码 **42**、墙钟 1.00s、stderr 含 `XYCE_TIMEOUT: killed after 1s`（且能看到 `Killed timeout --signal=KILL` 那行，即 KILL 确实生效）；(b) 不设超时 + `true` ⇒ **0**（默认路径不变）；(c) TIMEOUT=1 + `false` ⇒ **1**（**非超时的失败不被 42 冒充**）；(d) `XYCE_TIMEOUT_S=abc`（非数字）⇒ **0**；(e) **`XYCE_TIMEOUT_S=0.5`（非法小数）+ `sleep 2` ⇒ 退出码 0、墙钟 2.00s、stderr 空** —— 模板的 `[ "${XYCE_TIMEOUT_S:-0}" -gt 0 ] 2>/dev/null` **只接受正整数**，小数会让 `[` 报 "integer expression expected" 并被 `2>/dev/null` 吞掉 ⇒ 走原分支。⚠ **这条把「0.5 是半秒上限」这个直觉钉死为错**，别把 `XYCE_TIMEOUT_S=0.001` 当成「秒级触发」用（上一版计划里就是这么写的，已作废）。
+- ⚠ **本地跑任何 cargo 必须带 `RUSTFLAGS="-A dead_code"`**：本地 WSL 的 rustc **1.94.1** 有 diagnostic-rendering bug（`StyledBuffer::replace` panic，"slice index starts at 12 but ends at 10"），由 `src/extractors/sampleextractor.rs` 两个既有 dead_code 警告触发；`--message-format=json` 挡不住（cargo 仍会传 `--json=diagnostic-rendered-ansi`）。我本轮忘带一次 ⇒ lib 重编 ⇒ ICE 退出 101。已记 I26 并写进 OPERATIONS §6.9 step 0。**服务器是 rustc 1.95.0**（`rustc -V` 实测），本轮没在它上面触发该 bug。
 
 **④ 一条既有单测确定性挂（与本轮改动无关，已留完整证据链，记 I25）。** 该测试 5/5 次以完全相同形态在 0.03s 内失败；顶层函数 30→33（新增 `bestfirst_mode`/`optimize_tl_module_bestfirst`/`wall_exceeded`，删除 0），**共同函数只有 2 个不同**（贪心的 dispatch 是 env 门控 + 结果常量字段、一处 warning 打印），其余 28 个字节相同 ⇒ `combined_score`/`generate_candidates`/`uniform_output_delays`/`scaled_baseline_output_delays` 是**纯搬迁**；测试与其 fixture 从不出现在 diff 里；测试实跑的是贪心（`round {}` trace）、env 干净；且它是纯 mock evaluator ⇒ `simulation.rs` 的改动不在路径上。**服务器上按已知失败处理**（OPERATIONS §6.9 step 1 带 warning）。顺带做出一件可复用工具：`scripts/diag/_t_fnbody_diff.py <rev>` 按顶层函数体比对工作区与某版本（解决「git diff 把搬迁显示成删+加」看不清的问题）。
 
-**⑤ 待服务器（本轮没跑，跑完回填本节）**：模板 sha1 对账 ⇒ `cargo build --release --tests` ⇒ `cargo test --release --test xyce_timeout --nocapture` ⇒ **正面验证四趟**（正常路径 / 单次超时触发 / 连续 5 次超时中止该电路 / 电路墙钟到点收工且末组仍完整）⇒ level4 代价复测 ⇒ 12 分片全量 ⇒ 分析器读数（R1/R2 严格+宽松、四层分层、NA/超时计数、fail-loud 计数）⇒ 第二臂换 ckpt 复跑 ⇒ 回填。
+**⑤ 服务器前置（2026-09-25 已跑，全绿；三趟正面验证因上面的编译事故尚未跑成，2026-09-25 装包重传后重跑）**
+
+| 项 | 实测 | 期望 |
+|---|---|---|
+| `git pull --ff-only`（`~/-project`） | 快进到 `900fec7`，9 文件 +745/−640 | ≥ 18.7.1 |
+| 传输包 `~/nlo1760.tar.gz` | 首包 `cdac46dd…`（**已作废**，内含未修的测试文件）→ 重修后 `6791b1bb467689c5134d4ae1d23f6887ae521b0b` | 与本机 `sha1sum` 一致 |
+| 全树清单 `sha1sum -c` | `OK_lines=56` | 56 全 OK（少一个都算装漏） |
+| 清单自身 sha1 | 旧 `2c06a0e38127…`（作废）→ 新 **`b1e6ca17626d843816e7187d7973ec2e347b1fe7`** | == 本机值；且其前 12 位就是 `RUST_FP`（清单内容就是指纹的被哈希文本，二者恒等） |
+| `find\|sort\|xargs sha1sum\|sha1sum\|cut -c1-12` | 旧 `2c06a0e38127`（作废）→ 新 **`b1e6ca17626d`** | 与本机 `_t_nlo1760_sync.py` 报的 FP 逐位相同 |
+| 模板 `src/process_template/xyce.sh` | `8e39180fad7b…` == git blob | 必须相等（漏传 = 超时静默失效） |
+| `command -v timeout` | `/usr/bin/timeout` | 存在（缺则驱动 0c 拦） |
+| `rustc -V` | 1.95.0 (59807616e 2026-04-14) | 只留档 |
+| 磁盘 | `/dev/nvme0n1p2` 581G 可用（阈值 50G） | ≥ 50G（闸门） |
+| serve | `SERVE_UP` | 必须在跑（三趟验证要 GNN 排序） |
+
+**⑥ 仍待服务器**：装包重传 ⇒ `cargo build --release --tests` ⇒ `cargo test --release --test xyce_timeout` ⇒ **正面验证三趟**（正常路径 40 步 / 单次超时触发 + 连续 5 次中止 / 电路墙钟到点收工且末组仍完整；第 4 趟 runbook 的「代价实测」按用户 2026-09-25 指示**跳过**）⇒ 12 分片全量 ⇒ 分析器读数（R1/R2 严格+宽松、四层分层、NA/超时计数、fail-loud 计数）⇒ 第二臂换 ckpt 复跑 ⇒ 回填本节。
 
 ### 项目文件归类规范（2026-08-25 起长期有效）
 

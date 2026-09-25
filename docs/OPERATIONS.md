@@ -253,10 +253,12 @@ head -1 ~/shadow_analyze.out    # 首行 [date] 时间戳 = 本次启动时间 �
 
 **1) 编译 + 两个窄测试**
 ```bash
-cd ~/NetlistOpt && cargo build --release --tests
+cd ~/NetlistOpt && cargo build --release --tests; echo build_rc=$?   # 必须 0
 cargo test --release --test xyce_timeout -- --nocapture     # 五例：(a) 42 / (b) 0 / (c) 1 / (d) 0 / (e) 0 且墙钟 ≥1.5s
 cargo test --release --lib -- tl_opt:: simulation::         # ⚠ 已知失败一条见下
 ```
+- ⚠ **`build_rc` 非 0 就地停手，别往下跑**：三趟正面验证的 `rc=101` 就是编译失败冒充的（看着像「跑挂了」，其实是压根没编出来）。2026-09-25 的翻车点：给 DONE 行**只加实参没给格式串补 `{}`**（13 占位符 vs 14 实参）⇒ `error: argument never used`。
+- ⚠ **本地也必须真跑这一条**：改过任何 `format!`/`println!`/`eprintln!` 的**参数表**后，`cargo check`/上一次 build 的结论**不能沿用**，必须重跑 `cargo build --release --tests`（本地带 `RUSTFLAGS="-A dead_code"`，见 I26）——「我验证过了」不是证据，一条带 rc 的命令才是（PROJECT_LOG 17.6.0 节③）。
 - ⚠ **不要在全量前跑整个 lib 套件**：`flow_smoke_test*` / `generate_testbench_spice_and_pngs` 会重写 `testbench/*`，那是仿真语料。
 - ⚠ **已知失败（改前就挂，不是 17.6.0 回归）**：`tl_opt::tests::optimize_module_accepts_candidate_improving_only_affected_output`（`assertion failed: result.accepted_moves >= 1`，`tl_opt.rs:2780`）—— 确定性挂（连跑 5/5、0.03s），且该测试的判据/生成/夹具在 17.5.0+17.6.0 里**逐字未动**（证据链见 I25）。判读时**把它列入已知失败**，别当成新回归。
 
