@@ -13,12 +13,20 @@
 #   可事后直接 `_shadow_analyze.py --root ~/shadow_archive/<TAG>_<时间戳>`。
 #   存档不自动清理，占盘自己看情况删（CSV 很小，单趟 MB 级）。
 #
-# 变体：本脚本可驱动**三套** batch，输出树/报告/日志已各自隔离，可并存互不污染：
+# 变体：本脚本可驱动**四套** batch，输出树/报告/日志已各自隔离，可并存互不污染：
 #   bash run_shadow_batch.sh          → shadow （原件 tl_opt_shadow_batch，树 temp_sim_test/tl_opt_batch）
 #   bash run_shadow_batch.sh gnn      → gnn    （副本 + GNN_SHADOW=1：并联对照，SPICE 仍做决策）
 #   bash run_shadow_batch.sh gnnonly  → gnnonly（副本 + GNN_ONLY=1：**搜索期零仿真**，GNN 做决策）
-#   gnn / gnnonly 共用同一个 cargo test 目标（tl_opt_gnn_batch），差别只在 env 与输出树；
-#   三套的 Rust 参数逐字相同。
+#   bash run_shadow_batch.sh bestfirst→ bestfirst（副本 + GNN_SHADOW=1 TL_BESTFIRST=1：17.5.0
+#       的**全组仿真 + 最好者胜 + 回溯**搜索。与 gnn 的差别只在搜索算法；GNN 在这一模式下仍是
+#       **纯观察者**（rank_window 返回值被忽略），故它与 gnn 的 gnn_pred 列可直接对读，
+#       而 true_delay 列**不可**对读——两趟的候选组不是同一批（这正是它要修的那件事）。
+#       ⚠ 它还把缓存落点换成**独立新目录** $NL/temp_sim_cache_bf20260923（不读旧缓存、
+#         这一趟自己写成新缓存）：旧缓存 ~/NetlistOpt/temp_sim_cache 一字不动、也不读。
+#         第二臂换 ckpt 复跑时全命中新缓存 ⇒ 分钟级（届时同一 XYCE_CACHE_DIR 必须不变）。
+#       报告另立 rpt/tl_opt_bestfirst_batch.csv，多两列 backtracks/max_depth。）
+#   gnn / gnnonly / bestfirst 共用同一个 cargo test 目标（tl_opt_gnn_batch），差别只在 env、
+#   输出树与（bestfirst 的）报告路径；四套的 Rust 参数逐字相同。
 #   ⚠ GNN-only 只在本脚本记的 gnnonly 那一趟成立 —— 直接手敲 cargo test 却忘了 GNN_ONLY=1，
 #     跑出来的是一趟**完整的仿真**（日志看着差不多，代价差一个量级）。
 #   ⚠ gnn 树与 gnnonly 树必须分开：前者是 (预测, 真值) 对照表，后者是零仿真轨迹，
@@ -58,7 +66,8 @@ case "$VARIANT" in
   shadow)  TEST=tl_opt_shadow_batch; SUB=tl_opt_batch ;;
   gnn)     TEST=tl_opt_gnn_batch;    SUB=tl_opt_gnn_batch ;;
   gnnonly) TEST=tl_opt_gnn_batch;    SUB=tl_opt_gnn_only ;;
-  *) echo "ERROR: 未知变体 '$VARIANT'（可用 shadow | gnn | gnnonly）"; exit 1 ;;
+  bestfirst) TEST=tl_opt_gnn_batch;  SUB=tl_opt_bestfirst ;;
+  *) echo "ERROR: 未知变体 '$VARIANT'（可用 shadow | gnn | gnnonly | bestfirst）"; exit 1 ;;
 esac
 TREE="temp_sim_test/$SUB"
 
@@ -68,9 +77,12 @@ TREE="temp_sim_test/$SUB"
 #                （原始电路基线 delay0 + 最终电路收尾，见 src/gnn_only.rs）。
 #                落盘的是 gnn_only.csv（**不是** gnn_shadow.csv —— 后者带 true_delay 列，
 #                本模式没有真值，沿用旧名旧列等于让预测冒充真值）。
+# ⚠ MODE_ENV 允许**多个 token**（空格分隔的若干 K=V）：下面的 export 是按 token 逐个导出的。
+#   17.5.0 起 bestfirst 需要三件套（模式 + 新搜索 + 缓存落点），故此处从「单个赋值」放宽。
 case "$VARIANT" in
-  gnnonly) MODE_ENV="GNN_ONLY=1" ;;
-  *)       MODE_ENV="GNN_SHADOW=1" ;;
+  gnnonly)   MODE_ENV="GNN_ONLY=1" ;;
+  bestfirst) MODE_ENV="GNN_SHADOW=1 TL_BESTFIRST=1 XYCE_CACHE_DIR=$NL/temp_sim_cache_bf20260923" ;;
+  *)         MODE_ENV="GNN_SHADOW=1" ;;
 esac
 
 # 0a3) 输出根守卫：防「归档错目录 → 有数据的树留在原地被下一趟 append」。
@@ -179,6 +191,12 @@ SERVE_PY_FP=$(sha1sum "$HOME/-project/scripts/diag/serve_http.py" 2>/dev/null | 
 {
   echo "时间            : $(date +%F\ %T)"
   echo "变体            : $VARIANT  （cargo --test $TEST，输出树 $TREE）"
+  # 17.5.0 补后两行：**缓存落点**是运行身份的一部分（「不读旧缓存、这趟另建新缓存」那趟与
+  # 既有趟正是靠它区分），不记的话事后看到两份同 ckpt 的结果有差异无法归因（= 下一个 I20）。
+  # ⚠ 两行都用 ${VAR:-未设}：本块会被 _t_archive_selftest.sh 抽出去单独跑（那里没有这些变量），
+  #   裸写会在 set -u 下中断，把自检变成假回归。
+  echo "模式 env        : ${MODE_ENV:-未设}  （GNN_SHADOW / GNN_ONLY / TL_BESTFIRST 三选一，见本脚本 0a2）"
+  echo "XYCE_CACHE_DIR  : ${XYCE_CACHE_DIR:-未设}  （未设 = 默认 \$NL/temp_sim_cache；bestfirst 变体必设新目录）"
   echo "源目录          : $NL/$TREE"
   echo "本轮 serve 进程 : ${SERVE_ARGS:-未取到}"
   echo "本轮 serve ckpt : ${CKPT:-未识别}"
@@ -196,7 +214,10 @@ echo "[$(date +%F\ %T)] 本轮 RUN_INFO 已写入（ckpt=${CKPT:-未识别} sha1
 #    env 用 export 统一设一次，两个循环共用 —— 此前两个循环各硬编码一份，改一处漏一处
 #    就会让 level4 与 level0-3 跑成**不同模式**（GNN_SHADOW vs GNN_ONLY），而日志上几乎看不出来。
 export GNN_HOST=127.0.0.1 GNN_PORT=8000 SPICEVIZ_OFF=1
-if [ -n "$MODE_ENV" ]; then export "$MODE_ENV"; fi
+# 按 token 逐个 export（不再是 export "$MODE_ENV" 整串）：整串只能装一个 K=V，装两个就会
+# 以「not a valid identifier」静默失败（`export "A=1 B=2"` 报错但 $? 未必被看到）⇒ 三件套会
+# 只生效第一件，跑出来是一趟**看着像 bestfirst 的贪心**，代价与读数全错。
+if [ -n "$MODE_ENV" ]; then for kv in $MODE_ENV; do export "$kv"; done; fi
 if [ -n "$OUT_ENV" ];  then export "$OUT_ENV";  fi
 for l in 0 1 2 3; do
   TL_ONLY=level$l nohup cargo test --release --test $TEST -- --nocapture --ignored \
@@ -214,10 +235,12 @@ echo "[$(date +%F\ %T)] 已启动并行分片（变体=$VARIANT test=$TEST 模�
 #    轮询模式、--root、输出文件三处都随变体走：shadow 的 pgrep 模式（tl_opt_shadow_batch）
 #    与 gnn/gnnonly（tl_opt_gnn_batch）互不匹配，所以并行跑 shadow + 其中一个时，
 #    各自的收尾只认自己的分片，不会谁先结束就把对方提前收掉。
-#    ⚠ 但 gnn 与 gnnonly **共用** test 名 tl_opt_gnn_batch ⇒ 二者的 pgrep 模式**互相匹配**：
-#      同时跑这两套时，先结束的那套的收尾会以为"全部分片结束"（其实另一套还在跑）并提前收工；
-#      它们还共用同一份报告 rpt/tl_opt_gnn_batch.csv（无 run 标签，append）。
-#      ⇒ **这两套不要并行跑**，一趟一趟来。
+#    ⚠ 但 gnn、gnnonly、bestfirst **共用** test 名 tl_opt_gnn_batch ⇒ 三者的 pgrep 模式
+#      **互相匹配**：同时跑其中两套时，先结束的那套的收尾会以为"全部分片结束"（其实另一套还在
+#      跑）并提前收工；gnn 与 gnnonly 还共用同一份报告 rpt/tl_opt_gnn_batch.csv（无 run 标签，
+#      append）。bestfirst 的报告另立 rpt/tl_opt_bestfirst_batch.csv（TL_BESTFIRST=1 时切），
+#      且它的树/缓存也另立 ⇒ **文件层面隔离**，但收尾的 pgrep 仍互认。
+#      ⇒ **这三套不要并行跑**，一趟一趟来。
 #    ⚠ gnnonly 变体**跳过** _shadow_analyze.py：那个分析器按 gnn_shadow.csv 取 (预测, 真值) 配对，
 #      而 GNN-only 模式下候选根本没有真值可配 —— 跑了只会输出一份看着像失败的空白报告。
 #      改报落盘电路数，让人一眼看出有没有数据（有数据但看着空，才真该去查）。

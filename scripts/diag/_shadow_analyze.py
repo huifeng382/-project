@@ -181,7 +181,14 @@ def per_window_metrics(rows, key="gnn"):
 # 「这两趟到底哪一项设置不同」——ckpt、SIM_OPTIONS、TL_MAX_ITERS、XYCE_CACHE、Xyce 版本、
 # 脚本版本，一个都没记。排查只能靠重跑 + 猜。这里把每一项都写进结果文件。
 # 原则：只记「事后能拿来回放的量」，不记推断。
-ENV_KEYS = ("SIM_OPTIONS", "SIM_TRAN", "TL_MAX_ITERS", "XYCE_CACHE", "GNN_HOST",
+# 18.7.0 补 XYCE_CACHE_DIR：缓存**落点**是运行身份的一部分 ——「不读旧缓存、这趟另建新缓存」
+# 的那趟与既有趟正是靠它区分（XYCE_CACHE=0 是读写全禁，做不到「不读旧、写新的」）。
+# 不记的话，事后看到两份同 ckpt 的结果有差异无法归因 —— 那就是下一个 I20。
+# 17.5.0 再补 TL_BESTFIRST / TL_MAX_STEPS：前者换的是**搜索算法本身**（全组仿真 + 最好者胜 +
+# 栈式回溯），后者换的是步数预算。二者都直接改轨迹 ⇒「同 ckpt、同 seed、结果不同」的最可能
+# 原因就是它们；不进戳等于下一个 I20。
+ENV_KEYS = ("SIM_OPTIONS", "SIM_TRAN", "TL_MAX_ITERS", "TL_BESTFIRST", "TL_MAX_STEPS",
+            "XYCE_CACHE", "XYCE_CACHE_DIR", "GNN_HOST",
             "GNN_PORT", "GNN_PORT2", "USE_IDS_AVG_APPROX", "IDSGNN_CKPT",
             # 17.2.4 补：进程间数值复现性直接受这几个变量影响（PYTHONHASHSEED 是 serve
             # 抖动根因、已由边序定序修掉，钉它是兜底；线程变量实测零影响，但既然会影响
@@ -281,13 +288,19 @@ def run_stamp(root):
 # ⚠ 口径②（相关系数的约定不同）：本节的 Spearman 用 serve 返回的**平均秩**对真值侧的
 #   **平均秩**（tie-corrected）算 Pearson；主口径 per_window_metrics 用 argsort 的**序数**秩、
 #   无并列修正（:145-147）——**不是同一个约定**，两节的 Spearman 值不可对读。
-# ⚠ 口径③（「劣于」的判据与贪心不同）：本节用 avg_delay（**全部输出口**均值）判「劣于
-#   current」；贪心吃的是 affected_delay（`window.affected_outputs` 子集均值，
-#   tl_opt.rs:908-909/:1127）⇒ 只在 `affected_outputs == 全输出` 时恒等。「35/46 电路单输出」
-#   是**按电路数**，而多输出电路占**候选集的 52~57%**（GNN_RUST_DATA_DIFF §12.2 的 16.11.36
-#   修正）⇒ 在按候选集加权的分母上「两者等价」**不成立**。故本节的误报率是**部署口径的必要
-#   不充分代理**（被判误报的候选仍可能在 affected_outputs 上真优于 current = 贪心会正当接受
-#   它），且**单/多输出分层是解释它的必需项**。
+# ⚠ 口径③（「劣于」的判据尺，**随变体而异**）：本节一律用 avg_delay（**全部输出口**均值）
+#   判「劣于 current」。
+#   · **bestfirst 变体**（17.5.0 起：全组仿真 + 最好者胜 + 栈式回溯）的搜索判据**就是**
+#     avg_delay（`combined_score(metrics.avg_delay, …, delay0, …)`，见 `tl_opt.rs` 的
+#     `optimize_tl_module_bestfirst` 口径 ①）⇒ 与本节**同一把尺**、无代理误差：R1/R2 直接
+#     读作「GNN 与搜索判据**同判**的组比例」（= GNN 掌判据时会漏掉多少改进）。
+#   · **老贪心**（shadow / gnn 变体）吃的是 affected_delay（`window.affected_outputs` 子集均值，
+#     tl_opt.rs:908-909/:1127）⇒ 只在 `affected_outputs == 全输出` 时恒等。「35/46 电路单输出」
+#     是**按电路数**，而多输出电路占**候选集的 52~57%**（GNN_RUST_DATA_DIFF §12.2 的 16.11.36
+#     修正）⇒ 在按候选集加权的分母上「两者等价」**不成立**。故**那些树上**本节的误报率是
+#     部署口径的必要不充分代理（被判误报的候选仍可能在 affected_outputs 上真优于 current =
+#     贪心会正当接受它），且**单/多输出分层是解释它的必需项**。
+#   ⚠ 变体无法从 CSV 数据判定（两变体的 CSV 同格式）⇒ 读本节前先确认这一趟跑的是哪个变体。
 
 def _finite(v):
     """非 None 且非 NaN/Inf。"""
@@ -454,7 +467,11 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     Pass 3 遇到第一个 accept 就 break（tl_opt.rs:1191）⇒ 该窗尾部候选永不评估、永无 eval_idx 行，
     而本文件的候选行来自 `mods`（= `prepared` 全表，:1024-1026）⇒ present 只能是**前缀**。
     故校验改为「present 必须是前缀 {0..k-1}」+「shadow 行集恰为 {base+1..base+k}」+ 逐行 tc 相符，
-    缺的后缀单列计数（它还会让 S 低估，故另报其中「秩高于 current」的项数）。"""
+    缺的后缀单列计数（它还会让 S 低估，故另报其中「秩高于 current」的项数）。
+    18.7.0 加**机会集口径**（见下面「★ 机会集口径 R1/R2」块）：D3/D4 = 组内真值上存在更好/不劣
+    候选的组数，N1/N2 = 其中 GNN 仍把 current 排第 1 的组数，R1 = N1/D3、R2 = N2/D4。
+    它需要**完整真值**（全组仿真的树）故自带更严的前置校验（pos 集必须是 {0..n-1} 全集）——
+    既有那条前缀校验与它下面的所有读数一字未动。"""
     print("\n=== 以 current 为锚的 GNN 判据质量（18.6.1；核心 = 首推真负率）===")
     cur_files = sorted(glob.glob(os.path.join(root, "*", "*", "gnn_current.csv")))
     if not cur_files:
@@ -467,6 +484,10 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     n_empty_cand = n_dim = n_dup_eval = n_dup_win = 0
     n_uneval = n_uneval_above = 0     # 结构性未评估（贪心提前 accept 的尾部候选，见下面配对校验）
     n_t1_nodata = 0                   # 核心口径：首推候选无真值（判不了）的窗数
+    # 18.7.0 机会集口径（D3/D4 → R1/R2）：见函数 docstring 与下面「★ 机会集口径」打印块。
+    # 这四个是**本块专属**的前置校验失败数，与上面那条既有前缀校验互不影响（既有读数一字未动）。
+    n_opp_pair = n_opp_cur_na = n_opp_rank_na = n_opp_true_na = 0
+    arecs = []                        # 18.7.0：真值全到位的组（= R1/R2 的候选分母池）
     n_cur_rank_na = n_cur_true_na = n_true_na = n_rank_na = 0
     n_header_dup = n_bad_row = n_win_unclaimed = 0
     for curp in cur_files:
@@ -532,6 +553,53 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
             # shadow 的评估行 = 它的**前缀**。故「缺」是预期结构（贪心接受后就没再试），不是错位。
             # 校验强度不减：① pos 集必须恰为 {0..k-1}（有洞/零个 ⇒ 推断失效，真错位）；② 该窗 shadow
             # 行集必须恰为 {base+1..base+k}（len 相等，无多余行）；③ 逐行 tc 相符；④ 窗内 eval 不重复（上）。
+            # —— 18.7.0 机会集口径（D3/D4 → R1/R2）的取数：**独立于**下面那条前缀校验，故放在它之前 ——
+            # 为什么要另立一套校验：D3/D4 问的是「该组真值上存在机会吗」，必须有**完整真值**才成立；
+            # 而下面那条校验为兼容贪心树只要求 pos 是**前缀**（尾部结构性未评估是预期的）。本块反过来
+            # 要求 pos 集恰为 {0..n-1} + 每条 eval 都在 gnn_shadow 里 + 逐行 tc 相符 + 真值不缺 ——
+            # 任一条不过就计一类失败、不进 arecs（fail-loud：这些计数必须全 0，否则说明这棵树不是
+            # 「全组仿真」（TL_BESTFIRST=1）的，R1/R2 的分母只是下界）。既有那条前缀校验与它下面的
+            # 所有读数**一字未动**（三个既有分析器自测靠逐字节比对，动不得）。
+            pos_full = (len(cand_rows) > 0
+                        and all(c["pos"] is not None and c["eval"] is not None for c in cand_rows)
+                        and sorted(c["pos"] for c in cand_rows) == list(range(len(cand_rows)))
+                        and len(sh_by_ev) == len(cand_rows)
+                        and all(c["eval"] in sh_by_ev for c in cand_rows))
+            if not pos_full:
+                n_opp_pair += 1
+            elif cur["rank"] is None or cur["true"] is None:
+                n_opp_cur_na += 1
+            elif any(c["rank"] is None for c in cand_rows):
+                n_opp_rank_na += 1
+            else:
+                rs = [c["rank"] for c in cand_rows]
+                ts = [sh_by_ev[c["eval"]]["true"] for c in cand_rows]
+                tc_ok = all(c["tc"] is None or not sh_by_ev[c["eval"]]["nt"]
+                            or c["tc"] == int(sh_by_ev[c["eval"]]["nt"]) for c in cand_rows)
+                if not tc_ok or any(t is None for t in ts):
+                    n_opp_true_na += 1          # tc 不等 = 位置↔真值错配，与真值缺同类
+                else:
+                    cur_first = min(rs) >= cur["rank"]     # 没有候选严格排在 current 之前
+                    d3 = any(t < cur["true"] for t in ts)
+                    d4 = any(t <= cur["true"] for t in ts)
+                    cm = cur_metrics(cur["rank"], cur["true"], list(zip(rs, ts)))
+                    arecs.append({
+                        "circuit": circ, "iter": it, "window": w,
+                        "nout": cur["nout"] if cur["nout"] is not None else nwin - 1,
+                        "n_cands": len(cand_rows),
+                        "d3": 1.0 if d3 else 0.0, "d4": 1.0 if d4 else 0.0,
+                        "n1": 1.0 if (d3 and cur_first) else 0.0,
+                        "n2": 1.0 if (d4 and cur_first) else 0.0,
+                        "cur_first": 1.0 if cur_first else 0.0,
+                        # 「同秩」= 存在候选的秩**恰等于** current 的秩（competition ranking 下 = 并列第 1）。
+                        # ⚠ 不能用 `min(rs) <= cur["rank"]`：那还会把「候选秩**严格优于** current」算进来
+                        # （例：cur 秩 5、某候选秩 1 ⇒ 也成立），而那种组**不是**并列、是 cur 根本没被
+                        # 排第一（已由 cur_first 表达）⇒ 语义与打印的「并列第 1」不符。自测
+                        # _t_shadow_current_anchor.py 的 (a) 伴随计数专门钉了这条。
+                        "tie_rank": 1.0 if any(r == cur["rank"] for r in rs) else 0.0,
+                        "tie_true": 1.0 if any(t == cur["true"] for t in ts) else 0.0,
+                        "top1_strict": cm["top1_strict"], "top1_len": cm["top1_len"],
+                    })
             if any(c["pos"] is None for c in cand_rows):
                 n_ev_missing += 1; continue
             pres = [c for c in cand_rows if c["eval"] is not None and c["eval"] in sh_by_ev]
@@ -621,17 +689,73 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
 
     print(f"  数据源: {len(cur_files)} 个 gnn_current.csv（每窗 1 行 CURRENT + n 行候选）"
           f"；本节合格集 {len(recs)} / 主口径 {len(main_sets)} 集（同一个 --min-cands {min_cands}）")
+    # ================= 18.7.0 机会集口径：D3/D4 分母 + N1/N2 分子 → R1/R2 =================
+    # 用户口径：一个窗口的衍生电路 + 该窗 current 构成**一组**；只有「组内真值上存在比 current
+    # 更好/不劣的候选」的组才是有意义的组（分母），看 GNN 有没有在这些组里**仍然把 current 排第 1**。
+    #   D3 = #{组: ∃i t_i <  t_cur}        D4 = #{组: ∃i t_i <= t_cur}（D4−D3 = 只有真并列的组）
+    #   N1 = #{组: current 排第 1 ∧ ∃i t_i <  t_cur}      N2 同理用 <=
+    #   R1 = N1/D3（严格机会口径）          R2 = N2/D4（宽松机会口径：更好或相等都算机会）
+    # ⚠ 越大越坏（有机可乘的组里仍首推 current = 把机会漏了）；分母为 0 的组单列、不入比值。
+    # ⚠ 前提：只有**全组仿真**的树（TL_BESTFIRST=1，Pass 3′ 不再撞上首个 accept 就 break）才有
+    # 完整真值；贪心树里 current 之后的候选尾部永不评估 ⇒ 分母只是下界。本块的合格性由下面
+    # 「机会集诊断」四项**全为 0** 担保（那是它自带的前置校验，见循环里那段独立取数）。
+    # ⚠ 「排第 1」按 competition ranking 判：没有候选秩**严格小于** current 即算并列第 1（同秩的
+    # 组单列计数）——与上面核心口径的 s0（镜像）同一判据，两者必须一致。
+    def _opp(ss):
+        d3 = int(sum(x["d3"] for x in ss)); n1 = int(sum(x["n1"] for x in ss))
+        d4 = int(sum(x["d4"] for x in ss)); n2 = int(sum(x["n2"] for x in ss))
+        return d3, d4, n1, n2, (n1 / d3 if d3 else float("nan")), (n2 / d4 if d4 else float("nan"))
+
+    if not arecs:
+        print("  ★ 机会集口径 R1/R2: 无「真值全到位」的组（见下面诊断计数），不报数")
+    else:
+        k4 = {(x["circuit"], x["iter"], x["window"]) for x in recs}
+        print(f"\n  ★ 机会集口径 R1/R2（18.7.0；分母 = 真值上存在机会的组，"
+              f"分子 = 其中 GNN 把 current 排第 1 的组）:")
+        print("    " + _pad("口径", 34) + _pad("组数", 7) + _pad("D3", 7) + _pad("D4", 7)
+              + _pad("N1", 7) + _pad("N2", 7) + _pad("R1严格", 9) + "R2宽松")
+        for lab, ss in (("全部组（min_cands=1）", arecs),
+                        (f"其中 ≥{min_cands} 候选（对齐既有口径）",
+                         [x for x in arecs if (x["circuit"], x["iter"], x["window"]) in k4]),
+                        ("单输出层（nout=1）", [x for x in arecs if x["nout"] == 1]),
+                        ("多输出层（nout>=2）", [x for x in arecs if x["nout"] >= 2])):
+            d3, d4, n1, n2, r1, r2 = _opp(ss)
+            print("    " + _pad(lab, 34) + _pad(str(len(ss)), 7) + _pad(str(d3), 7) + _pad(str(d4), 7)
+                  + _pad(str(n1), 7) + _pad(str(n2), 7)
+                  + _pad(f"{r1*100:.2f}%" if _finite(r1) else "NA", 9)
+                  + (f"{r2*100:.2f}%" if _finite(r2) else "NA"))
+        d3a, d4a, _, _, _, _ = _opp(arecs)
+        print(f"    ⚠ 分母为 0 的组不入比值：D3=0 的组 {len(arecs)-d3a} 个（无可厚非：GNN 首推 current 是对的）"
+              f"   D4=0 的组 {len(arecs)-d4a} 个   D4−D3 = {d4a-d3a} 个组只有真并列的候选")
+        print(f"    伴随 top-1 命中（含 current 同排）: 严格 "
+              f"{statistics.mean([x['top1_strict'] for x in arecs])*100:.1f}%  宽松 "
+              f"{statistics.mean([x['top1_len'] for x in arecs])*100:.1f}%"
+              f"   （本块候选集 = **全部**候选，不受 min_cands 截断 ⇒ 与既有 top-1 分母不同）")
+        print(f"    current 与某候选同秩（并列第 1）的组 {int(sum(x['tie_rank'] for x in arecs))} 个"
+              f"   组内存在与 current **真值相等**的候选的组 {int(sum(x['tie_true'] for x in arecs))} 个")
+        print("    ⚠ 判据尺：本节判「更好」用 avg_delay（全输出口均值）。**bestfirst 变体**的搜索"
+              "判据就是 avg_delay ⇒ 与本节同尺、无代理误差（R1/R2 = GNN 与搜索判据**同判**的组"
+              "比例）；**老贪心**（shadow/gnn）判据是 affected_delay（本窗受影响口）⇒ 那些树上本节"
+              "含代理误差（偏悲观、是上界），单/多输出分层是解释它的必需项。"
+              "上面四行分母各不相同（min_cands 与分层），**禁互读**。")
+        print("    ⚠ 与 18.6.1 的 Sp/τ 不可比：本节秩出自「[current]+全部候选」同批（tie-corrected），"
+              "且 R1/R2 是**组级条件概率**（分母 = 有机会的组），不是相关系数。")
+
     if not recs:
-        print("  ⚠ 本节无合格集（见下面诊断计数），不报数")
-        return
+        # 18.7.0：这里原先直接 `return` ⇒ 上面两处「见下面诊断计数」都成了**空指**（诊断块在 return
+        # 之后），而「一个合格集都没有」恰恰是最需要看诊断的时候。诊断块全是纯计数器、不依赖 recs，
+        # 且下方所有 recs 相关读数都自带有空集守卫（空层打 NA/`（无集）`，不是崩）⇒ 取消早退，
+        # 让它照常走到诊断计数块；本节各表则一律 NA/nan（消息改成与实情一致，不再说「不报数」）。
+        print("  ⚠ 本节无合格集 ⇒ 下面各表一律 NA，只有诊断计数值得看（本节数字作废）")
     main_keys = {(s["circuit"], s["iter"], s["window"]) for s in main_sets}
     cur_keys = {(s["circuit"], s["iter"], s["window"]) for s in recs}
     print(f"  覆盖率: 仅主口径有 {len(main_keys - cur_keys)} 集 ｜ 仅本节有 "
           f"{len(cur_keys - main_keys)} 集（两节分母不同时，跨节比较指标要先看这两项）")
     print("  ⚠ 两把尺：本节的秩出自「[current]+全部候选」同批，主口径 gnn_pred 出自「纯候选批」"
           "——**禁混读、禁跨节比较秩与相关系数**（本节 Sp 还是 tie-corrected，见函数头）")
-    print("  ⚠ 「劣于」用 avg_delay（全输出口均值）；贪心吃 affected_delay（本窗受影响口）"
-          "⇒ 本节误报率是部署口径的**必要不充分代理**（被判误报者仍可能被贪心正当接受）")
+    print("  ⚠ 判据尺：「劣于」用 avg_delay（全输出口均值）。bestfirst 变体的搜索判据就是它"
+          "⇒ 同尺、无代理误差；老贪心（shadow/gnn）吃 affected_delay（本窗受影响口）⇒ 那些树上"
+          "本节误报率是部署口径的**必要不充分代理**（被判误报者仍可能被贪心正当接受）")
 
     def _mean(ss, k):
         v = [x[k] for x in ss if _finite(x.get(k))]
@@ -680,9 +804,14 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     print(f"  含 current 批内相关: Spearman(修正) {_mean(recs, 'sp'):6.3f}   "
           f"Kendall τ-b {_mean(recs, 'kt'):6.3f}   "
           f"(n={sum(1 for x in recs if _finite(x.get('sp')))} 集；与主口径的 Spearman 约定不同)")
-    print(f"  集内候选数: min={min(x['n_cands'] for x in recs)} "
-          f"med={statistics.median([x['n_cands'] for x in recs]):.0f} "
-          f"max={max(x['n_cands'] for x in recs)}")
+    # 18.7.0：recs 空时 min()/median()/max() 会 ValueError/StatisticsError（原先靠上面的 return
+    # 挡住；取消早退后必须自带守卫，否则「一个合格集都没有」的树直接崩在报错路径上）
+    if recs:
+        print(f"  集内候选数: min={min(x['n_cands'] for x in recs)} "
+              f"med={statistics.median([x['n_cands'] for x in recs]):.0f} "
+              f"max={max(x['n_cands'] for x in recs)}")
+    else:
+        print("  集内候选数: （无合格集）")
     print(f"  ⚠ |S|=0 的集 {n_zero_S} 个（该窗口**有真值的**候选里没有一个被排在 current 之前；"
           f"注意与核心口径的缺口行不是同一个集合——那边按秩判，不看真值有没有）"
           f"，⇒ 误报率**无定义**、已从均值与分母里剔除；|P|=0 的集 {n_zero_P} 个同理。"
@@ -724,7 +853,8 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
               + _pad(f"{a[6]:.3f}" if _finite(a[6]) else "NA", 10)
               + (f"{a[7]:.3f}" if _finite(a[7]) else "NA"))
 
-    # —— 单/多输出分层（**必需项**，不是可选：见上面「口径③」）——
+    # —— 单/多输出分层（**老贪心下是必需项**：口径③的代理误差只在多输出层出现。bestfirst 下
+    #    两把尺同尺 ⇒ 分层退化为「看两层覆盖/难度差异」的辅助项，仍打印，便于两变体对比）——
     print("\n  单/多输出分层（解释上面读数用；多输出电路占候选集 52~57%）：")
     print("    " + _pad("层", 20) + _pad("集数", 7) + _pad("★推严", 9) + _pad("★推宽", 9)
           + _pad("误报率", 10) + _pad("漏报率", 10) + _pad("top1严格", 10) + _pad("Sp(修正)", 10)
@@ -743,8 +873,9 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
               + _pad(f"{_mean(ss, 'top1_strict')*100:.1f}%", 10)
               + _pad(f"{_mean(ss, 'sp'):.3f}", 10)
               + (f"{Ft/St*100:.2f}%" if St else "NA"))
-    print("    ⚠ 单输出层里 avg_delay ≡ affected_delay（判据同口径）；多输出层里两者只在"
-          "「本窗受影响口 = 全输出口」时相等 ⇒ 多输出层的误报率含代理误差，解读时先看分层")
+    print("    ⚠ 单输出层里 avg_delay ≡ affected_delay（与老贪心判据同口径）；多输出层里两者只在"
+          "「本窗受影响口 = 全输出口」时相等 ⇒ **老贪心（shadow/gnn）树上**多输出层的误报率含"
+          "代理误差，解读时先看分层；bestfirst 变体判据本就是 avg_delay ⇒ 分层只作覆盖差异参考")
 
     # —— 诊断计数（fail-loud：配对类必须全 0，否则本节数字不可用）——
     print("\n  诊断计数:")
@@ -769,6 +900,12 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
           f"**计入不了 S 的分母**，S 与误报率因此只覆盖「贪心真试过」的那部分候选")
     print(f"    current 秩缺失/NaN 的集 {n_cur_rank_na}（= 模型评估不了 current，"
           f"**不是**「GNN 一个都没看上」）   current 真值缺失的集 {n_cur_true_na}")
+    # 18.7.0：机会集口径（R1/R2）自己的前置校验 —— 四项全 0 才有资格读那个分母
+    print(f"    机会集口径（18.7.0）前置校验失败: 配对/覆盖(pos 集非全集) {n_opp_pair}"
+          f"   current 秩或真值缺 {n_opp_cur_na}   候选秩缺 {n_opp_rank_na}"
+          f"   候选真值缺/tc 不等 {n_opp_true_na}"
+          f"   {'✅' if (n_opp_pair + n_opp_cur_na + n_opp_rank_na + n_opp_true_na) == 0 else '❌ 该树不是全组仿真的 ⇒ R1/R2 的分母只是下界'}"
+          f"   （另有量纲守卫 {n_dim} / 空候选窗 {n_empty_cand} / 窗内 eval 重复 {n_dup_win} 个窗在本块之外）")
     print(f"    gnn_shadow 有、gnn_current 无的窗口: {n_win_unclaimed}"
           f"（预期每电路约 1 个 = 初始 current 那次 eval_idx=1；候选全空（`prepared` 空）的窗"
           f"不写本文件 —— 注意 lift/patch 失败的候选**根本进不了** `mods`，故不会出现在这里）")
