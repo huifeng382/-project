@@ -483,7 +483,11 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     18.7.0 加**机会集口径**（见下面「★ 机会集口径 R1/R2」块）：D3/D4 = 组内真值上存在更好/不劣
     候选的组数，N1/N2 = 其中 GNN 仍把 current 排第 1 的组数，R1 = N1/D3、R2 = N2/D4。
     它需要**完整真值**（全组仿真的树）故自带更严的前置校验（pos 集必须是 {0..n-1} 全集）——
-    既有那条前缀校验与它下面的所有读数一字未动。"""
+    既有那条前缀校验与它下面的所有读数一字未动。
+    18.7.4 加**最优先判据「机会把握率」**（打印在本节最前面）：严格 = H3/D3、宽松 = H4/D4，
+    分子 = GNN 排第一的那个**真的可用**（严格 t₁ < t_cur；宽松 = 首推就是 current 本身，或 t₁ ≤ t_cur）。
+    ⚠ 与 R1/R2 互补而非互读：R1 记「仍首推 current」（越大越坏），把握率记「抓住了机会」（越大越好），
+    且 1 − R1 把「守住 current」与「推错对象」并成一格 ⇒ **不能当把握率用**。"""
     print("\n=== 以 current 为锚的 GNN 判据质量（18.6.1；核心 = 首推真负率）===")
     cur_files = sorted(glob.glob(os.path.join(root, "*", "*", "gnn_current.csv")))
     if not cur_files:
@@ -595,6 +599,19 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
                     cur_first = min(rs) >= cur["rank"]     # 没有候选严格排在 current 之前
                     d3 = any(t < cur["true"] for t in ts)
                     d4 = any(t <= cur["true"] for t in ts)
+                    # 18.7.4 「机会把握率」两格（本文件**最优先判据**，用户口径）：
+                    #   严格 = GNN 排第一的那个候选真值**严格优于** current（t₁ < t_cur）
+                    #   宽松 = GNN 排第一的是 **current 本身**（= 没动、不劣），**或**其真值
+                    #          **不劣于** current（t₁ ≤ t_cur，含真并列）
+                    # 「排第一」与既有口径**同一判据**：min(候选秩) < rank(current) 才算「首推候选」，
+                    # 否则首推就是 current（competition ranking，= cur_first 的另一面）；并列首推要求
+                    # **整撮都满足**（保守 —— 与 18.6.1 首推真负率的并列规则同一套 ⇒ 三个口径的并列
+                    # 语义一致，不许各写一份）。
+                    rmin = min(rs)
+                    cand_first = rmin < cur["rank"]
+                    picks = [t for r, t in zip(rs, ts) if r == rmin] if cand_first else []
+                    h3 = 1.0 if (cand_first and all(t < cur["true"] for t in picks)) else 0.0
+                    h4 = 1.0 if ((not cand_first) or all(t <= cur["true"] for t in picks)) else 0.0
                     cm = cur_metrics(cur["rank"], cur["true"], list(zip(rs, ts)))
                     arecs.append({
                         "circuit": circ, "iter": it, "window": w,
@@ -603,6 +620,8 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
                         "d3": 1.0 if d3 else 0.0, "d4": 1.0 if d4 else 0.0,
                         "n1": 1.0 if (d3 and cur_first) else 0.0,
                         "n2": 1.0 if (d4 and cur_first) else 0.0,
+                        # 18.7.4 机会把握率：分子只在**该口径的机会组**里数（见 _opp 那条注释）
+                        "h3": h3, "h4": h4,
                         "cur_first": 1.0 if cur_first else 0.0,
                         # 「同秩」= 存在候选的秩**恰等于** current 的秩（competition ranking 下 = 并列第 1）。
                         # ⚠ 不能用 `min(rs) <= cur["rank"]`：那还会把「候选秩**严格优于** current」算进来
@@ -715,6 +734,10 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     #   D3 = #{组: ∃i t_i <  t_cur}        D4 = #{组: ∃i t_i <= t_cur}（D4−D3 = 只有真并列的组）
     #   N1 = #{组: current 排第 1 ∧ ∃i t_i <  t_cur}      N2 同理用 <=
     #   R1 = N1/D3（严格机会口径）          R2 = N2/D4（宽松机会口径：更好或相等都算机会）
+    # 18.7.4 在同一批 arecs 上再加**最优先判据「机会把握率」**（打印在本节最前面，见下面 ★★★ 块）：
+    #   严格 H3/D3、宽松 H4/D4 —— 分子 = GNN 第一名真的可用（严格 = t₁ < t_cur；宽松 = 首推就是
+    #   current 本身、或 t₁ ≤ t_cur）。它与 R1/R2 **互补**：R1 问「有机会却仍首推 current」，
+    #   把握率问「机会有没有被抓住」。⚠ 1 − R1 ≠ 把握率（R1 把「守住 current」与「推错对象」并成一格）。
     # ⚠ 越大越坏（有机可乘的组里仍首推 current = 把机会漏了）；分母为 0 的组单列、不入比值。
     # ⚠ 前提：只有**全组仿真**的树（TL_BESTFIRST=1，Pass 3′ 不再撞上首个 accept 就 break）才有
     # 完整真值；贪心树里 current 之后的候选尾部永不评估 ⇒ 分母只是下界。本块的合格性由下面
@@ -724,11 +747,42 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
     def _opp(ss):
         d3 = int(sum(x["d3"] for x in ss)); n1 = int(sum(x["n1"] for x in ss))
         d4 = int(sum(x["d4"] for x in ss)); n2 = int(sum(x["n2"] for x in ss))
-        return d3, d4, n1, n2, (n1 / d3 if d3 else float("nan")), (n2 / d4 if d4 else float("nan"))
+        # 18.7.4 机会把握率：分子**只在该口径的机会组里数** ——
+        # ⚠ h4 的「首推 current ⇒ 不劣」在 D4 之外的组也成立（整组候选都更差、GNN 守住 current），
+        #   所以 h4 必须限定在 `x["d4"]` 里，否则分子外溢到分母之外 ⇒ 比值可以 >100%。
+        h3 = int(sum(x["h3"] for x in ss if x["d3"]))
+        h4 = int(sum(x["h4"] for x in ss if x["d4"]))
+        return (d3, d4, n1, n2, (n1 / d3 if d3 else float("nan")), (n2 / d4 if d4 else float("nan")),
+                h3, h4, (h3 / d3 if d3 else float("nan")), (h4 / d4 if d4 else float("nan")))
 
     if not arecs:
         print("  ★ 机会集口径 R1/R2: 无「真值全到位」的组（见下面诊断计数），不报数")
     else:
+        # ★★★ 18.7.4 最优先判据：机会把握率（用户口径）★★★ —— 打在本节**最前面**。
+        # 与下面 R1/R2 表**共用同一批 arecs 与同一批谓词**（不另起一遍取数 ⇒ 不可能口径漂移）。
+        _o = _opp(arecs)
+        _d3, _d4, _n1, _h3, _h4 = _o[0], _o[1], _o[2], _o[6], _o[7]
+        _wrong3 = _d3 - _n1 - _h3      # 机会组里「首推了候选、但它比 current 差」
+        _wrong4 = _d4 - _h4            # 宽松口径下唯一算「没抓住」的情形（推错对象）
+
+        def _pc(r):
+            return f"{r*100:6.2f}%" if _finite(r) else "    NA"
+
+        print("\n  ★★★ 最优先判据 · 机会把握率（18.7.4）: 分子 = GNN 第一名真的可用的组，"
+              "分母 = 真值上存在机会的组 ★★★")
+        print(f"    严格（GNN 第一名**严格优于** current，t₁ < t_cur）: "
+              f"{_pc(_o[8])}   = {_h3}/{_d3} 组")
+        print(f"    宽松（GNN 第一名**是 current 本身**，或其真值**不劣于** current，t₁ ≤ t_cur）: "
+              f"{_pc(_o[9])}   = {_h4}/{_d4} 组")
+        print(f"    机会组三分（严格 D3={_d3}，按 GNN 第一名）: 抓住(候选且真改进) {_h3} ｜ "
+              f"守住 current {_n1} ｜ 推错对象(候选但更差) {_wrong3}"
+              f"   ⇒ 严格只认「抓住」；宽松把「守住 current」也算通过")
+        print(f"    ⚠ 两口径**分母不同、禁互读**：严格 = 存在严格更优候选的组（D3={_d3}）；"
+              f"宽松 = 存在更优**或并列**候选的组（D4={_d4}，本树多 {_d4-_d3} 组「只有真并列」）。"
+              f"宽松 ≡ 1 − 推错率（{_wrong4}/{_d4}）⇒ 它是「**没犯错**」读数，"
+              f"要问「**抓住机会**」只看严格那格。")
+        print(f"    ⚠ 1 − R1 **不是**把握率：R1 只记「首推仍是 current」（= 下面 R1/R2 表的 N1={_n1}），"
+              f"它把「守住 current」与「推错对象」并成同一格 ⇒ 两者必须分开读（见上面三分）。")
         k4 = {(x["circuit"], x["iter"], x["window"]) for x in recs}
         print(f"\n  ★ 机会集口径 R1/R2（18.7.0；分母 = 真值上存在机会的组，"
               f"分子 = 其中 GNN 把 current 排第 1 的组）:")
@@ -739,12 +793,14 @@ def current_anchor_report(root, min_cands, main_sets, dom_circ):
                          [x for x in arecs if (x["circuit"], x["iter"], x["window"]) in k4]),
                         ("单输出层（nout=1）", [x for x in arecs if x["nout"] == 1]),
                         ("多输出层（nout>=2）", [x for x in arecs if x["nout"] >= 2])):
-            d3, d4, n1, n2, r1, r2 = _opp(ss)
+            # ⚠ _opp 现在返回 10 元组（18.7.4 加了 h3/h4 与两格把握率），本表只用前 6 格。
+            #   写成 `= _opp(ss)` 会 ValueError（too many values to unpack）—— 别改回去。
+            d3, d4, n1, n2, r1, r2 = _opp(ss)[:6]
             print("    " + _pad(lab, 34) + _pad(str(len(ss)), 7) + _pad(str(d3), 7) + _pad(str(d4), 7)
                   + _pad(str(n1), 7) + _pad(str(n2), 7)
                   + _pad(f"{r1*100:.2f}%" if _finite(r1) else "NA", 9)
                   + (f"{r2*100:.2f}%" if _finite(r2) else "NA"))
-        d3a, d4a, _, _, _, _ = _opp(arecs)
+        d3a, d4a = _opp(arecs)[:2]
         print(f"    ⚠ 分母为 0 的组不入比值：D3=0 的组 {len(arecs)-d3a} 个（无可厚非：GNN 首推 current 是对的）"
               f"   D4=0 的组 {len(arecs)-d4a} 个   D4−D3 = {d4a-d3a} 个组只有真并列的候选")
         print(f"    伴随 top-1 命中（含 current 同排）: 严格 "
@@ -946,8 +1002,14 @@ def main():
     ap.add_argument("--group-by", choices=("batch", "window"), default="batch",
                     help="候选集分组键：batch=(电路,iter,window_try)=pre_rank 的单批（部署真口径，默认）；"
                          "window=(电路,window_try)=跨轮池化（仅用于复现 17.3.9 之前的数）")
-    ap.add_argument("--detail-max", type=int, default=30,
-                    help="文末逐集明细最多列几集（按遗憾降序，列最差的；0=全列）")
+    ap.add_argument("--detail-max", type=int, default=-1,
+                    help="文末逐集明细最多列几集（按遗憾降序，列最差的）；-1=不列（18.7.4 起默认："
+                         "该块是最大的一段而信息密度低），0=全列，N>0=列最差的 N 集")
+    ap.add_argument("--full", action="store_true",
+                    help="打印全部小节。18.7.4 起默认只打**核心读数**：最优先判据（机会把握率）＋ "
+                         "R1/R2、首推真负率、recall、10.3 判定、交付口径、fail-loud 计数；省略的是"
+                         "纯诊断块（跨度>10% 子集 / 并列・一致性诊断 / 每候选集明细），本开关可随时"
+                         "复现（离线秒级，无需重跑仿真）")
     args = ap.parse_args()
 
     run_stamp(args.root)
@@ -1049,6 +1111,26 @@ def main():
         print(f"无合格候选集（需要 ≥{args.min_cands} 候选）。成功行={ok_rows} 失败行={fail_rows} 小集={small_sets}")
         return
 
+    # —— 18.7.4 两节共用的前置（提到各节之前）——
+    # by_circ / _dom_circ 原先在「跨集重复度」块里现算（只为「交付口径对照 ④」与「以 current 为锚」
+    # 两处服务）；提上来是为了把**最优先判据**那节挪到文首（见下面的调用），让读数第一屏就能看到 ——
+    # 此前它在 20 KB 之后，重点被淹没。计算式与输入一字未改。
+    by_circ = {}
+    for s in sets:
+        by_circ.setdefault(s["circuit"], []).append(s)
+    _dom_circ = max(by_circ, key=lambda c: len(by_circ[c]))
+
+    # —— 以 current 为锚的 GNN 判据质量（18.6.0 新增 / 18.6.1 修正配对校验）——
+    # ⚠ 位置被两处约束夹住，**只能上提、不要下挪**：
+    #  (a) 必须在「=== 每候选集明细」之**前**：_t_shadow_analyze_2col.py 的 head_meta() 把
+    #      DETAIL_MARK 之前的一切逐字节跨树比较 ⇒ 本节在无 gnn_current.csv 的树上必须输出
+    #      **常量**（已如此，见 current_anchor_report 的早退分支）。
+    #  (b) 必须在「=== 两列并排 A/B」之**前**：sweep 的 pick() 取文件序首处，且让本节留在
+    #      主口径头里 = 让 (a) 那条逐字节断言顺带守住本节的缺文件路径。
+    #  18.7.4：从「交付口径对照」之后**提到**此处（两条约束都是上界，上提不冲突）⇒
+    #  ★★★ 最优先判据（机会把握率）落在第一屏。
+    current_anchor_report(args.root, args.min_cands, sets, _dom_circ)
+
     r3 = [s["recall3"] for s in sets]
     rg = [s["regret"] for s in sets]
     sp = [s["spearman"] for s in sets if s["spearman"] is not None]
@@ -1117,7 +1199,7 @@ def main():
 
     # 跨度过滤视图：只统计 (max_true-min_true)/min_true > 10% 的「可排序集」（对齐 V2 hi_spread 口径）
     hi = [s for s in sets if s["spread_pct"] > 10.0]
-    if hi:
+    if args.full and hi:               # 18.7.4：纯诊断块，默认不打（--full 复现）
         hr3 = [s["recall3"] for s in hi]
         hrg = [s["regret"] for s in hi]
         hsp = [s["spearman"] for s in hi if s["spearman"] is not None]
@@ -1135,7 +1217,7 @@ def main():
         if hc2:
             print(f"  两阶段捕获率: {statistics.mean(hc2)*100:6.2f}%   "
                   f"中位 {statistics.median(hc2)*100:.2f}%  (n={len(hc2)}/{len(hi)} 集)")
-    else:
+    elif args.full:
         print("\n（无跨度>10% 的候选集）")
 
     # —— 并列/一致性诊断（17.2.7）——
@@ -1146,34 +1228,43 @@ def main():
     n_mix = sum(1 for s in sets if s["mixed"])
     n_raw = sum(1 for s in sets if s["raw_mode"])
     n_dupg = sum(1 for s in sets if s["dup_g"] > 0)
-    print(f"\n=== 并列/一致性诊断（17.2.7）===")
-    print(f"  重复网表集（真值内有完全相等候选 → recall@3 天然 <100%）: {n_dup}/{len(sets)} 集")
-    print(f"  预测第3小==第4小（top-3 归属由并列规则决定）:            {n_tie}/{len(sets)} 集")
-    print(f"  预测有重复值（并列打破规则的影响面，全集口径）:          {n_dupg}/{len(sets)} 集")
-    print(f"  量纲混合守卫（同集混「秩」与「原始延迟」→ 排序无意义）:   {n_mix}/{len(sets)} 集 "
-          f"{'✅ 无' if n_mix == 0 else '❌ 有 → 该集排序不可信，先查 serve 预排序缓存命中'}")
-    print(f"  兜底窗口（整集 gnn_pred 都是原始延迟，非秩）:             {n_raw}/{len(sets)} 集 "
-          f"{'✅ 无（全走秩聚合）' if n_raw == 0 else '⚠ 该批 serve 预排序整窗未命中；集内排序仍有效，但分数分辨率受 CSV 的 7 位有效数字限制'}")
-    if args.group_by == "window":
-        print("  ⚠ 以上并列/一致性诊断在 --group-by window（跨轮池化）下**前提被破坏**："
-              "各条守卫都假定「集 = 一次 pre_rank 的批」（见 per_window_metrics 里「量纲混合守卫」"
-              "「兜底窗口识别」两段原注，以及 main 里 rows.sort 那段「pre_rank→evaluate 是同一批 prepared」），"
-              "池化把不同批的秩与 n==1 批的原始延迟混进同一集 → 读数仅作对照，不作判据。")
-    if hi:
-        h_dup = sum(1 for s in hi if s["dup_true"] > 0)
-        h_tie = sum(1 for s in hi if s["tie_g_k3"])
-        h_mix = sum(1 for s in hi if s["mixed"])
-        h_raw = sum(1 for s in hi if s["raw_mode"])
-        print(f"  （跨度>10% 子集 {len(hi)} 集: 重复网表 {h_dup}   第3==第4 {h_tie}   "
-              f"量纲混合 {h_mix}   兜底窗口 {h_raw}）")
+    # 18.7.4：本节是纯诊断（三件事的计数），默认不打；--full 或下面那一行提示可复现。
+    if args.full:
+        print(f"\n=== 并列/一致性诊断（17.2.7）===")
+        print(f"  重复网表集（真值内有完全相等候选 → recall@3 天然 <100%）: {n_dup}/{len(sets)} 集")
+        print(f"  预测第3小==第4小（top-3 归属由并列规则决定）:            {n_tie}/{len(sets)} 集")
+        print(f"  预测有重复值（并列打破规则的影响面，全集口径）:          {n_dupg}/{len(sets)} 集")
+        print(f"  量纲混合守卫（同集混「秩」与「原始延迟」→ 排序无意义）:   {n_mix}/{len(sets)} 集 "
+              f"{'✅ 无' if n_mix == 0 else '❌ 有 → 该集排序不可信，先查 serve 预排序缓存命中'}")
+        print(f"  兜底窗口（整集 gnn_pred 都是原始延迟，非秩）:             {n_raw}/{len(sets)} 集 "
+              f"{'✅ 无（全走秩聚合）' if n_raw == 0 else '⚠ 该批 serve 预排序整窗未命中；集内排序仍有效，但分数分辨率受 CSV 的 7 位有效数字限制'}")
+        if args.group_by == "window":
+            print("  ⚠ 以上并列/一致性诊断在 --group-by window（跨轮池化）下**前提被破坏**："
+                  "各条守卫都假定「集 = 一次 pre_rank 的批」（见 per_window_metrics 里「量纲混合守卫」"
+                  "「兜底窗口识别」两段原注，以及 main 里 rows.sort 那段「pre_rank→evaluate 是同一批 prepared」），"
+                  "池化把不同批的秩与 n==1 批的原始延迟混进同一集 → 读数仅作对照，不作判据。")
+        if hi:
+            h_dup = sum(1 for s in hi if s["dup_true"] > 0)
+            h_tie = sum(1 for s in hi if s["tie_g_k3"])
+            h_mix = sum(1 for s in hi if s["mixed"])
+            h_raw = sum(1 for s in hi if s["raw_mode"])
+            print(f"  （跨度>10% 子集 {len(hi)} 集: 重复网表 {h_dup}   第3==第4 {h_tie}   "
+                  f"量纲混合 {h_mix}   兜底窗口 {h_raw}）")
+    else:
+        # 18.7.4：提示按**实际省了哪些**生成（--detail-max 0/N 时明细是打出来的，别把它也列进「已省略」）。
+        # 本 else 只在 `not args.full` 时进来 ⇒ 两块诊断确实都没打。
+        _skip = ["跨度>10% 子集", "并列・一致性诊断"]
+        _how = ["--full 打这两块"]
+        if args.detail_max < 0:
+            _skip.append("每候选集明细")
+            _how.append("--detail-max N 打明细 N 集（0=全列）")
+        print("\n（已省略：" + " / ".join(_skip) + " —— " + "；".join(_how) + "）")
 
     # —— 跨集重复度（17.3.10）——
     # 上面那行「重复网表集」数的是**集内**真值相等的候选（天花板）；本块数的是**跨集**：
     # 同一电路的不同 (iter, window_try) 提出了**同一个候选池**。两者是不同的事，别混。
-    # 只计数，不改上面任何指标。
-    by_circ = {}
-    for s in sets:
-        by_circ.setdefault(s["circuit"], []).append(s)
+    # 只计数，不改上面任何指标。（by_circ 已在 main 开头建好 —— 18.7.4 提上去与「以 current 为锚」
+    # 节共用，别在这里再建一份：两份会有漂移风险，而 ④ 与那节必须同分母。）
     n_uniq = 0                      # 互异候选池数
     mult = Counter()                # 重数 -> 具有该重数的独立集数
     worst = []                      # (重复集数, 电路, 总集数, 独立集数, 最大重数)
@@ -1251,7 +1342,7 @@ def main():
             continue
         _seen_sig.add(k)
         dedup_sets.append(s)
-    _dom_circ = max(by_circ, key=lambda c: len(by_circ[c]))
+    # _dom_circ 已在 main 开头算好（18.7.4 提上去，供本节 ④ 与「以 current 为锚」节共用同一个值）
     # 显示名 = 目录部分（去掉 gnn_shadow.csv），且分隔符统一成 / ——
     # circuit 键是 os.path.relpath 的结果，Windows 下是 \ 分隔：硬写 split("/") 会整个失配，
     # 把含文件名的 49 列长串塞进 32 列的标签位。用 os.sep 才跨平台一致。
@@ -1278,13 +1369,8 @@ def main():
           "→ 该列含白送分；严格列不受此影响。")
 
     # —— 以 current 为锚的 GNN 判据质量（18.6.0 新增 / 18.6.1 修正配对校验）——
-    # ⚠ 位置被两处夹死，**不要挪**：
-    #  (a) 必须在「=== 每候选集明细」之**前**：_t_shadow_analyze_2col.py:127-129 的 head_meta()
-    #      把 DETAIL_MARK 之前的一切逐字节跨树比较（:147）⇒ 本节在无 gnn_current.csv 的树上
-    #      必须输出**常量**（已如此，见 current_anchor_report 的早退分支）。
-    #  (b) 必须在「=== 两列并排 A/B」之**前**：sweep 的 pick() 取文件序首处，且让本节留在
-    #      主口径头里 = 让 (a) 那条逐字节断言顺带守住本节的缺文件路径。
-    current_anchor_report(args.root, args.min_cands, sets, _dom_circ)
+    # ⚠ 18.7.4 起本节的调用**提到 main 开头**（紧接「无合格候选集」守卫之后）：
+    #   理由 = 让 ★★★ 最优先判据（机会把握率）落在第一屏。两条位置约束（见该处注释）都是上界，上提不冲突。
 
     # —— 两列并排 A/B（仅当 CSV 带 gnn_pred2 列时出现）——
     if ab_sets:
@@ -1337,9 +1423,14 @@ def main():
 
     # 明细：按遗憾**降序**列出每集（17.3.9：batch 口径下集数可达数百，故默认只列最差的几集）
     srt = sorted(sets, key=lambda x: -x["regret"])
-    shown = srt if (args.detail_max <= 0 or len(srt) <= args.detail_max) else srt[:args.detail_max]
+    # 18.7.4：默认**不列**（-1）—— 该块是全文最大的一段，而信息密度最低（只列「遗憾最大的几集」）。
+    # 0 仍 = 全列（既有自测 _t_shadow_groupby.py 传的就是 --detail-max 0），N>0 = 列最差的 N 集。
+    shown = [] if args.detail_max < 0 else (
+        srt if (args.detail_max == 0 or len(srt) <= args.detail_max) else srt[:args.detail_max])
     print("\n=== 每候选集明细（按遗憾降序；#1∈前k=严格, 前k∩真前k=宽松）===")
-    if len(shown) < len(srt):
+    if not shown:
+        print(f"  （默认不列（本次 {len(srt)} 集）；--detail-max N 列遗憾最大的 N 集，0=全列）")
+    elif len(shown) < len(srt):
         print(f"  （只列遗憾最大的 {len(shown)}/{len(srt)} 集；--detail-max 0 可列全部）")
     for s in shown:
         sps = f"{s['spearman']:.2f}" if s["spearman"] is not None else "-"

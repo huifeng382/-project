@@ -9,6 +9,9 @@
   (a) 手造 6 组小树：用 numpy **独立复算** D3/D4/N1/N2/R1/R2（不复用分析器任何函数），与打印的
       四行逐格对账；并**埋一个「current 被 GNN 排第一、而真值上确有更优候选」的组**，另起一棵
       只含它的树，断言它**恰好**落进 N1 且分母 == 1（分母正确性单独隔离验证）。
+  (a2) 18.7.4 ★★★ 最优先判据「机会把握率」两格：同样独立复算 (H3,D3)/(H4,D4) 与打印对账，
+      并断言 H4/D4 >= H3/D3（宽松含「首推就是 current 本身」）；两棵隔离树分别钉住
+      「两口径都抓住」（⑥ ⇒ 1/1 与 1/1）与「只有真并列」（③ ⇒ 严格 0/0、宽松 1/1）。
   (b) D3=0 的组（真值上没机会 / 只有真值持平）⇒ 单列计数、**不入 R1 分母**（分子分母都在打印里对账）。
       另用 --min-cands 6 把「其中 ≥N 候选」那一行打成空集 ⇒ 断言 R1/R2 打成 NA（除零不崩、不伪装成 0%）。
   (c) rank(cur)=NA、true(cur)=NA、候选 rank=NA、候选 true=NA、候选 tc 与 gnn_shadow 的 transistors
@@ -146,9 +149,12 @@ def run_analyze(root, min_c=MIN_C):
 
 # ────────────────────────── 独立复算（numpy，零复用） ──────────────────────────
 def indep(groups):
-    """从 fixture 原始数据独立复算每组的四个判据。与分析器同**语义**、不同**实现**：
+    """从 fixture 原始数据独立复算每组的判据。与分析器同**语义**、不同**实现**：
     cur_first ⟺ 没有候选秩严格小于 current（competition ranking，并列算首推）；
-    d3 ⟺ ∃ 候选真值严格更小；d4 ⟺ ∃ 候选真值 ≤ current 真值。"""
+    d3 ⟺ ∃ 候选真值严格更小；d4 ⟺ ∃ 候选真值 ≤ current 真值。
+    18.7.4 加 h3/h4（机会把握率）：首推 = 秩最小的候选，且**只有** min(候选秩) < cur 秩时才算
+    「首推候选」（否则首推就是 current）；并列首推要求**整撮都满足**。
+      h3（严格）= 首推候选且全部 t₁ < t_cur；h4（宽松）= 首推就是 current 本身，或全部 t₁ ≤ t_cur。"""
     out = []
     for g in groups:
         cr, ct, nout = g["cur"]
@@ -156,11 +162,16 @@ def indep(groups):
             continue                      # (c) 那类：与「真值不全」同待遇，不进分母池
         rk = np.array([cr] + [c[1] for c in g["cands"]], dtype=float)
         tt = np.array([ct] + [c[2] for c in g["cands"]], dtype=float)
+        rmin = rk[1:].min()                       # 候选秩的最小值（cur 不在内）
+        cand_first = bool(rmin < rk[0])           # 存在候选严格排在 current 之前
+        picks = tt[1:][rk[1:] == rmin] if cand_first else np.array([])
         out.append({
             "tag": g["tag"], "nout": nout, "n_cands": len(g["cands"]),
             "cur_first": bool((rk[1:] >= rk[0]).all()),
             "d3": bool((tt[1:] < tt[0]).any()),
             "d4": bool((tt[1:] <= tt[0]).any()),
+            "h3": bool(cand_first and (picks < tt[0]).all()),
+            "h4": bool((not cand_first) or (picks <= tt[0]).all()),
             "tie_rank": bool((rk[1:] == rk[0]).any()),
             "tie_true": bool((tt[1:] == tt[0]).any()),
         })
@@ -192,6 +203,25 @@ def parse_rows(out):
 
 
 OPP_LABELS = ("配对/覆盖(pos 集非全集)", "current 秩或真值缺", "候选秩缺", "候选真值缺/tc 不等")
+
+# 18.7.4 ★★★ 最优先判据「机会把握率」两行：`… :  25.92%   = 239/922 组`
+# ⚠ 分子/分母从**行尾的 a/b**取（`组`前面那个分数），不从百分号取 —— 百分号在分母为 0 时打 NA，
+#   而 a/b 恒在（0/0），这样「分母 0 也得报 0/0」这件事本身也被钉住。
+CORE_RE = re.compile(r"=\s*(\d+)/(\d+)\s*组")
+
+
+def parse_core(out):
+    """→ ((H3, D3), (H4, D4))；两行任一缺失返回 None（用于断言「必须打出来」）。"""
+    got = {}
+    for line in out.splitlines():
+        s = line.strip()
+        if s.startswith("严格（GNN 第一名"):
+            m = CORE_RE.search(s)
+            got["s"] = (int(m.group(1)), int(m.group(2))) if m else None
+        elif s.startswith("宽松（GNN 第一名"):
+            m = CORE_RE.search(s)
+            got["l"] = (int(m.group(1)), int(m.group(2))) if m else None
+    return (got.get("s"), got.get("l")) if len(got) == 2 else None
 
 
 def parse_opp_diag(out):
@@ -254,6 +284,36 @@ def main():
         g3b = parse_rows(run_analyze(os.path.join(root, "t3b")).stdout or "").get("all")
         check(g3b == ("1", "1", "1", "0", "0", "0.00%", "0.00%"),
               f"(a) 反向隔离：① 组同样有更优候选但 cur 未排第一 ⇒ N1 = N2 = 0（打印 {g3b}）")
+
+        # (a2) 18.7.4 ★★★ 最优先判据「机会把握率」：打印的 (H3,D3)/(H4,D4) 与独立复算逐格对账。
+        #      两行**必须存在**（parse_core 返回 None 即失败）——这是「最优先判据要专门打出来」的钉子。
+        #      ⚠ 分子**必须限定在各自的分母里**数：④ 组（无机会：候选真值全都更差）在宽松谓词下
+        #      h4 也为真（首推就是 current）——不限定就会数出一个 > 分母的分子（本例 5/4）。
+        exp_s = (sum(1 for r in ind if r["h3"] and r["d3"]), sum(1 for r in ind if r["d3"]))
+        exp_l = (sum(1 for r in ind if r["h4"] and r["d4"]), sum(1 for r in ind if r["d4"]))
+        raw_l = sum(1 for r in ind if r["h4"])
+        core = parse_core(out)
+        check(core == (exp_s, exp_l),
+              f"(a2) ★★★ 机会把握率：打印 {core} == 独立复算 严格{exp_s}/宽松{exp_l}")
+        check(raw_l > exp_l[0] and exp_l[0] <= exp_l[1],
+              f"(a2) 分母外溢防线：不限定分母的宽松分子是 {raw_l} > H4 {exp_l[0]}（④ 组该类）"
+              f"⇒ 打印取的是**限定后**的 {exp_l[0]}，恒 <= D4 {exp_l[1]}")
+        # 宽松分子含「首推就是 current 本身」⇒ 恒有 H4 ≥ H3、D4 ≥ D3（这正是宽松率可能**更低**的来源）
+        check(exp_l[0] >= exp_s[0] and exp_l[1] >= exp_s[1],
+              f"(a2) 单调性：H4/D4 = {exp_l} >= H3/D3 = {exp_s}（宽松含「首推=current」那类）")
+        # 隔离正例：⑥ 组 = 唯一一组两口径都抓住（首推是候选、且真值严格更优）⇒ 严格 1/1、宽松 1/1
+        #   ⚠ ⑥ 只有 2 个候选 ⇒ 必须 min_c=2：`sets`（= 逐集明细那条路）是按 min_cands 过滤的，
+        #     min_c=4 时这棵树连 sets 都建不起来，报告在 main 顶部就早退了（本节根本不打印）。
+        write_tree(os.path.join(root, "t3c"), [G[5]])
+        c3c = parse_core(run_analyze(os.path.join(root, "t3c"), min_c=2).stdout or "")
+        check(c3c == ((1, 1), (1, 1)),
+              f"(a2) 隔离：⑥ 组（首推候选且真改进）⇒ 严格 1/1、宽松 1/1（打印 {c3c}）")
+        # 隔离：③ 组只有**真并列**（没有更优）⇒ 严格分母 0（打 0/0 而非 NA 以外的任何数）、宽松 1/1
+        #   ⚠ 这一棵同时把「分母 0 时分子分母仍要如实打 a/b」这条钉住（百分号那格才是 NA）
+        write_tree(os.path.join(root, "t3d"), [G[2]])
+        c3d = parse_core(run_analyze(os.path.join(root, "t3d")).stdout or "")
+        check(c3d == ((0, 0), (1, 1)),
+              f"(a2) 隔离：③ 组只有真并列 ⇒ 严格分母 0（打 0/0）、宽松 1/1（打印 {c3d}）")
 
         # (b) 分母为 0 的组单列、不入比值；且「≥N 候选」行是空集时打 NA 而不是 0%
         n_d3_0 = sum(1 for r in ind if not r["d3"])
