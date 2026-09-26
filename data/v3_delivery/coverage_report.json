@@ -1,19 +1,16 @@
 {
   "timing_arcs": {
-    "total_rows": 599976,
+    "total_rows": 435895,
     "fields": {
-      "DELAY": "599976/599976 (100.0%)",
-      "gate_states_json": "599976/599976 (100.0%)",
-      "transistor_wave_json": "599976/599976 (100.0%)",
-      "supply_noise_json": "599976/599976 (100.0%)",
-      "pin_slew_json": "599976/599976 (100.0%)",
-      "pin_load_json": "599976/599976 (100.0%)",
-      "vector": "599976/599976 (100.0%)",
-      "direction": "599976/599976 (100.0%)",
-      "transistor_wave_json.empty_objects": "0/599976"
+      "DELAY": "435895/435895 (100.0%)",
+      "gate_states_json": "435895/435895 (100.0%)",
+      "transistor_wave_json": "435895/435895 (100.0%)",
+      "supply_noise_json": "435895/435895 (100.0%)",
+      "pin_slew_json": "435895/435895 (100.0%)",
+      "pin_load_json": "435895/435895 (100.0%)",
+      "vector": "435895/435895 (100.0%)",
+      "direction": "435895/435895 (100.0%)",
+      "transistor_wave_json.empty_objects": "0/435895"
     }
-  },
-  "circuit_static": {
-    "total_rows": 12455
   }
 }
